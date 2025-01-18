@@ -1,38 +1,49 @@
 <?php
 
+use Wikimedia\TestingAccessWrapper;
+
 /**
- * @covers AutoLoader
+ * @covers \AutoLoader
  */
-class AutoLoaderTest extends MediaWikiTestCase {
+class AutoLoaderTest extends MediaWikiIntegrationTestCase {
 
+	/** @var string[] */
 	private $oldPsr4;
+	/** @var string[] */
+	private $oldClassFiles;
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
-		// Fancy dance to trigger a rebuild of AutoLoader::$autoloadLocalClassesLower
 		$this->mergeMwGlobalArrayValue( 'wgAutoloadLocalClasses', [
 			'TestAutoloadedLocalClass' =>
 				__DIR__ . '/../data/autoloader/TestAutoloadedLocalClass.php',
-			'TestAutoloadedCamlClass' =>
-				__DIR__ . '/../data/autoloader/TestAutoloadedCamlClass.php',
-			'TestAutoloadedSerializedClass' =>
-				__DIR__ . '/../data/autoloader/TestAutoloadedSerializedClass.php',
 		] );
-		AutoLoader::resetAutoloadLocalClassesLower();
-
 		$this->mergeMwGlobalArrayValue( 'wgAutoloadClasses', [
 			'TestAutoloadedClass' => __DIR__ . '/../data/autoloader/TestAutoloadedClass.php',
 		] );
 
-		$this->oldPsr4 = AutoLoader::$psr4Namespaces;
-		AutoLoader::$psr4Namespaces['Test\\MediaWiki\\AutoLoader\\'] =
-			__DIR__ . '/../data/autoloader/psr4';
+		$access = TestingAccessWrapper::newFromClass( AutoLoader::class );
+		$this->oldPsr4 = $access->psr4Namespaces;
+		$this->oldClassFiles = $access->classFiles;
+		AutoLoader::registerNamespaces( [
+			'Test\\MediaWiki\\AutoLoader\\' => __DIR__ . '/../data/autoloader/psr4'
+		] );
+		AutoLoader::registerClasses( [
+			'TestAnotherAutoloadedClass' => __DIR__ . '/../data/autoloader/TestAnotherAutoloadedClass.php',
+		] );
 	}
 
-	protected function tearDown() {
-		AutoLoader::$psr4Namespaces = $this->oldPsr4;
+	protected function tearDown(): void {
+		$access = TestingAccessWrapper::newFromClass( AutoLoader::class );
+		$access->psr4Namespaces = $this->oldPsr4;
+		$access->classFiles = $this->oldClassFiles;
 		parent::tearDown();
+	}
+
+	public function testFind() {
+		$path = __DIR__ . '/../data/autoloader/TestAutoloadedLocalClass.php';
+		$this->assertSame( $path, AutoLoader::find( TestAutoloadedLocalClass::class ) );
 	}
 
 	public function testCoreClass() {
@@ -40,22 +51,11 @@ class AutoLoaderTest extends MediaWikiTestCase {
 	}
 
 	public function testExtensionClass() {
+		$this->assertTrue( class_exists( 'TestAnotherAutoloadedClass' ) );
+	}
+
+	public function testLegacyExtensionClass() {
 		$this->assertTrue( class_exists( 'TestAutoloadedClass' ) );
-	}
-
-	public function testWrongCaseClass() {
-		$this->setMwGlobals( 'wgAutoloadAttemptLowercase', true );
-
-		$this->assertTrue( class_exists( 'testautoLoadedcamlCLASS' ) );
-	}
-
-	public function testWrongCaseSerializedClass() {
-		$this->setMwGlobals( 'wgAutoloadAttemptLowercase', true );
-
-		$dummyCereal = 'O:29:"testautoloadedserializedclass":0:{}';
-		$uncerealized = unserialize( $dummyCereal );
-		$this->assertFalse( $uncerealized instanceof __PHP_Incomplete_Class,
-			"unserialize() can load classes case-insensitively." );
 	}
 
 	public function testPsr4() {

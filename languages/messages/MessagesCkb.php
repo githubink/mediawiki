@@ -1,11 +1,8 @@
 <?php
 /** Sorani Kurdish (کوردی)
  *
- * To improve a translation please visit https://translatewiki.net
- *
- * @ingroup Language
  * @file
- *
+ * @ingroup Languages
  */
 
 $rtl = true;
@@ -42,6 +39,7 @@ $namespaceAliases = [
 	'لێدوانی_پۆل'       => NS_CATEGORY_TALK,
 ];
 
+/** @phpcs-require-sorted-array */
 $specialPageAliases = [
 	'Activeusers'               => [ 'بەکارھێنەرە_چالاکەکان' ],
 	'Allmessages'               => [ 'ھەموو_پەیامەکان' ],
@@ -61,6 +59,7 @@ $specialPageAliases = [
 	'Export'                    => [ 'ھەناردن' ],
 	'Fewestrevisions'           => [ 'کەمترین_پێداچوونەوەکان' ],
 	'Import'                    => [ 'ھاوردن' ],
+	'Interwiki'                 => [ 'نێوانویکی' ],
 	'Listadmins'                => [ 'لیستی_بەڕێوبەران' ],
 	'Listbots'                  => [ 'لیستی_بۆتەکان' ],
 	'Listfiles'                 => [ 'لیستی_پەڕگەکان' ],
@@ -108,15 +107,17 @@ $specialPageAliases = [
 	'Whatlinkshere'             => [ 'چی_بەستەری_داوە_بێرە' ],
 ];
 
+/** @phpcs-require-sorted-array */
 $magicWords = [
-	'img_thumbnail'             => [ '1', 'وێنۆک', 'thumb', 'thumbnail' ],
-	'img_right'                 => [ '1', 'ڕاست', 'right' ],
-	'img_left'                  => [ '1', 'چەپ', 'left' ],
-	'img_width'                 => [ '1', '$1پیکسڵ', '$1px' ],
+	'img_border'                => [ '1', 'سنوور', 'border' ],
 	'img_center'                => [ '1', 'ناوەڕاست', 'center', 'centre' ],
 	'img_framed'                => [ '1', 'چوارچێوە', 'frame', 'framed', 'enframed' ],
 	'img_frameless'             => [ '1', 'بێچوارچێوە', 'frameless' ],
-	'img_border'                => [ '1', 'سنوور', 'border' ],
+	'img_left'                  => [ '1', 'چەپ', 'left' ],
+	'img_right'                 => [ '1', 'ڕاست', 'right' ],
+	'img_thumbnail'             => [ '1', 'وێنۆک', 'thumb', 'thumbnail' ],
+	'img_width'                 => [ '1', '$1پیکسڵ', '$1px' ],
+	'redirect'                  => [ '0', '#ڕەوانەکەر', '#REDIRECT' ],
 ];
 
 $digitTransformTable = [
@@ -155,22 +156,21 @@ $datePreferenceMigrationMap = [
 ];
 
 $dateFormats = [
-	# Please be cautious not to delete the invisible RLM from the beginning of the strings.
-	'dmy time' => '‏H:i',
-	'dmy date' => '‏jی xg Y',
-	'dmy both' => '‏H:i، jی xg Y',
+	'dmy time' => 'H:i',
+	'dmy date' => 'jی xg Y',
+	'dmy both' => 'H:i، jی xg Y',
 
-	'ymd time' => '‏H:i',
-	'ymd date' => '‏Y/n/j',
-	'ymd both' => '‏H:i، Y/n/j',
+	'ymd time' => 'H:i',
+	'ymd date' => 'Y/n/j',
+	'ymd both' => 'H:i، Y/n/j',
 
-	'persian time' => '‏H:i',
-	'persian date' => '‏xijی xiFی xiY',
-	'persian both' => '‏H:i، ‏xijی xiFی xiY',
+	'persian time' => 'H:i',
+	'persian date' => 'xijی xiFی xiY',
+	'persian both' => 'H:i، xijی xiFی xiY',
 
-	'hijri time' => '‏H:i',
-	'hijri date' => '‏xmjی xmFی xmY',
-	'hijri both' => '‏H:i، xmjی xmFی xmY',
+	'hijri time' => 'H:i',
+	'hijri date' => 'xmjی xmFی xmY',
+	'hijri both' => 'H:i، xmjی xmFی xmY',
 ];
 
 $linkTrail = "/^([ئابپتجچحخدرڕزژسشعغفڤقکگلڵمنوۆهھەیێ‌]+)(.*)$/sDu";

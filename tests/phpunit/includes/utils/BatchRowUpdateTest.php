@@ -1,15 +1,19 @@
 <?php
 
+use Wikimedia\Rdbms\FakeResultWrapper;
+use Wikimedia\Rdbms\Platform\SQLPlatform;
+use Wikimedia\Rdbms\SelectQueryBuilder;
+
 /**
  * Tests for BatchRowUpdate and its components
  *
  * @group db
  *
- * @covers BatchRowUpdate
- * @covers BatchRowIterator
- * @covers BatchRowWriter
+ * @covers \BatchRowUpdate
+ * @covers \BatchRowIterator
+ * @covers \BatchRowWriter
  */
-class BatchRowUpdateTest extends MediaWikiTestCase {
+class BatchRowUpdateTest extends MediaWikiIntegrationTestCase {
 
 	public function testWriterBasicFunctionality() {
 		$db = $this->mockDb( [ 'update' ] );
@@ -37,7 +41,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 
 	public function testReaderBasicIterate() {
 		$batchSize = 2;
-		$response = $this->genSelectResult( $batchSize, /*numRows*/ 5, function () {
+		$response = $this->genSelectResult( $batchSize, /*numRows*/ 5, static function () {
 			static $i = 0;
 			return [ 'id_field' => ++$i ];
 		} );
@@ -110,8 +114,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 			[
 				'Must not duplicate primary keys into column selector',
 				// Expected column select.
-				// TODO: figure out how to only assert the array_values portion and not the keys
-				[ 0 => 'foo', 1 => 'bar', 3 => 'baz' ],
+				[ 'foo', 'bar', 'baz' ],
 				// primary keys
 				[ 'foo', 'bar', ],
 				// setFetchColumn
@@ -130,8 +133,8 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 		$db->expects( $this->once() )
 			->method( 'select' )
 			// only testing second parameter of Database::select
-			->with( 'some_table', $columns )
-			->will( $this->returnValue( new ArrayIterator( [] ) ) );
+			->with( [ 'some_table' ], $columns )
+			->willReturn( new FakeResultWrapper( [] ) );
 
 		$reader = new BatchRowIterator( $db, 'some_table', $primaryKeys, 22 );
 		$reader->setFetchColumns( $fetchColumns );
@@ -145,7 +148,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 			[
 				"With single primary key must generate id > 'value'",
 				// Expected second iteration
-				[ "( id_field > '3' )" ],
+				[ "id_field > '3'" ],
 				// Primary key(s)
 				'id_field',
 			],
@@ -154,7 +157,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 				'With multiple primary keys the first conditions ' .
 					'must use >= and the final condition must use >',
 				// Expected second iteration
-				[ "( id_field = '3' AND foo > '103' ) OR ( id_field > '3' )" ],
+				[ "id_field > '3' OR (id_field = '3' AND (foo > '103'))" ],
 				// Primary key(s)
 				[ 'id_field', 'foo' ],
 			],
@@ -171,7 +174,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 	public function testReaderSelectConditionsMultiplePrimaryKeys(
 		$message, $expectedSecondIteration, $primaryKeys, $batchSize = 3
 	) {
-		$results = $this->genSelectResult( $batchSize, $batchSize * 3, function () {
+		$results = $this->genSelectResult( $batchSize, $batchSize * 3, static function () {
 			static $i = 0, $j = 100, $k = 1000;
 			return [ 'id_field' => ++$i, 'foo' => ++$j, 'bar' => ++$k ];
 		} );
@@ -185,28 +188,29 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 		$buildConditions->setAccessible( true );
 
 		// On first iteration only the passed conditions must be used
-		$this->assertEquals( $conditions, $buildConditions->invoke( $reader ),
-			'First iteration must return only the conditions passed in addConditions' );
+		$this->assertEquals( [], $buildConditions->invoke( $reader ),
+			'First iteration must return no extra conditions' );
 		$reader->rewind();
 
 		// Second iteration must use the maximum primary key of last set
 		$this->assertEquals(
-			$conditions + $expectedSecondIteration,
+			$expectedSecondIteration,
 			$buildConditions->invoke( $reader ),
 			$message
 		);
 	}
 
 	protected function mockDbConsecutiveSelect( array $retvals ) {
-		$db = $this->mockDb( [ 'select', 'addQuotes' ] );
-		$db->expects( $this->any() )
-			->method( 'select' )
+		$db = $this->mockDb( [ 'select', 'newSelectQueryBuilder', 'addQuotes' ] );
+		$db->method( 'newSelectQueryBuilder' )->willReturnCallback( static function () use ( $db ) {
+			return new SelectQueryBuilder( $db );
+		} );
+		$db->method( 'select' )
 			->will( $this->consecutivelyReturnFromSelect( $retvals ) );
-		$db->expects( $this->any() )
-			->method( 'addQuotes' )
-			->will( $this->returnCallback( function ( $value ) {
+		$db->method( 'addQuotes' )
+			->willReturnCallback( static function ( $value ) {
 				return "'$value'"; // not real quoting: doesn't matter in test
-			} ) );
+			} );
 
 		return $db;
 	}
@@ -214,11 +218,11 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 	protected function consecutivelyReturnFromSelect( array $results ) {
 		$retvals = [];
 		foreach ( $results as $rows ) {
-			// The Database::select method returns iterators, so we do too.
-			$retvals[] = $this->returnValue( new ArrayIterator( $rows ) );
+			// The Database::select method returns result wrapper, so we do too.
+			$retvals[] = $this->returnValue( new FakeResultWrapper( $rows ) );
 		}
 
-		return call_user_func_array( [ $this, 'onConsecutiveCalls' ], $retvals );
+		return $this->onConsecutiveCalls( ...$retvals );
 	}
 
 	protected function genSelectResult( $batchSize, $numRows, $rowGenerator ) {
@@ -226,7 +230,7 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 		for ( $i = 0; $i < $numRows; $i += $batchSize ) {
 			$rows = [];
 			for ( $j = 0; $j < $batchSize && $i + $j < $numRows; $j++ ) {
-				$rows [] = (object)call_user_func( $rowGenerator );
+				$rows[] = (object)$rowGenerator();
 			}
 			$res[] = $rows;
 		}
@@ -236,17 +240,19 @@ class BatchRowUpdateTest extends MediaWikiTestCase {
 
 	protected function mockDb( $methods = [] ) {
 		// @TODO: mock from Database
-		// FIXME: the constructor normally sets mAtomicLevels and mSrvCache
-		$databaseMysql = $this->getMockBuilder( Wikimedia\Rdbms\DatabaseMysqli::class )
+		// FIXME: the constructor normally sets mAtomicLevels and mSrvCache, and platform
+		$databaseMysql = $this->getMockBuilder( Wikimedia\Rdbms\DatabaseMySQL::class )
 			->disableOriginalConstructor()
-			->setMethods( array_merge( [ 'isOpen', 'getApproximateLagStatus' ], $methods ) )
+			->onlyMethods( array_merge( [ 'isOpen' ], $methods ) )
 			->getMock();
-		$databaseMysql->expects( $this->any() )
-			->method( 'isOpen' )
-			->will( $this->returnValue( true ) );
-		$databaseMysql->expects( $this->any() )
-			->method( 'getApproximateLagStatus' )
-			->will( $this->returnValue( [ 'lag' => 0, 'since' => 0 ] ) );
+
+		$reflection = new ReflectionClass( $databaseMysql );
+		$reflectionProperty = $reflection->getProperty( 'platform' );
+		$reflectionProperty->setAccessible( true );
+		$reflectionProperty->setValue( $databaseMysql, new SQLPlatform( $databaseMysql ) );
+
+		$databaseMysql->method( 'isOpen' )
+			->willReturn( true );
 		return $databaseMysql;
 	}
 }

@@ -1,110 +1,133 @@
 <?php
 
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Specials\SpecialMute;
+use MediaWiki\User\Options\UserOptionsManager;
+
 /**
  * @group SpecialPage
- * @covers SpecialMute
+ * @group Database
+ * @covers \MediaWiki\Specials\SpecialMute
  */
 class SpecialMuteTest extends SpecialPageTestBase {
 
-	protected function setUp() {
+	/** @var UserOptionsManager */
+	private $userOptionsManager;
+
+	protected function setUp(): void {
 		parent::setUp();
 
-		$this->setMwGlobals( [
-			'wgEnableUserEmailBlacklist' => true
-		] );
+		$this->userOptionsManager = $this->getServiceContainer()->getUserOptionsManager();
+		$this->overrideConfigValue( MainConfigNames::EnableUserEmailMuteList, true );
 	}
 
 	/**
 	 * @inheritDoc
 	 */
 	protected function newSpecialPage() {
-		return new SpecialMute();
+		return new SpecialMute(
+			$this->getServiceContainer()->getCentralIdLookupFactory()->getLookup( 'local' ),
+			$this->userOptionsManager,
+			$this->getServiceContainer()->getUserIdentityLookup(),
+			$this->getServiceContainer()->getUserIdentityUtils()
+		);
 	}
 
 	/**
-	 * @covers SpecialMute::execute
-	 * @expectedExceptionMessage username requested could not be found
-	 * @expectedException ErrorPageError
+	 * @covers \MediaWiki\Specials\SpecialMute::execute
 	 */
 	public function testInvalidTarget() {
 		$user = $this->getTestUser()->getUser();
+		$this->expectException( ErrorPageError::class );
+		$this->expectExceptionMessage( "username requested could not be found" );
 		$this->executeSpecialPage(
 			'InvalidUser', null, 'qqx', $user
 		);
 	}
 
 	/**
-	 * @covers SpecialMute::execute
-	 * @expectedExceptionMessage Muting users from sending you emails is not enabled
-	 * @expectedException ErrorPageError
+	 * @covers \MediaWiki\Specials\SpecialMute::execute
 	 */
 	public function testEmailBlacklistNotEnabled() {
-		$this->setMwGlobals( [
-			'wgEnableUserEmailBlacklist' => false
-		] );
+		$this->setTemporaryHook(
+			'SpecialMuteModifyFormFields',
+			HookContainer::NOOP
+		);
+
+		$this->overrideConfigValue( MainConfigNames::EnableUserEmailMuteList, false );
 
 		$user = $this->getTestUser()->getUser();
+		$this->expectException( ErrorPageError::class );
+		$this->expectExceptionMessage( "Mute features are unavailable" );
 		$this->executeSpecialPage(
 			$user->getName(), null, 'qqx', $user
 		);
 	}
 
 	/**
-	 * @covers SpecialMute::execute
-	 * @expectedException UserNotLoggedIn
+	 * @covers \MediaWiki\Specials\SpecialMute::execute
 	 */
 	public function testUserNotLoggedIn() {
+		$this->expectException( UserNotLoggedIn::class );
 		$this->executeSpecialPage( 'TestUser' );
 	}
 
-	/**
-	 * @covers SpecialMute::execute
-	 */
-	public function testMuteAddsUserToEmailBlacklist() {
-		$this->setMwGlobals( [
-			'wgCentralIdLookupProvider' => 'local',
-		] );
-
+	public function testUserEmailNotConfirmed() {
 		$targetUser = $this->getTestUser()->getUser();
 
 		$loggedInUser = $this->getMutableTestUser()->getUser();
-		$loggedInUser->setOption( 'email-blacklist', "999" );
+		$this->userOptionsManager->setOption( $loggedInUser, 'email-blacklist', "999" );
+		$loggedInUser->invalidateEmail();
+		$loggedInUser->saveSettings();
+
+		$this->expectExceptionMessage( wfMessage( 'specialmute-error-no-email-set' ) );
+
+		$fauxRequest = new FauxRequest( [ 'wpemail-blacklist' => true ], true );
+		$this->executeSpecialPage( $targetUser->getName(), $fauxRequest, 'qqx', $loggedInUser );
+	}
+
+	/**
+	 * @covers \MediaWiki\Specials\SpecialMute::execute
+	 */
+	public function testMuteAddsUserToEmailBlacklist() {
+		$targetUser = $this->getTestUser()->getUser();
+
+		$loggedInUser = $this->getMutableTestUser()->getUser();
+		$this->userOptionsManager->setOption( $loggedInUser, 'email-blacklist', "999" );
 		$loggedInUser->confirmEmail();
 		$loggedInUser->saveSettings();
 
-		$fauxRequest = new FauxRequest( [ 'wpMuteEmail' => 1 ], true );
-		list( $html, ) = $this->executeSpecialPage(
+		$fauxRequest = new FauxRequest( [ 'wpemail-blacklist' => true ], true );
+		[ $html, ] = $this->executeSpecialPage(
 			$targetUser->getName(), $fauxRequest, 'qqx', $loggedInUser
 		);
 
-		$this->assertContains( 'specialmute-success', $html );
+		$this->assertStringContainsString( 'specialmute-success', $html );
 		$this->assertEquals(
 			"999\n" . $targetUser->getId(),
-			$loggedInUser->getOption( 'email-blacklist' )
+			$this->userOptionsManager->getOption( $loggedInUser, 'email-blacklist' )
 		);
 	}
 
 	/**
-	 * @covers SpecialMute::execute
+	 * @covers \MediaWiki\Specials\SpecialMute::execute
 	 */
 	public function testUnmuteRemovesUserFromEmailBlacklist() {
-		$this->setMwGlobals( [
-			'wgCentralIdLookupProvider' => 'local',
-		] );
-
 		$targetUser = $this->getTestUser()->getUser();
 
 		$loggedInUser = $this->getMutableTestUser()->getUser();
-		$loggedInUser->setOption( 'email-blacklist', "999\n" . $targetUser->getId() );
+		$this->userOptionsManager->setOption( $loggedInUser, 'email-blacklist', "999\n" . $targetUser->getId() );
 		$loggedInUser->confirmEmail();
 		$loggedInUser->saveSettings();
 
-		$fauxRequest = new FauxRequest( [ 'wpMuteEmail' => false ], true );
-		list( $html, ) = $this->executeSpecialPage(
+		$fauxRequest = new FauxRequest( [ 'wpemail-blacklist' => false ], true );
+		[ $html, ] = $this->executeSpecialPage(
 			$targetUser->getName(), $fauxRequest, 'qqx', $loggedInUser
 		);
 
-		$this->assertContains( 'specialmute-success', $html );
-		$this->assertEquals( "999", $loggedInUser->getOption( 'email-blacklist' ) );
+		$this->assertStringContainsString( 'specialmute-success', $html );
+		$this->assertSame( "999", $this->userOptionsManager->getOption( $loggedInUser, 'email-blacklist' ) );
 	}
 }

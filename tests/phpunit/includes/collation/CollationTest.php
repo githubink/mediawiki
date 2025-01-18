@@ -1,17 +1,12 @@
 <?php
 
 /**
- * Class CollationTest
- * @covers Collation
- * @covers IcuCollation
- * @covers IdentityCollation
- * @covers UppercaseCollation
+ * @covers \Collation
+ * @covers \IcuCollation
+ * @covers \IdentityCollation
+ * @covers \UppercaseCollation
  */
 class CollationTest extends MediaWikiLangTestCase {
-	protected function setUp() {
-		parent::setUp();
-		$this->checkPHPExtension( 'intl' );
-	}
 
 	/**
 	 * Test to make sure, that if you
@@ -24,14 +19,16 @@ class CollationTest extends MediaWikiLangTestCase {
 	 * @param string $base
 	 * @param string $extended String containing base as a prefix.
 	 *
+	 * @covers \Collation::getSortKey()
+	 * @covers \IcuCollation::getSortKey()
+	 * @covers \IdentityCollation::getSortKey()
+	 * @covers \UppercaseCollation::getSortKey()
 	 * @dataProvider prefixDataProvider
 	 */
 	public function testIsPrefix( $lang, $base, $extended ) {
 		$cp = Collator::create( $lang );
 		$cp->setStrength( Collator::PRIMARY );
 		$baseBin = $cp->getSortKey( $base );
-		// Remove sortkey terminator
-		$baseBin = rtrim( $baseBin, "\0" );
 		$extendedBin = $cp->getSortKey( $extended );
 		$this->assertStringStartsWith( $baseBin, $extendedBin, "$base is not a prefix of $extended" );
 	}
@@ -57,14 +54,16 @@ class CollationTest extends MediaWikiLangTestCase {
 	/**
 	 * Opposite of testIsPrefix
 	 *
+	 * @covers \Collation::getSortKey()
+	 * @covers \IcuCollation::getSortKey()
+	 * @covers \IdentityCollation::getSortKey()
+	 * @covers \UppercaseCollation::getSortKey()
 	 * @dataProvider notPrefixDataProvider
 	 */
 	public function testNotIsPrefix( $lang, $base, $extended ) {
 		$cp = Collator::create( $lang );
 		$cp->setStrength( Collator::PRIMARY );
 		$baseBin = $cp->getSortKey( $base );
-		// Remove sortkey terminator
-		$baseBin = rtrim( $baseBin, "\0" );
 		$extendedBin = $cp->getSortKey( $extended );
 		$this->assertStringStartsNotWith( $baseBin, $extendedBin, "$base is a prefix of $extended" );
 	}
@@ -85,14 +84,18 @@ class CollationTest extends MediaWikiLangTestCase {
 	 * @param string $string String to get first letter of
 	 * @param string $firstLetter Expected first letter.
 	 *
+	 * @covers \Collation::getFirstLetter()
+	 * @covers \IcuCollation::getFirstLetter()
+	 * @covers \IdentityCollation::getFirstLetter()
+	 * @covers \UppercaseCollation::getFirstLetter()
 	 * @dataProvider firstLetterProvider
 	 */
 	public function testGetFirstLetter( $collation, $string, $firstLetter ) {
-		$col = Collation::factory( $collation );
+		$col = $this->getServiceContainer()->getCollationFactory()->makeCollation( $collation );
 		$this->assertEquals( $firstLetter, $col->getFirstLetter( $string ) );
 	}
 
-	function firstLetterProvider() {
+	public static function firstLetterProvider() {
 		return [
 			[ 'uppercase', 'Abc', 'A' ],
 			[ 'uppercase', 'abc', 'A' ],

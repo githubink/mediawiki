@@ -2,7 +2,7 @@
 /**
  * Clean up broken, unparseable upload filenames.
  *
- * Copyright © 2005-2006 Brion Vibber <brion@pobox.com>
+ * Copyright © 2005-2006 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,13 +21,16 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @author Brion Vibber <brion at pobox.com>
+ * @author Brooke Vibber <bvibber@wikimedia.org>
  * @ingroup Maintenance
  */
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Parser\Sanitizer;
+use MediaWiki\Title\Title;
 
-require_once __DIR__ . '/cleanupTable.inc';
+// @codeCoverageIgnoreStart
+require_once __DIR__ . '/TableCleanup.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script to clean up broken, unparseable upload filenames.
@@ -35,12 +38,16 @@ require_once __DIR__ . '/cleanupTable.inc';
  * @ingroup Maintenance
  */
 class CleanupImages extends TableCleanup {
+	/** @inheritDoc */
 	protected $defaultParams = [
 		'table' => 'image',
 		'conds' => [],
 		'index' => 'img_name',
 		'callback' => 'processRow',
 	];
+
+	/** @var LocalRepo|null */
+	private $repo;
 
 	public function __construct() {
 		parent::__construct();
@@ -53,7 +60,8 @@ class CleanupImages extends TableCleanup {
 			// Ye olde empty rows. Just kill them.
 			$this->killRow( $source );
 
-			return $this->progress( 1 );
+			$this->progress( 1 );
+			return;
 		}
 
 		$cleaned = $source;
@@ -64,7 +72,7 @@ class CleanupImages extends TableCleanup {
 		// We also have some HTML entities there
 		$cleaned = Sanitizer::decodeCharReferences( $cleaned );
 
-		$contLang = MediaWikiServices::getInstance()->getContentLanguage();
+		$contLang = $this->getServiceContainer()->getContentLanguage();
 
 		// Some are old latin-1
 		$cleaned = $contLang->checkTitleEncoding( $cleaned );
@@ -74,15 +82,17 @@ class CleanupImages extends TableCleanup {
 
 		$title = Title::makeTitleSafe( NS_FILE, $cleaned );
 
-		if ( is_null( $title ) ) {
+		if ( $title === null ) {
 			$this->output( "page $source ($cleaned) is illegal.\n" );
 			$safe = $this->buildSafeTitle( $cleaned );
 			if ( $safe === false ) {
-				return $this->progress( 0 );
+				$this->progress( 0 );
+				return;
 			}
 			$this->pokeFile( $source, $safe );
 
-			return $this->progress( 1 );
+			$this->progress( 1 );
+			return;
 		}
 
 		if ( $title->getDBkey() !== $source ) {
@@ -90,10 +100,11 @@ class CleanupImages extends TableCleanup {
 			$this->output( "page $source ($munged) doesn't match self.\n" );
 			$this->pokeFile( $source, $munged );
 
-			return $this->progress( 1 );
+			$this->progress( 1 );
+			return;
 		}
 
-		return $this->progress( 0 );
+		$this->progress( 0 );
 	}
 
 	/**
@@ -104,32 +115,46 @@ class CleanupImages extends TableCleanup {
 			$this->output( "DRY RUN: would delete bogus row '$name'\n" );
 		} else {
 			$this->output( "deleting bogus row '$name'\n" );
-			$db = $this->getDB( DB_MASTER );
-			$db->delete( 'image',
-				[ 'img_name' => $name ],
-				__METHOD__ );
+			$db = $this->getPrimaryDB();
+			$db->newDeleteQueryBuilder()
+				->deleteFrom( 'image' )
+				->where( [ 'img_name' => $name ] )
+				->caller( __METHOD__ )
+				->execute();
 		}
 	}
 
+	/**
+	 * @param string $name
+	 * @return string
+	 */
 	private function filePath( $name ) {
-		if ( !isset( $this->repo ) ) {
-			$this->repo = RepoGroup::singleton()->getLocalRepo();
+		if ( $this->repo === null ) {
+			$this->repo = $this->getServiceContainer()->getRepoGroup()->getLocalRepo();
 		}
 
 		return $this->repo->getRootDirectory() . '/' . $this->repo->getHashPath( $name ) . $name;
 	}
 
 	private function imageExists( $name, $db ) {
-		return $db->selectField( 'image', '1', [ 'img_name' => $name ], __METHOD__ );
+		return (bool)$db->newSelectQueryBuilder()
+			->select( '1' )
+			->from( 'image' )
+			->where( [ 'img_name' => $name ] )
+			->caller( __METHOD__ )
+			->fetchField();
 	}
 
 	private function pageExists( $name, $db ) {
-		return $db->selectField(
-			'page',
-			'1',
-			[ 'page_namespace' => NS_FILE, 'page_title' => $name ],
-			__METHOD__
-		);
+		return (bool)$db->newSelectQueryBuilder()
+			->select( '1' )
+			->from( 'page' )
+			->where( [
+				'page_namespace' => NS_FILE,
+				'page_title' => $name,
+			] )
+			->caller( __METHOD__ )
+			->fetchField();
 	}
 
 	private function pokeFile( $orig, $new ) {
@@ -141,7 +166,7 @@ class CleanupImages extends TableCleanup {
 			return;
 		}
 
-		$db = $this->getDB( DB_MASTER );
+		$db = $this->getPrimaryDB();
 
 		/*
 		 * To prevent key collisions in the update() statements below,
@@ -170,18 +195,24 @@ class CleanupImages extends TableCleanup {
 			$this->output( "renaming $path to $finalPath\n" );
 			// @todo FIXME: Should this use File::move()?
 			$this->beginTransaction( $db, __METHOD__ );
-			$db->update( 'image',
-				[ 'img_name' => $final ],
-				[ 'img_name' => $orig ],
-				__METHOD__ );
-			$db->update( 'oldimage',
-				[ 'oi_name' => $final ],
-				[ 'oi_name' => $orig ],
-				__METHOD__ );
-			$db->update( 'page',
-				[ 'page_title' => $final ],
-				[ 'page_title' => $orig, 'page_namespace' => NS_FILE ],
-				__METHOD__ );
+			$db->newUpdateQueryBuilder()
+				->update( 'image' )
+				->set( [ 'img_name' => $final ] )
+				->where( [ 'img_name' => $orig ] )
+				->caller( __METHOD__ )
+				->execute();
+			$db->newUpdateQueryBuilder()
+				->update( 'oldimage' )
+				->set( [ 'oi_name' => $final ] )
+				->where( [ 'oi_name' => $orig ] )
+				->caller( __METHOD__ )
+				->execute();
+			$db->newUpdateQueryBuilder()
+				->update( 'page' )
+				->set( [ 'page_title' => $final ] )
+				->where( [ 'page_title' => $orig, 'page_namespace' => NS_FILE ] )
+				->caller( __METHOD__ )
+				->execute();
 			$dir = dirname( $finalPath );
 			if ( !file_exists( $dir ) ) {
 				if ( !wfMkdirParents( $dir, null, __METHOD__ ) ) {
@@ -212,7 +243,7 @@ class CleanupImages extends TableCleanup {
 			$name );
 
 		$test = Title::makeTitleSafe( NS_FILE, $x );
-		if ( is_null( $test ) || $test->getDBkey() !== $x ) {
+		if ( $test === null || $test->getDBkey() !== $x ) {
 			$this->error( "Unable to generate safe title from '$name', got '$x'" );
 
 			return false;
@@ -222,5 +253,7 @@ class CleanupImages extends TableCleanup {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = CleanupImages::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

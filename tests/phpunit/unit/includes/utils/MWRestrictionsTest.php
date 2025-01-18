@@ -1,9 +1,17 @@
 <?php
+
+use MediaWiki\Json\FormatJson;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Request\WebRequest;
+use MediaWiki\Status\Status;
+
 class MWRestrictionsTest extends MediaWikiUnitTestCase {
 
+	/** @var MWRestrictions */
 	protected static $restrictionsForChecks;
 
-	public static function setUpBeforeClass() {
+	public static function setUpBeforeClass(): void {
+		parent::setUpBeforeClass();
 		self::$restrictionsForChecks = MWRestrictions::newFromArray( [
 			'IPAddresses' => [
 				'10.0.0.0/8',
@@ -14,8 +22,8 @@ class MWRestrictionsTest extends MediaWikiUnitTestCase {
 	}
 
 	/**
-	 * @covers MWRestrictions::newDefault
-	 * @covers MWRestrictions::__construct
+	 * @covers \MWRestrictions::newDefault
+	 * @covers \MWRestrictions::__construct
 	 */
 	public function testNewDefault() {
 		$ret = MWRestrictions::newDefault();
@@ -27,20 +35,21 @@ class MWRestrictionsTest extends MediaWikiUnitTestCase {
 	}
 
 	/**
-	 * @covers MWRestrictions::newFromArray
-	 * @covers MWRestrictions::__construct
-	 * @covers MWRestrictions::loadFromArray
-	 * @covers MWRestrictions::toArray
+	 * @covers \MWRestrictions::newFromArray
+	 * @covers \MWRestrictions::__construct
+	 * @covers \MWRestrictions::loadFromArray
+	 * @covers \MWRestrictions::toArray
 	 * @dataProvider provideArray
 	 * @param array $data
-	 * @param bool|InvalidArgumentException $expect True if the call succeeds,
+	 * @param StatusValue|InvalidArgumentException $expect StatusValue if the call succeeds,
 	 *  otherwise the exception that should be thrown.
 	 */
 	public function testArray( $data, $expect ) {
-		if ( $expect === true ) {
+		if ( $expect instanceof StatusValue ) {
 			$ret = MWRestrictions::newFromArray( $data );
 			$this->assertInstanceOf( MWRestrictions::class, $ret );
 			$this->assertSame( $data, $ret->toArray() );
+			$this->assertStatusMessagesExactly( $expect, $ret->validity );
 		} else {
 			try {
 				MWRestrictions::newFromArray( $data );
@@ -53,11 +62,15 @@ class MWRestrictionsTest extends MediaWikiUnitTestCase {
 
 	public static function provideArray() {
 		return [
-			[ [ 'IPAddresses' => [] ], true ],
-			[ [ 'IPAddresses' => [ '127.0.0.1/32' ] ], true ],
+			[ [ 'IPAddresses' => [] ], StatusValue::newGood() ],
+			[ [ 'IPAddresses' => [ '127.0.0.1/32' ] ], StatusValue::newGood() ],
 			[
 				[ 'IPAddresses' => [ '256.0.0.1/32' ] ],
-				new InvalidArgumentException( 'Invalid IP address: 256.0.0.1/32' )
+				StatusValue::newFatal( 'restrictionsfield-badip', '256.0.0.1/32' )
+			],
+			[
+				[ 'IPAddresses' => [ '127.0.0.1/32' ], 'Pages' => [ "Main Page", "Main Page/sandbox" ] ],
+				StatusValue::newGood()
 			],
 			[
 				[ 'IPAddresses' => '127.0.0.1/32' ],
@@ -66,43 +79,41 @@ class MWRestrictionsTest extends MediaWikiUnitTestCase {
 			[
 				[],
 				new InvalidArgumentException( 'Array is missing required keys: IPAddresses' )
-			],
-			[
-				[ 'foo' => 'bar', 'bar' => 42 ],
-				new InvalidArgumentException( 'Array contains invalid keys: foo, bar' )
-			],
+			]
 		];
 	}
 
 	/**
-	 * @covers MWRestrictions::newFromJson
-	 * @covers MWRestrictions::__construct
-	 * @covers MWRestrictions::loadFromArray
-	 * @covers MWRestrictions::toJson
-	 * @covers MWRestrictions::__toString
+	 * @covers \MWRestrictions::newFromJson
+	 * @covers \MWRestrictions::__construct
+	 * @covers \MWRestrictions::loadFromArray
+	 * @covers \MWRestrictions::toJson
+	 * @covers \MWRestrictions::__toString
 	 * @dataProvider provideJson
 	 * @param string $json
-	 * @param array|InvalidArgumentException $expect
+	 * @param array|null $restrictions
+	 * @param StatusValue|InvalidArgumentException $expect
 	 */
-	public function testJson( $json, $expect ) {
-		if ( is_array( $expect ) ) {
+	public function testJson( $json, $restrictions, $expect ) {
+		if ( $expect instanceof StatusValue ) {
 			$ret = MWRestrictions::newFromJson( $json );
 			$this->assertInstanceOf( MWRestrictions::class, $ret );
-			$this->assertSame( $expect, $ret->toArray() );
+			$this->assertSame( $restrictions, $ret->toArray() );
 
 			$this->assertSame( $json, $ret->toJson( false ) );
 			$this->assertSame( $json, (string)$ret );
 
 			$this->assertSame(
-				FormatJson::encode( $expect, true, FormatJson::ALL_OK ),
+				FormatJson::encode( $restrictions, true, FormatJson::ALL_OK ),
 				$ret->toJson( true )
 			);
+			$this->assertStatusMessagesExactly( $expect, $ret->validity );
 		} else {
 			try {
 				MWRestrictions::newFromJson( $json );
 				$this->fail( 'Expected exception not thrown' );
 			} catch ( InvalidArgumentException $ex ) {
-				$this->assertTrue( true );
+				$this->assertEquals( $expect, $ex );
 			}
 		}
 	}
@@ -111,41 +122,49 @@ class MWRestrictionsTest extends MediaWikiUnitTestCase {
 		return [
 			[
 				'{"IPAddresses":[]}',
-				[ 'IPAddresses' => [] ]
+				[ 'IPAddresses' => [] ],
+				StatusValue::newGood()
 			],
 			[
 				'{"IPAddresses":["127.0.0.1/32"]}',
-				[ 'IPAddresses' => [ '127.0.0.1/32' ] ]
+				[ 'IPAddresses' => [ '127.0.0.1/32' ] ],
+				StatusValue::newGood()
+			],
+			[
+				'{"IPAddresses":["127.0.0.1/32"],"Pages":["Main Page"]}',
+				[ 'IPAddresses' => [ '127.0.0.1/32' ], 'Pages' => [ "Main Page" ] ],
+				StatusValue::newGood()
 			],
 			[
 				'{"IPAddresses":["256.0.0.1/32"]}',
-				new InvalidArgumentException( 'Invalid IP address: 256.0.0.1/32' )
+				[ 'IPAddresses' => [ '256.0.0.1/32' ] ],
+				StatusValue::newFatal( 'restrictionsfield-badip', '256.0.0.1/32' )
 			],
 			[
 				'{"IPAddresses":"127.0.0.1/32"}',
+				null,
 				new InvalidArgumentException( 'IPAddresses is not an array' )
 			],
 			[
 				'{}',
+				null,
 				new InvalidArgumentException( 'Array is missing required keys: IPAddresses' )
 			],
 			[
-				'{"foo":"bar","bar":42}',
-				new InvalidArgumentException( 'Array contains invalid keys: foo, bar' )
-			],
-			[
 				'{"IPAddresses":[]',
+				null,
 				new InvalidArgumentException( 'Invalid restrictions JSON' )
 			],
 			[
 				'"IPAddresses"',
+				null,
 				new InvalidArgumentException( 'Invalid restrictions JSON' )
 			],
 		];
 	}
 
 	/**
-	 * @covers MWRestrictions::checkIP
+	 * @covers \MWRestrictions::checkIP
 	 * @dataProvider provideCheckIP
 	 * @param string $ip
 	 * @param bool $pass
@@ -166,7 +185,7 @@ class MWRestrictionsTest extends MediaWikiUnitTestCase {
 	}
 
 	/**
-	 * @covers MWRestrictions::check
+	 * @covers \MWRestrictions::check
 	 * @dataProvider provideCheck
 	 * @param WebRequest $request
 	 * @param Status $expect
@@ -179,25 +198,23 @@ class MWRestrictionsTest extends MediaWikiUnitTestCase {
 		$ret = [];
 
 		$mockBuilder = $this->getMockBuilder( FauxRequest::class )
-			->setMethods( [ 'getIP' ] );
+			->onlyMethods( [ 'getIP' ] );
 
 		foreach ( self::provideCheckIP() as $checkIP ) {
 			$ok = [];
 			$request = $mockBuilder->getMock();
 
-			$request->expects( $this->any() )->method( 'getIP' )
-				->will( $this->returnValue( $checkIP[0] ) );
+			$request->method( 'getIP' )
+				->willReturn( $checkIP[0] );
 			$ok['ip'] = $checkIP[1];
 
 			/* If we ever add more restrictions, add nested for loops here:
 			 *  foreach ( self::provideCheckFoo() as $checkFoo ) {
-			 *      $request->expects( $this->any() )->method( 'getFoo' )
-			 *          ->will( $this->returnValue( $checkFoo[0] );
+			 *      $request->method( 'getFoo' )->willReturn( $checkFoo[0] );
 			 *      $ok['foo'] = $checkFoo[1];
 			 *
 			 *      foreach ( self::provideCheckBar() as $checkBar ) {
-			 *          $request->expects( $this->any() )->method( 'getBar' )
-			 *              ->will( $this->returnValue( $checkBar[0] );
+			 *          $request->method( 'getBar' )->willReturn( $checkBar[0] );
 			 *          $ok['bar'] = $checkBar[1];
 			 *
 			 *          // etc.

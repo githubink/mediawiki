@@ -1,7 +1,7 @@
 {
 	"selectorWithoutVariant": ".oo-ui-icon-{name}",
 	"selectorWithVariant": ".oo-ui-image-{variant}.oo-ui-icon-{name}",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"variants": {
 		"invert": {
 			"color": "#fff",
@@ -12,13 +12,13 @@
 			"global": true
 		},
 		"destructive": {
-			"color": "#d33"
+			"color": "#d73333"
 		},
 		"error": {
-			"color": "#d33"
+			"color": "#d73333"
 		},
 		"warning": {
-			"color": "#fc3"
+			"color": "#edab00"
 		},
 		"success": {
 			"color": "#14866d"
@@ -57,6 +57,9 @@
 		"ellipsis": {
 			"file": "images/icons/ellipsis.svg"
 		},
+		"verticalEllipsis": {
+			"file": "images/icons/verticalEllipsis.svg"
+		},
 		"feedback": {
 			"file": {
 				"ltr": "images/icons/feedback-ltr.svg",
@@ -67,7 +70,14 @@
 			"file": {
 				"ltr": "images/icons/funnel-ltr.svg",
 				"rtl": "images/icons/funnel-rtl.svg"
-			}
+			},
+			"variants": [ "destructive" ]
+		},
+		"hand": {
+			"file": "images/icons/hand.svg",
+			"variants": [
+				"destructive"
+			]
 		},
 		"heart": {
 			"file": "images/icons/heart.svg"
@@ -90,6 +100,9 @@
 				}
 			}
 		},
+		"home": {
+			"file": "images/icons/home.svg"
+		},
 		"key": {
 			"file": "images/icons/key.svg"
 		},
@@ -99,11 +112,23 @@
 		"lightbulb": {
 			"file": "images/icons/lightbulb.svg"
 		},
+		"logIn": {
+			"file": {
+				"ltr": "images/icons/logIn-ltr.svg",
+				"rtl": "images/icons/logIn-rtl.svg"
+			}
+		},
 		"logOut": {
 			"file": {
 				"ltr": "images/icons/logOut-ltr.svg",
 				"rtl": "images/icons/logOut-rtl.svg"
 			}
+		},
+		"network": {
+			"file": "images/icons/network.svg"
+		},
+		"networkOff": {
+			"file": "images/icons/networkOff.svg"
 		},
 		"newWindow": {
 			"file": {
@@ -113,6 +138,9 @@
 		},
 		"pageSettings": {
 			"file": "images/icons/pageSettings.svg"
+		},
+		"power": {
+			"file": "images/icons/power.svg"
 		},
 		"printer": {
 			"file": "images/icons/printer.svg"

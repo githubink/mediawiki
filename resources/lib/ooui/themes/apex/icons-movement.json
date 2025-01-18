@@ -1,6 +1,6 @@
 {
 	"prefix": "oo-ui-icon",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"images": {
 		"arrowNext": {
 			"file": {
@@ -23,11 +23,35 @@
 		"draggable": {
 			"file": "../wikimediaui/images/icons/draggable.svg"
 		},
+		"doubleChevronEnd": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/doubleChevronEnd-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/doubleChevronEnd-rtl.svg"
+			}
+		},
+		"doubleChevronStart": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/doubleChevronStart-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/doubleChevronStart-rtl.svg"
+			}
+		},
 		"expand": {
 			"file": "../wikimediaui/images/icons/expand.svg"
 		},
 		"move": {
 			"file": "../wikimediaui/images/icons/move.svg"
+		},
+		"first": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/moveFirst-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/moveFirst-rtl.svg"
+			}
+		},
+		"last": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/moveLast-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/moveLast-rtl.svg"
+			}
 		},
 		"next": {
 			"file": {
@@ -41,17 +65,8 @@
 				"rtl": "../wikimediaui/images/icons/previous-rtl.svg"
 			}
 		},
-		"last": {
-			"file": {
-				"ltr": "../wikimediaui/images/icons/moveLast-ltr.svg",
-				"rtl": "../wikimediaui/images/icons/moveLast-rtl.svg"
-			}
-		},
-		"first": {
-			"file": {
-				"ltr": "../wikimediaui/images/icons/moveFirst-ltr.svg",
-				"rtl": "../wikimediaui/images/icons/moveFirst-rtl.svg"
-			}
+		"sortVertical": {
+			"file": "../wikimediaui/images/icons/sortVertical.svg"
 		},
 		"upTriangle": {
 			"file": "../wikimediaui/images/icons/upTriangle.svg"

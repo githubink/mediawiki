@@ -1,6 +1,6 @@
 <?php
 /**
- * Copyright © 2008 Roan Kattouw "<Firstname>.<Lastname>@gmail.com"
+ * Copyright © 2008 Roan Kattouw <roan.kattouw@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,6 +20,8 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
 /**
  * API module that does nothing
  *
@@ -36,15 +38,17 @@ class ApiQueryDisabled extends ApiQueryBase {
 		$this->addWarning( [ 'apierror-moduledisabled', $this->getModuleName() ] );
 	}
 
-	public function getAllowedParams() {
-		return [];
-	}
-
 	public function getSummaryMessage() {
 		return 'apihelp-query+disabled-summary';
 	}
 
 	public function getExtendedDescription() {
-		return 'apihelp-query+disabled-extended-description';
+		return [ [
+			'apihelp-query+disabled-extended-description',
+			'api-help-no-extended-description',
+		] ];
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiQueryDisabled::class, 'ApiQueryDisabled' );

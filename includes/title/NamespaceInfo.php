@@ -20,8 +20,15 @@
  * @file
  */
 
+namespace MediaWiki\Title;
+
+use InvalidArgumentException;
 use MediaWiki\Config\ServiceOptions;
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\HookContainer\HookRunner;
 use MediaWiki\Linker\LinkTarget;
+use MediaWiki\MainConfigNames;
+use MWException;
 
 /**
  * This is a utility class for dealing with namespaces that encodes all the "magic" behaviors of
@@ -36,7 +43,7 @@ class NamespaceInfo {
 	 * forevermore. Historically, they could've probably been lowercased too,
 	 * but some things are just too ingrained now. :)
 	 */
-	private $alwaysCapitalizedNamespaces = [ NS_SPECIAL, NS_USER, NS_MEDIAWIKI ];
+	private const ALWAYS_CAPITALIZED_NAMESPACES = [ NS_SPECIAL, NS_USER, NS_MEDIAWIKI ];
 
 	/** @var string[]|null Canonical namespaces cache */
 	private $canonicalNamespaces = null;
@@ -47,36 +54,63 @@ class NamespaceInfo {
 	/** @var int[]|null Valid namespaces cache */
 	private $validNamespaces = null;
 
-	/** @var ServiceOptions */
-	private $options;
+	private ServiceOptions $options;
+	private HookRunner $hookRunner;
+	private array $extensionNamespaces;
+	private array $extensionImmovableNamespaces;
 
 	/**
-	 * TODO Make this const when HHVM support is dropped (T192166)
+	 * Definitions of the NS_ constants are in Defines.php
 	 *
-	 * @since 1.34
-	 * @var array
+	 * @internal
 	 */
-	public static $constructorOptions = [
-		'AllowImageMoving',
-		'CanonicalNamespaceNames',
-		'CapitalLinkOverrides',
-		'CapitalLinks',
-		'ContentNamespaces',
-		'ExtraNamespaces',
-		'ExtraSignatureNamespaces',
-		'NamespaceContentModels',
-		'NamespaceProtection',
-		'NamespacesWithSubpages',
-		'NonincludableNamespaces',
-		'RestrictionLevels',
+	public const CANONICAL_NAMES = [
+		NS_MEDIA            => 'Media',
+		NS_SPECIAL          => 'Special',
+		NS_MAIN             => '',
+		NS_TALK             => 'Talk',
+		NS_USER             => 'User',
+		NS_USER_TALK        => 'User_talk',
+		NS_PROJECT          => 'Project',
+		NS_PROJECT_TALK     => 'Project_talk',
+		NS_FILE             => 'File',
+		NS_FILE_TALK        => 'File_talk',
+		NS_MEDIAWIKI        => 'MediaWiki',
+		NS_MEDIAWIKI_TALK   => 'MediaWiki_talk',
+		NS_TEMPLATE         => 'Template',
+		NS_TEMPLATE_TALK    => 'Template_talk',
+		NS_HELP             => 'Help',
+		NS_HELP_TALK        => 'Help_talk',
+		NS_CATEGORY         => 'Category',
+		NS_CATEGORY_TALK    => 'Category_talk',
 	];
 
 	/**
-	 * @param ServiceOptions $options
+	 * @internal For use by ServiceWiring
 	 */
-	public function __construct( ServiceOptions $options ) {
-		$options->assertRequiredOptions( self::$constructorOptions );
+	public const CONSTRUCTOR_OPTIONS = [
+		MainConfigNames::CanonicalNamespaceNames,
+		MainConfigNames::CapitalLinkOverrides,
+		MainConfigNames::CapitalLinks,
+		MainConfigNames::ContentNamespaces,
+		MainConfigNames::ExtraNamespaces,
+		MainConfigNames::ExtraSignatureNamespaces,
+		MainConfigNames::NamespaceContentModels,
+		MainConfigNames::NamespacesWithSubpages,
+		MainConfigNames::NonincludableNamespaces,
+	];
+
+	public function __construct(
+		ServiceOptions $options,
+		HookContainer $hookContainer,
+		array $extensionNamespaces,
+		array $extensionImmovableNamespaces
+	) {
+		$options->assertRequiredOptions( self::CONSTRUCTOR_OPTIONS );
 		$this->options = $options;
+		$this->hookRunner = new HookRunner( $hookContainer );
+		$this->extensionNamespaces = $extensionNamespaces;
+		$this->extensionImmovableNamespaces = $extensionImmovableNamespaces;
 	}
 
 	/**
@@ -99,19 +133,43 @@ class NamespaceInfo {
 	}
 
 	/**
+	 * Throw if given index isn't an integer or integer-like string and so can't be a valid namespace.
+	 *
+	 * @param int|string $index
+	 * @param string $method
+	 *
+	 * @throws InvalidArgumentException
+	 * @return int Cleaned up namespace index
+	 */
+	private function makeValidNamespace( $index, $method ) {
+		if ( !(
+			is_int( $index )
+			// Namespace index numbers as strings
+			|| ctype_digit( $index )
+			// Negative numbers as strings
+			|| ( $index[0] === '-' && ctype_digit( substr( $index, 1 ) ) )
+		) ) {
+			throw new InvalidArgumentException(
+				"$method called with non-integer (" . get_debug_type( $index ) . ") namespace '$index'"
+			);
+		}
+
+		return intval( $index );
+	}
+
+	/**
 	 * Can pages in the given namespace be moved?
 	 *
 	 * @param int $index Namespace index
 	 * @return bool
 	 */
 	public function isMovable( $index ) {
-		$result = $index >= NS_MAIN &&
-			( $index != NS_FILE || $this->options->get( 'AllowImageMoving' ) );
+		$result = $index >= NS_MAIN && !in_array( $index, $this->extensionImmovableNamespaces );
 
 		/**
 		 * @since 1.20
 		 */
-		Hooks::run( 'NamespaceIsMovable', [ $index, &$result ] );
+		$this->hookRunner->onNamespaceIsMovable( $index, $result );
 
 		return $result;
 	}
@@ -133,8 +191,10 @@ class NamespaceInfo {
 	 * @return bool
 	 */
 	public function isTalk( $index ) {
+		$index = $this->makeValidNamespace( $index, __METHOD__ );
+
 		return $index > NS_MAIN
-			&& $index % 2;
+			&& $index % 2 === 1;
 	}
 
 	/**
@@ -146,6 +206,8 @@ class NamespaceInfo {
 	 *         (e.g. NS_SPECIAL).
 	 */
 	public function getTalk( $index ) {
+		$index = $this->makeValidNamespace( $index, __METHOD__ );
+
 		$this->isMethodValidFor( $index, __METHOD__ );
 		return $this->isTalk( $index )
 			? $index
@@ -159,9 +221,9 @@ class NamespaceInfo {
 	 * @param LinkTarget $target
 	 * @return LinkTarget Talk page for $target
 	 * @throws MWException if $target doesn't have talk pages, e.g. because it's in NS_SPECIAL,
-	 *         because it's a relative section-only link, or it's an an interwiki link.
+	 *         because it's a relative section-only link, or it's an interwiki link.
 	 */
-	public function getTalkPage( LinkTarget $target ) : LinkTarget {
+	public function getTalkPage( LinkTarget $target ): LinkTarget {
 		if ( $target->getText() === '' ) {
 			throw new MWException( 'Can\'t determine talk page associated with relative section link' );
 		}
@@ -190,15 +252,9 @@ class NamespaceInfo {
 	 * @return bool True if this title either is a talk page or can have a talk page associated.
 	 */
 	public function canHaveTalkPage( LinkTarget $target ) {
-		if ( $target->getText() === '' || $target->getInterwiki() !== '' ) {
-			return false;
-		}
-
-		if ( $target->getNamespace() < NS_MAIN ) {
-			return false;
-		}
-
-		return true;
+		return $target->getNamespace() >= NS_MAIN &&
+			!$target->isExternal() &&
+			$target->getText() !== '';
 	}
 
 	/**
@@ -209,6 +265,8 @@ class NamespaceInfo {
 	 * @return int
 	 */
 	public function getSubject( $index ) {
+		$index = $this->makeValidNamespace( $index, __METHOD__ );
+
 		# Handle special namespaces
 		if ( $index < NS_MAIN ) {
 			return $index;
@@ -223,7 +281,7 @@ class NamespaceInfo {
 	 * @param LinkTarget $target
 	 * @return LinkTarget Subject page for $target
 	 */
-	public function getSubjectPage( LinkTarget $target ) : LinkTarget {
+	public function getSubjectPage( LinkTarget $target ): LinkTarget {
 		if ( $this->isSubject( $target->getNamespace() ) ) {
 			return $target;
 		}
@@ -254,7 +312,7 @@ class NamespaceInfo {
 	 *   page
 	 * @throws MWException if $target's namespace doesn't have talk pages (e.g., NS_SPECIAL)
 	 */
-	public function getAssociatedPage( LinkTarget $target ) : LinkTarget {
+	public function getAssociatedPage( LinkTarget $target ): LinkTarget {
 		if ( $target->getText() === '' ) {
 			throw new MWException( 'Can\'t determine talk page associated with relative section link' );
 		}
@@ -314,18 +372,17 @@ class NamespaceInfo {
 	 * Returns array of all defined namespaces with their canonical
 	 * (English) names.
 	 *
-	 * @return array
+	 * @return string[]
 	 */
 	public function getCanonicalNamespaces() {
 		if ( $this->canonicalNamespaces === null ) {
 			$this->canonicalNamespaces =
-				[ NS_MAIN => '' ] + $this->options->get( 'CanonicalNamespaceNames' );
-			$this->canonicalNamespaces +=
-				ExtensionRegistry::getInstance()->getAttribute( 'ExtensionNamespaces' );
-			if ( is_array( $this->options->get( 'ExtraNamespaces' ) ) ) {
-				$this->canonicalNamespaces += $this->options->get( 'ExtraNamespaces' );
+				[ NS_MAIN => '' ] + $this->options->get( MainConfigNames::CanonicalNamespaceNames );
+			$this->canonicalNamespaces += $this->extensionNamespaces;
+			if ( is_array( $this->options->get( MainConfigNames::ExtraNamespaces ) ) ) {
+				$this->canonicalNamespaces += $this->options->get( MainConfigNames::ExtraNamespaces );
 			}
-			Hooks::run( 'CanonicalNamespaces', [ &$this->canonicalNamespaces ] );
+			$this->hookRunner->onCanonicalNamespaces( $this->canonicalNamespaces );
 		}
 		return $this->canonicalNamespaces;
 	}
@@ -334,7 +391,7 @@ class NamespaceInfo {
 	 * Returns the canonical (English) name for a given index
 	 *
 	 * @param int $index Namespace index
-	 * @return string|bool If no canonical definition.
+	 * @return string|false If no canonical definition.
 	 */
 	public function getCanonicalName( $index ) {
 		$nslist = $this->getCanonicalNamespaces();
@@ -368,8 +425,9 @@ class NamespaceInfo {
 	 * @return array
 	 */
 	public function getValidNamespaces() {
-		if ( is_null( $this->validNamespaces ) ) {
-			foreach ( array_keys( $this->getCanonicalNamespaces() ) as $ns ) {
+		if ( $this->validNamespaces === null ) {
+			$this->validNamespaces = [];
+			foreach ( $this->getCanonicalNamespaces() as $ns => $_ ) {
 				if ( $ns >= 0 ) {
 					$this->validNamespaces[] = $ns;
 				}
@@ -380,8 +438,6 @@ class NamespaceInfo {
 
 		return $this->validNamespaces;
 	}
-
-	/*
 
 	/**
 	 * Does this namespace ever have a talk namespace?
@@ -401,7 +457,8 @@ class NamespaceInfo {
 	 * @return bool
 	 */
 	public function isContent( $index ) {
-		return $index == NS_MAIN || in_array( $index, $this->options->get( 'ContentNamespaces' ) );
+		return $index == NS_MAIN ||
+			in_array( $index, $this->options->get( MainConfigNames::ContentNamespaces ) );
 	}
 
 	/**
@@ -413,7 +470,7 @@ class NamespaceInfo {
 	 */
 	public function wantSignatures( $index ) {
 		return $this->isTalk( $index ) ||
-			in_array( $index, $this->options->get( 'ExtraSignatureNamespaces' ) );
+			in_array( $index, $this->options->get( MainConfigNames::ExtraSignatureNamespaces ) );
 	}
 
 	/**
@@ -427,21 +484,22 @@ class NamespaceInfo {
 	}
 
 	/**
-	 * Does the namespace allow subpages?
+	 * Does the namespace allow subpages? Note that this refers to structured
+	 * handling of subpages, and does not include SpecialPage subpage parameters.
 	 *
 	 * @param int $index Index to check
 	 * @return bool
 	 */
 	public function hasSubpages( $index ) {
-		return !empty( $this->options->get( 'NamespacesWithSubpages' )[$index] );
+		return !empty( $this->options->get( MainConfigNames::NamespacesWithSubpages )[$index] );
 	}
 
 	/**
 	 * Get a list of all namespace indices which are considered to contain content
-	 * @return array Array of namespace indices
+	 * @return int[] Array of namespace indices
 	 */
 	public function getContentNamespaces() {
-		$contentNamespaces = $this->options->get( 'ContentNamespaces' );
+		$contentNamespaces = $this->options->get( MainConfigNames::ContentNamespaces );
 		if ( !is_array( $contentNamespaces ) || $contentNamespaces === [] ) {
 			return [ NS_MAIN ];
 		} elseif ( !in_array( NS_MAIN, $contentNamespaces ) ) {
@@ -456,7 +514,7 @@ class NamespaceInfo {
 	 * List all namespace indices which are considered subject, aka not a talk
 	 * or special namespace. See also NamespaceInfo::isSubject
 	 *
-	 * @return array Array of namespace indices
+	 * @return int[] Array of namespace indices
 	 */
 	public function getSubjectNamespaces() {
 		return array_filter(
@@ -469,7 +527,7 @@ class NamespaceInfo {
 	 * List all namespace indices which are considered talks, aka not a subject
 	 * or special namespace. See also NamespaceInfo::isTalk
 	 *
-	 * @return array Array of namespace indices
+	 * @return int[] Array of namespace indices
 	 */
 	public function getTalkNamespaces() {
 		return array_filter(
@@ -492,16 +550,16 @@ class NamespaceInfo {
 		$index = $this->getSubject( $index );
 
 		// Some namespaces are special and should always be upper case
-		if ( in_array( $index, $this->alwaysCapitalizedNamespaces ) ) {
+		if ( in_array( $index, self::ALWAYS_CAPITALIZED_NAMESPACES ) ) {
 			return true;
 		}
-		$overrides = $this->options->get( 'CapitalLinkOverrides' );
+		$overrides = $this->options->get( MainConfigNames::CapitalLinkOverrides );
 		if ( isset( $overrides[$index] ) ) {
 			// CapitalLinkOverrides is explicitly set
 			return $overrides[$index];
 		}
 		// Default to the global setting
-		return $this->options->get( 'CapitalLinks' );
+		return $this->options->get( MainConfigNames::CapitalLinks );
 	}
 
 	/**
@@ -522,7 +580,7 @@ class NamespaceInfo {
 	 * @return bool
 	 */
 	public function isNonincludable( $index ) {
-		$namespaces = $this->options->get( 'NonincludableNamespaces' );
+		$namespaces = $this->options->get( MainConfigNames::NonincludableNamespaces );
 		return $namespaces && in_array( $index, $namespaces );
 	}
 
@@ -537,89 +595,7 @@ class NamespaceInfo {
 	 * @return null|string Default model name for the given namespace, if set
 	 */
 	public function getNamespaceContentModel( $index ) {
-		return $this->options->get( 'NamespaceContentModels' )[$index] ?? null;
-	}
-
-	/**
-	 * Determine which restriction levels it makes sense to use in a namespace,
-	 * optionally filtered by a user's rights.
-	 *
-	 * @todo Move this to PermissionManager and remove the dependency here on permissions-related
-	 * config settings.
-	 *
-	 * @param int $index Index to check
-	 * @param User|null $user User to check
-	 * @return array
-	 */
-	public function getRestrictionLevels( $index, User $user = null ) {
-		if ( !isset( $this->options->get( 'NamespaceProtection' )[$index] ) ) {
-			// All levels are valid if there's no namespace restriction.
-			// But still filter by user, if necessary
-			$levels = $this->options->get( 'RestrictionLevels' );
-			if ( $user ) {
-				$levels = array_values( array_filter( $levels, function ( $level ) use ( $user ) {
-					$right = $level;
-					if ( $right == 'sysop' ) {
-						$right = 'editprotected'; // BC
-					}
-					if ( $right == 'autoconfirmed' ) {
-						$right = 'editsemiprotected'; // BC
-					}
-					return ( $right == '' || $user->isAllowed( $right ) );
-				} ) );
-			}
-			return $levels;
-		}
-
-		// $wgNamespaceProtection can require one or more rights to edit the namespace, which
-		// may be satisfied by membership in multiple groups each giving a subset of those rights.
-		// A restriction level is redundant if, for any one of the namespace rights, all groups
-		// giving that right also give the restriction level's right. Or, conversely, a
-		// restriction level is not redundant if, for every namespace right, there's at least one
-		// group giving that right without the restriction level's right.
-		//
-		// First, for each right, get a list of groups with that right.
-		$namespaceRightGroups = [];
-		foreach ( (array)$this->options->get( 'NamespaceProtection' )[$index] as $right ) {
-			if ( $right == 'sysop' ) {
-				$right = 'editprotected'; // BC
-			}
-			if ( $right == 'autoconfirmed' ) {
-				$right = 'editsemiprotected'; // BC
-			}
-			if ( $right != '' ) {
-				$namespaceRightGroups[$right] = User::getGroupsWithPermission( $right );
-			}
-		}
-
-		// Now, go through the protection levels one by one.
-		$usableLevels = [ '' ];
-		foreach ( $this->options->get( 'RestrictionLevels' ) as $level ) {
-			$right = $level;
-			if ( $right == 'sysop' ) {
-				$right = 'editprotected'; // BC
-			}
-			if ( $right == 'autoconfirmed' ) {
-				$right = 'editsemiprotected'; // BC
-			}
-
-			if ( $right != '' &&
-				!isset( $namespaceRightGroups[$right] ) &&
-				( !$user || $user->isAllowed( $right ) )
-			) {
-				// Do any of the namespace rights imply the restriction right? (see explanation above)
-				foreach ( $namespaceRightGroups as $groups ) {
-					if ( !array_diff( $groups, User::getGroupsWithPermission( $right ) ) ) {
-						// Yes, this one does.
-						continue 2;
-					}
-				}
-				// No, keep the restriction level
-				$usableLevels[] = $level;
-			}
-		}
-
-		return $usableLevels;
+		return $this->options->get( MainConfigNames::NamespaceContentModels )[$index] ?? null;
 	}
 
 	/**
@@ -642,4 +618,18 @@ class NamespaceInfo {
 			return 'page';
 		}
 	}
+
+	/**
+	 * Retrieve the indexes for the namespaces defined by core.
+	 *
+	 * @since 1.34
+	 *
+	 * @return int[]
+	 */
+	public static function getCommonNamespaces() {
+		return array_keys( self::CANONICAL_NAMES );
+	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( NamespaceInfo::class, 'NamespaceInfo' );

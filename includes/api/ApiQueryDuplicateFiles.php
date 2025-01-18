@@ -1,6 +1,6 @@
 <?php
 /**
- * Copyright © 2008 Roan Kattouw "<Firstname>.<Lastname>@gmail.com"
+ * Copyright © 2008 Roan Kattouw <roan.kattouw@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,6 +20,13 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use File;
+use RepoGroup;
+use Wikimedia\ParamValidator\ParamValidator;
+use Wikimedia\ParamValidator\TypeDef\IntegerDef;
+
 /**
  * A query module to list duplicates of the given file(s)
  *
@@ -27,8 +34,15 @@
  */
 class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 
-	public function __construct( ApiQuery $query, $moduleName ) {
+	private RepoGroup $repoGroup;
+
+	public function __construct(
+		ApiQuery $query,
+		string $moduleName,
+		RepoGroup $repoGroup
+	) {
 		parent::__construct( $query, $moduleName, 'df' );
+		$this->repoGroup = $repoGroup;
 	}
 
 	public function execute() {
@@ -44,7 +58,7 @@ class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 	}
 
 	/**
-	 * @param ApiPageSet $resultPageSet
+	 * @param ApiPageSet|null $resultPageSet
 	 */
 	private function run( $resultPageSet = null ) {
 		$params = $this->extractRequestParams();
@@ -60,8 +74,7 @@ class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 
 		$skipUntilThisDup = false;
 		if ( isset( $params['continue'] ) ) {
-			$cont = explode( '|', $params['continue'] );
-			$this->dieContinueUsageIf( count( $cont ) != 2 );
+			$cont = $this->parseContinueParamOrDie( $params['continue'], [ 'string', 'string' ] );
 			$fromImage = $cont[0];
 			$skipUntilThisDup = $cont[1];
 			// Filter out any images before $fromImage
@@ -76,9 +89,9 @@ class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 
 		$filesToFind = array_keys( $images );
 		if ( $params['localonly'] ) {
-			$files = RepoGroup::singleton()->getLocalRepo()->findFiles( $filesToFind );
+			$files = $this->repoGroup->getLocalRepo()->findFiles( $filesToFind );
 		} else {
-			$files = RepoGroup::singleton()->findFiles( $filesToFind );
+			$files = $this->repoGroup->findFiles( $filesToFind );
 		}
 
 		$fit = true;
@@ -95,9 +108,9 @@ class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 		// [ hash => [ dup1, dup2 ], hash1 => ... ]
 		$filesToFindBySha1s = array_unique( array_values( $sha1s ) );
 		if ( $params['localonly'] ) {
-			$filesBySha1s = RepoGroup::singleton()->getLocalRepo()->findBySha1s( $filesToFindBySha1s );
+			$filesBySha1s = $this->repoGroup->getLocalRepo()->findBySha1s( $filesToFindBySha1s );
 		} else {
-			$filesBySha1s = RepoGroup::singleton()->findBySha1s( $filesToFindBySha1s );
+			$filesBySha1s = $this->repoGroup->findBySha1s( $filesToFindBySha1s );
 		}
 
 		// iterate over $images to handle continue param correct
@@ -127,15 +140,18 @@ class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 					$this->setContinueEnumParameter( 'continue', $image . '|' . $dupName );
 					break;
 				}
-				if ( !is_null( $resultPageSet ) ) {
+				if ( $resultPageSet !== null ) {
 					$titles[] = $dupFile->getTitle();
 				} else {
 					$r = [
 						'name' => $dupName,
-						'user' => $dupFile->getUser( 'text' ),
 						'timestamp' => wfTimestamp( TS_ISO_8601, $dupFile->getTimestamp() ),
 						'shared' => !$dupFile->isLocal(),
 					];
+					$uploader = $dupFile->getUploader( File::FOR_PUBLIC );
+					if ( $uploader ) {
+						$r['user'] = $uploader->getName();
+					}
 					$fit = $this->addPageSubItem( $pageId, $r );
 					if ( !$fit ) {
 						$this->setContinueEnumParameter( 'continue', $image . '|' . $dupName );
@@ -147,7 +163,7 @@ class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 				break;
 			}
 		}
-		if ( !is_null( $resultPageSet ) ) {
+		if ( $resultPageSet !== null ) {
 			$resultPageSet->populateFromTitles( $titles );
 		}
 	}
@@ -155,18 +171,18 @@ class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 	public function getAllowedParams() {
 		return [
 			'limit' => [
-				ApiBase::PARAM_DFLT => 10,
-				ApiBase::PARAM_TYPE => 'limit',
-				ApiBase::PARAM_MIN => 1,
-				ApiBase::PARAM_MAX => ApiBase::LIMIT_BIG1,
-				ApiBase::PARAM_MAX2 => ApiBase::LIMIT_BIG2
+				ParamValidator::PARAM_DEFAULT => 10,
+				ParamValidator::PARAM_TYPE => 'limit',
+				IntegerDef::PARAM_MIN => 1,
+				IntegerDef::PARAM_MAX => ApiBase::LIMIT_BIG1,
+				IntegerDef::PARAM_MAX2 => ApiBase::LIMIT_BIG2
 			],
 			'continue' => [
 				ApiBase::PARAM_HELP_MSG => 'api-help-param-continue',
 			],
 			'dir' => [
-				ApiBase::PARAM_DFLT => 'ascending',
-				ApiBase::PARAM_TYPE => [
+				ParamValidator::PARAM_DEFAULT => 'ascending',
+				ParamValidator::PARAM_TYPE => [
 					'ascending',
 					'descending'
 				]
@@ -188,3 +204,6 @@ class ApiQueryDuplicateFiles extends ApiQueryGeneratorBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Duplicatefiles';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiQueryDuplicateFiles::class, 'ApiQueryDuplicateFiles' );

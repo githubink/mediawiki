@@ -21,29 +21,22 @@
  * @ingroup Search
  */
 
+use MediaWiki\Title\Title;
+
 /**
  * @ingroup Search
  */
-class SearchResultSet implements Countable, IteratorAggregate {
+class SearchResultSet extends BaseSearchResultSet {
 
-	/**
-	 * Identifier for interwiki results that are displayed only together with existing main wiki
-	 * results.
-	 */
-	const SECONDARY_RESULTS = 0;
+	use SearchResultSetTrait;
 
-	/**
-	 * Identifier for interwiki results that can be displayed even if no existing main wiki results
-	 * exist.
-	 */
-	const INLINE_RESULTS = 1;
-
+	/** @var bool */
 	protected $containedSyntax = false;
 
 	/**
 	 * Cache of titles.
 	 * Lists titles of the result set, in the same order as results.
-	 * @var Title[]
+	 * @var Title[]|null
 	 */
 	private $titles;
 
@@ -55,23 +48,9 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	protected $results;
 
 	/**
-	 * Set of result's extra data, indexed per result id
-	 * and then per data item name.
-	 * The structure is:
-	 * PAGE_ID => [ augmentor name => data, ... ]
-	 * @var array[]
-	 */
-	protected $extraData = [];
-
-	/**
-	 * @var boolean True when there are more pages of search results available.
+	 * @var bool True when there are more pages of search results available.
 	 */
 	private $hasMoreResults;
-
-	/**
-	 * @var ArrayIterator|null Iterator supporting BC iteration methods
-	 */
-	private $bcIterator;
 
 	/**
 	 * @param bool $containedSyntax True when query is not requesting a simple
@@ -90,23 +69,11 @@ class SearchResultSet implements Countable, IteratorAggregate {
 		$this->hasMoreResults = $hasMoreResults;
 	}
 
-	/**
-	 * Fetch an array of regular expression fragments for matching
-	 * the search terms as parsed by this engine in a text extract.
-	 * STUB
-	 *
-	 * @return string[]
-	 * @deprecated since 1.34 (use SqlSearchResult)
-	 */
-	function termMatches() {
-		return [];
-	}
-
-	function numRows() {
+	public function numRows() {
 		return $this->count();
 	}
 
-	final public function count() {
+	final public function count(): int {
 		return count( $this->extractResults() );
 	}
 
@@ -118,9 +85,9 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	 *
 	 * Return null if no total hits number is supported.
 	 *
-	 * @return int
+	 * @return int|null
 	 */
-	function getTotalHits() {
+	public function getTotalHits() {
 		return null;
 	}
 
@@ -131,7 +98,7 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	 *
 	 * @return bool
 	 */
-	function hasRewrittenQuery() {
+	public function hasRewrittenQuery() {
 		return false;
 	}
 
@@ -139,15 +106,16 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	 * @return string|null The search the query was internally rewritten to,
 	 *  or null when the result of the original query was returned.
 	 */
-	function getQueryAfterRewrite() {
+	public function getQueryAfterRewrite() {
 		return null;
 	}
 
 	/**
-	 * @return string|null Same as self::getQueryAfterRewrite(), but in HTML
-	 *  and with changes highlighted. Null when the query was not rewritten.
+	 * @return HtmlArmor|string|null Same as self::getQueryAfterRewrite(), but
+	 *  with changes highlighted if HtmlArmor is returned. Null when the query
+	 *  was not rewritten.
 	 */
-	function getQueryAfterRewriteSnippet() {
+	public function getQueryAfterRewriteSnippet() {
 		return null;
 	}
 
@@ -157,21 +125,21 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	 *
 	 * @return bool
 	 */
-	function hasSuggestion() {
+	public function hasSuggestion() {
 		return false;
 	}
 
 	/**
 	 * @return string|null Suggested query, null if none
 	 */
-	function getSuggestionQuery() {
+	public function getSuggestionQuery() {
 		return null;
 	}
 
 	/**
-	 * @return string HTML highlighted suggested query, '' if none
+	 * @return HtmlArmor|string HTML highlighted suggested query, '' if none
 	 */
-	function getSuggestionSnippet() {
+	public function getSuggestionSnippet() {
 		return '';
 	}
 
@@ -179,9 +147,9 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	 * Return a result set of hits on other (multiple) wikis associated with this one
 	 *
 	 * @param int $type
-	 * @return SearchResultSet[]
+	 * @return ISearchResultSet[]|null
 	 */
-	function getInterwikiResults( $type = self::SECONDARY_RESULTS ) {
+	public function getInterwikiResults( $type = self::SECONDARY_RESULTS ) {
 		return null;
 	}
 
@@ -191,52 +159,8 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	 * @param int $type
 	 * @return bool
 	 */
-	function hasInterwikiResults( $type = self::SECONDARY_RESULTS ) {
+	public function hasInterwikiResults( $type = self::SECONDARY_RESULTS ) {
 		return false;
-	}
-
-	/**
-	 * Fetches next search result, or false.
-	 * @deprecated since 1.32; Use self::extractResults() or foreach
-	 * @return SearchResult|false
-	 */
-	public function next() {
-		wfDeprecated( __METHOD__, '1.32' );
-		$it = $this->bcIterator();
-		$searchResult = $it->current();
-		$it->next();
-		return $searchResult ?? false;
-	}
-
-	/**
-	 * Rewind result set back to beginning
-	 * @deprecated since 1.32; Use self::extractResults() or foreach
-	 */
-	public function rewind() {
-		wfDeprecated( __METHOD__, '1.32' );
-		$this->bcIterator()->rewind();
-	}
-
-	private function bcIterator() {
-		if ( $this->bcIterator === null ) {
-			$this->bcIterator = 'RECURSION';
-			$this->bcIterator = $this->getIterator();
-		} elseif ( $this->bcIterator === 'RECURSION' ) {
-			// Either next/rewind or extractResults must be implemented.  This
-			// class was potentially instantiated directly. It should be
-			// abstract with abstract methods to enforce this but that's a
-			// breaking change...
-			wfDeprecated( static::class . ' without implementing extractResults', '1.32' );
-			$this->bcIterator = new ArrayIterator( [] );
-		}
-		return $this->bcIterator;
-	}
-
-	/**
-	 * Frees the result set, if applicable.
-	 */
-	function free() {
-		// ...
 	}
 
 	/**
@@ -269,6 +193,7 @@ class SearchResultSet implements Countable, IteratorAggregate {
 			// must override this as well.
 			if ( is_array( $this->results ) ) {
 				$this->results = array_slice( $this->results, 0, $limit );
+				$this->titles = null;
 			} else {
 				throw new \UnexpectedValueException(
 					"When overriding result store extending classes must "
@@ -282,14 +207,14 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	 * @return SearchResult[]
 	 */
 	public function extractResults() {
-		if ( is_null( $this->results ) ) {
+		if ( $this->results === null ) {
 			$this->results = [];
 			if ( $this->numRows() == 0 ) {
 				// Don't bother if we've got empty result
 				return $this->results;
 			}
 			$this->rewind();
-			while ( ( $result = $this->next() ) != false ) {
+			foreach ( $this as $result ) {
 				$this->results[] = $result;
 			}
 			$this->rewind();
@@ -302,57 +227,18 @@ class SearchResultSet implements Countable, IteratorAggregate {
 	 * @return Title[]
 	 */
 	public function extractTitles() {
-		if ( is_null( $this->titles ) ) {
+		if ( $this->titles === null ) {
 			if ( $this->numRows() == 0 ) {
 				// Don't bother if we've got empty result
 				$this->titles = [];
 			} else {
 				$this->titles = array_map(
-					function ( SearchResult $result ) {
+					static function ( SearchResult $result ) {
 						return $result->getTitle();
 					},
 					$this->extractResults() );
 			}
 		}
 		return $this->titles;
-	}
-
-	/**
-	 * Sets augmented data for result set.
-	 * @param string $name Extra data item name
-	 * @param array[] $data Extra data as PAGEID => data
-	 */
-	public function setAugmentedData( $name, $data ) {
-		foreach ( $data as $id => $resultData ) {
-			$this->extraData[$id][$name] = $resultData;
-		}
-	}
-
-	/**
-	 * Returns extra data for specific result and store it in SearchResult object.
-	 * @param SearchResult $result
-	 */
-	public function augmentResult( SearchResult $result ) {
-		$id = $result->getTitle()->getArticleID();
-		if ( $id === -1 ) {
-			return;
-		}
-		$result->setExtensionData( function () use ( $id ) {
-			return $this->extraData[$id] ?? [];
-		} );
-	}
-
-	/**
-	 * @return int|null The offset the current page starts at. Typically
-	 *  this should be null to allow the UI to decide on its own, but in
-	 *  special cases like interleaved AB tests specifying explicitly is
-	 *  necessary.
-	 */
-	public function getOffset() {
-		return null;
-	}
-
-	final public function getIterator() {
-		return new ArrayIterator( $this->extractResults() );
 	}
 }

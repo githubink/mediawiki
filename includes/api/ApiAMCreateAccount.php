@@ -20,8 +20,11 @@
  * @file
  */
 
-use MediaWiki\Auth\AuthManager;
+namespace MediaWiki\Api;
+
 use MediaWiki\Auth\AuthenticationResponse;
+use MediaWiki\Auth\AuthManager;
+use MediaWiki\Utils\UrlUtils;
 
 /**
  * Create an account with AuthManager
@@ -30,30 +33,41 @@ use MediaWiki\Auth\AuthenticationResponse;
  */
 class ApiAMCreateAccount extends ApiBase {
 
-	public function __construct( ApiMain $main, $action ) {
+	private AuthManager $authManager;
+	private UrlUtils $urlUtils;
+
+	public function __construct(
+		ApiMain $main,
+		string $action,
+		AuthManager $authManager,
+		UrlUtils $urlUtils
+	) {
 		parent::__construct( $main, $action, 'create' );
+		$this->authManager = $authManager;
+		$this->urlUtils = $urlUtils;
 	}
 
 	public function getFinalDescription() {
 		// A bit of a hack to append 'api-help-authmanager-general-usage'
 		$msgs = parent::getFinalDescription();
-		$msgs[] = ApiBase::makeMessage( 'api-help-authmanager-general-usage', $this->getContext(), [
+		$msgs[] = $this->msg( 'api-help-authmanager-general-usage',
 			$this->getModulePrefix(),
 			$this->getModuleName(),
 			$this->getModulePath(),
 			AuthManager::ACTION_CREATE,
-			self::needsToken(),
-		] );
+			$this->needsToken(),
+		);
 		return $msgs;
 	}
 
 	public function execute() {
 		$params = $this->extractRequestParams();
+		$performer = $this->getUser();
 
 		$this->requireAtLeastOneParameter( $params, 'continue', 'returnurl' );
 
 		if ( $params['returnurl'] !== null ) {
-			$bits = wfParseUrl( $params['returnurl'] );
+			$bits = $this->urlUtils->parse( $params['returnurl'] );
 			if ( !$bits || $bits['scheme'] === '' ) {
 				$encParamName = $this->encodeParamName( 'returnurl' );
 				$this->dieWithError(
@@ -63,25 +77,21 @@ class ApiAMCreateAccount extends ApiBase {
 			}
 		}
 
-		$helper = new ApiAuthManagerHelper( $this );
-		$manager = AuthManager::singleton();
+		$helper = new ApiAuthManagerHelper( $this, $this->authManager );
 
 		// Make sure it's possible to create accounts
-		if ( !$manager->canCreateAccounts() ) {
-			$this->getResult()->addValue( null, 'createaccount', $helper->formatAuthenticationResponse(
-				AuthenticationResponse::newFail(
-					$this->msg( 'userlogin-cannot-' . AuthManager::ACTION_CREATE )
-				)
-			) );
-			$helper->logAuthenticationResult( 'accountcreation',
-				'userlogin-cannot-' . AuthManager::ACTION_CREATE );
+		if ( !$this->authManager->canCreateAccounts() ) {
+			$res = AuthenticationResponse::newFail( $this->msg( 'userlogin-cannot-' . AuthManager::ACTION_CREATE ) );
+			$this->getResult()->addValue( null, 'createaccount',
+				$helper->formatAuthenticationResponse( $res ) );
+			$helper->logAuthenticationResult( 'accountcreation', $performer, $res );
 			return;
 		}
 
 		// Perform the create step
 		if ( $params['continue'] ) {
 			$reqs = $helper->loadAuthenticationRequests( AuthManager::ACTION_CREATE_CONTINUE );
-			$res = $manager->continueAccountCreation( $reqs );
+			$res = $this->authManager->continueAccountCreation( $reqs );
 		} else {
 			$reqs = $helper->loadAuthenticationRequests( AuthManager::ACTION_CREATE );
 			if ( $params['preservestate'] ) {
@@ -90,12 +100,16 @@ class ApiAMCreateAccount extends ApiBase {
 					$reqs[] = $req;
 				}
 			}
-			$res = $manager->beginAccountCreation( $this->getUser(), $reqs, $params['returnurl'] );
+			$res = $this->authManager->beginAccountCreation(
+				$this->getAuthority(),
+				$reqs,
+				$params['returnurl']
+			);
 		}
 
 		$this->getResult()->addValue( null, 'createaccount',
 			$helper->formatAuthenticationResponse( $res ) );
-		$helper->logAuthenticationResult( 'accountcreation', $res );
+		$helper->logAuthenticationResult( 'accountcreation', $performer, $res );
 	}
 
 	public function isReadMode() {
@@ -135,3 +149,6 @@ class ApiAMCreateAccount extends ApiBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Account_creation';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiAMCreateAccount::class, 'ApiAMCreateAccount' );

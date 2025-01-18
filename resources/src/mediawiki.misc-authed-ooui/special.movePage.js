@@ -2,18 +2,19 @@
  * JavaScript for Special:MovePage
  */
 ( function () {
-	$( function () {
-		var summaryCodePointLimit = mw.config.get( 'wgCommentCodePointLimit' ),
-			summaryByteLimit = mw.config.get( 'wgCommentByteLimit' ),
-			wpReason = OO.ui.infuse( $( '#wpReason' ) );
+
+	if ( mw.config.get( 'wgCanonicalSpecialPageName' ) !== 'Movepage' ) {
+		return;
+	}
+
+	$( () => {
+		const wpReason = OO.ui.infuse( $( '#wpReason' ) );
 
 		// Infuse for pretty dropdown
 		OO.ui.infuse( $( '#wpNewTitle' ) );
-		// Limit to bytes or UTF-8 codepoints, depending on MediaWiki's configuration
-		if ( summaryCodePointLimit ) {
-			mw.widgets.visibleCodePointLimit( wpReason, summaryCodePointLimit );
-		} else if ( summaryByteLimit ) {
-			mw.widgets.visibleByteLimit( wpReason, summaryByteLimit );
-		}
+
+		const wpReasonList = OO.ui.infuse( $( '#wpReasonList' ).closest( '.oo-ui-widget' ) );
+
+		mw.widgets.visibleCodePointLimitWithDropdown( wpReason, wpReasonList, mw.config.get( 'wgCommentCodePointLimit' ) );
 	} );
 }() );

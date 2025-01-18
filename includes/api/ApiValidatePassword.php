@@ -1,20 +1,42 @@
 <?php
 
+namespace MediaWiki\Api;
+
 use MediaWiki\Auth\AuthManager;
+use MediaWiki\ParamValidator\TypeDef\UserDef;
+use MediaWiki\User\UserFactory;
+use MediaWiki\User\UserRigorOptions;
+use Wikimedia\ParamValidator\ParamValidator;
 
 /**
  * @ingroup API
  */
 class ApiValidatePassword extends ApiBase {
 
+	private AuthManager $authManager;
+	private UserFactory $userFactory;
+
+	public function __construct(
+		ApiMain $mainModule,
+		string $moduleName,
+		AuthManager $authManager,
+		UserFactory $userFactory
+	) {
+		parent::__construct( $mainModule, $moduleName );
+		$this->authManager = $authManager;
+		$this->userFactory = $userFactory;
+	}
+
 	public function execute() {
 		$params = $this->extractRequestParams();
 
-		// For sanity
 		$this->requirePostedParameters( [ 'password' ] );
 
 		if ( $params['user'] !== null ) {
-			$user = User::newFromName( $params['user'], 'creatable' );
+			$user = $this->userFactory->newFromName(
+				$params['user'],
+				UserRigorOptions::RIGOR_CREATABLE
+			);
 			if ( !$user ) {
 				$encParamName = $this->encodeParamName( 'user' );
 				$this->dieWithError(
@@ -23,7 +45,7 @@ class ApiValidatePassword extends ApiBase {
 				);
 			}
 
-			if ( !$user->isAnon() || AuthManager::singleton()->userExists( $user->getName() ) ) {
+			if ( $user->isRegistered() || $this->authManager->userExists( $user->getName() ) ) {
 				$this->dieWithError( 'userexists' );
 			}
 
@@ -33,6 +55,7 @@ class ApiValidatePassword extends ApiBase {
 			$user = $this->getUser();
 		}
 
+		$r = [];
 		$validity = $user->checkPasswordValidity( $params['password'] );
 		$r['validity'] = $validity->isGood() ? 'Good' : ( $validity->isOK() ? 'Change' : 'Invalid' );
 		$messages = array_merge(
@@ -43,7 +66,7 @@ class ApiValidatePassword extends ApiBase {
 			$r['validitymessages'] = $messages;
 		}
 
-		Hooks::run( 'ApiValidatePassword', [ $this, &$r ] );
+		$this->getHookRunner()->onApiValidatePassword( $this, $r );
 
 		$this->getResult()->addValue( null, $this->getModuleName(), $r );
 	}
@@ -55,11 +78,12 @@ class ApiValidatePassword extends ApiBase {
 	public function getAllowedParams() {
 		return [
 			'password' => [
-				ApiBase::PARAM_TYPE => 'password',
-				ApiBase::PARAM_REQUIRED => true
+				ParamValidator::PARAM_TYPE => 'password',
+				ParamValidator::PARAM_REQUIRED => true
 			],
 			'user' => [
-				ApiBase::PARAM_TYPE => 'user',
+				ParamValidator::PARAM_TYPE => 'user',
+				UserDef::PARAM_ALLOWED_USER_TYPES => [ 'name', 'id' ],
 			],
 			'email' => null,
 			'realname' => null,
@@ -79,3 +103,6 @@ class ApiValidatePassword extends ApiBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Validatepassword';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiValidatePassword::class, 'ApiValidatePassword' );

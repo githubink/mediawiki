@@ -22,6 +22,15 @@
  * @since 1.25
  */
 
+use MediaWiki\Api\ApiResult;
+use MediaWiki\Language\Language;
+use MediaWiki\Linker\Linker;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Message\Message;
+use MediaWiki\SpecialPage\SpecialPage;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+
 /**
  * This class formats block log entries.
  *
@@ -49,25 +58,28 @@ class BlockLogFormatter extends LogFormatter {
 		$subtype = $this->entry->getSubtype();
 		if ( $subtype === 'block' || $subtype === 'reblock' ) {
 			if ( !isset( $params[4] ) ) {
-				// Very old log entry without duration: means infinite
-				$params[4] = 'infinite';
+				// Very old log entry without duration: means infinity
+				$params[4] = 'infinity';
 			}
 			// Localize the duration, and add a tooltip
 			// in English to help visitors from other wikis.
 			// The lrm is needed to make sure that the number
 			// is shown on the correct side of the tooltip text.
+			// @phan-suppress-next-line SecurityCheck-DoubleEscaped
 			$durationTooltip = '&lrm;' . htmlspecialchars( $params[4] );
 			$blockExpiry = $this->context->getLanguage()->translateBlockExpiry(
 				$params[4],
 				$this->context->getUser(),
-				wfTimestamp( TS_UNIX, $this->entry->getTimestamp() )
+				(int)wfTimestamp( TS_UNIX, $this->entry->getTimestamp() )
 			);
 			if ( $this->plaintext ) {
+				// @phan-suppress-next-line SecurityCheck-XSS Unlikely positive, only if language format is bad
 				$params[4] = Message::rawParam( $blockExpiry );
 			} else {
 				$params[4] = Message::rawParam(
 					"<span class=\"blockExpiry\" title=\"$durationTooltip\">" .
-					$blockExpiry .
+					// @phan-suppress-next-line SecurityCheck-DoubleEscaped language class does not escape
+					htmlspecialchars( $blockExpiry ) .
 					'</span>'
 				);
 			}
@@ -77,31 +89,55 @@ class BlockLogFormatter extends LogFormatter {
 			// block restrictions
 			if ( isset( $params[6] ) ) {
 				$pages = $params[6]['pages'] ?? [];
-				$pages = array_map( function ( $page ) {
-					return $this->makePageLink( Title::newFromText( $page ) );
-				}, $pages );
+				$pageLinks = [];
+				foreach ( $pages as $page ) {
+					$pageLinks[] = $this->makePageLink( Title::newFromText( $page ) );
+				}
 
-				$namespaces = $params[6]['namespaces'] ?? [];
-				$namespaces = array_map( function ( $ns ) {
+				$rawNamespaces = $params[6]['namespaces'] ?? [];
+				$namespaces = [];
+				foreach ( $rawNamespaces as $ns ) {
 					$text = (int)$ns === NS_MAIN
-						? $this->msg( 'blanknamespace' )->text()
-						: $this->context->getLanguage()->getFormattedNsText( $ns );
-					$params = [ 'namespace' => $ns ];
+						? $this->msg( 'blanknamespace' )->escaped()
+						: htmlspecialchars( $this->context->getLanguage()->getFormattedNsText( $ns ) );
+					if ( $this->plaintext ) {
+						// Because the plaintext cannot link to the Special:AllPages
+						// link that is linked to in non-plaintext mode, just return
+						// the name of the namespace.
+						$namespaces[] = $text;
+					} else {
+						$namespaces[] = $this->makePageLink(
+							SpecialPage::getTitleFor( 'Allpages' ),
+							[ 'namespace' => $ns ],
+							$text
+						);
+					}
+				}
 
-					return $this->makePageLink( SpecialPage::getTitleFor( 'Allpages' ), $params, $text );
-				}, $namespaces );
+				$rawActions = $params[6]['actions'] ?? [];
+				$actions = [];
+				foreach ( $rawActions as $action ) {
+					$actions[] = $this->msg( 'ipb-action-' . $action )->escaped();
+				}
 
 				$restrictions = [];
-				if ( $pages ) {
+				if ( $pageLinks ) {
 					$restrictions[] = $this->msg( 'logentry-partialblock-block-page' )
-						->numParams( count( $pages ) )
-						->rawParams( $this->context->getLanguage()->listToText( $pages ) )->text();
+						->numParams( count( $pageLinks ) )
+						->rawParams( $this->context->getLanguage()->listToText( $pageLinks ) )->escaped();
 				}
 
 				if ( $namespaces ) {
 					$restrictions[] = $this->msg( 'logentry-partialblock-block-ns' )
 						->numParams( count( $namespaces ) )
-						->rawParams( $this->context->getLanguage()->listToText( $namespaces ) )->text();
+						->rawParams( $this->context->getLanguage()->listToText( $namespaces ) )->escaped();
+				}
+				$enablePartialActionBlocks = $this->context->getConfig()
+					->get( MainConfigNames::EnablePartialActionBlocks );
+				if ( $actions && $enablePartialActionBlocks ) {
+					$restrictions[] = $this->msg( 'logentry-partialblock-block-action' )
+						->numParams( count( $actions ) )
+						->rawParams( $this->context->getLanguage()->listToText( $actions ) )->escaped();
 				}
 
 				$params[6] = Message::rawParam( $this->context->getLanguage()->listToText( $restrictions ) );
@@ -126,35 +162,76 @@ class BlockLogFormatter extends LogFormatter {
 
 	public function getPreloadTitles() {
 		$title = $this->entry->getTarget();
+		$preload = [];
 		// Preload user page for non-autoblocks
-		if ( substr( $title->getText(), 0, 1 ) !== '#' && $title->isValid() ) {
-			return [ $title->getTalkPage() ];
+		if ( substr( $title->getText(), 0, 1 ) !== '#' && $title->canExist() ) {
+			$preload[] = $title->getTalkPage();
 		}
-		return [];
+		// Preload page restriction
+		$params = $this->extractParameters();
+		if ( isset( $params[6]['pages'] ) ) {
+			foreach ( $params[6]['pages'] as $page ) {
+				$preload[] = Title::newFromText( $page );
+			}
+		}
+		return $preload;
 	}
 
 	public function getActionLinks() {
 		$subtype = $this->entry->getSubtype();
 		$linkRenderer = $this->getLinkRenderer();
-		if ( $this->entry->isDeleted( LogPage::DELETED_ACTION ) // Action is hidden
+
+		// Don't show anything if the action is hidden
+		if ( $this->entry->isDeleted( LogPage::DELETED_ACTION )
 			|| !( $subtype === 'block' || $subtype === 'reblock' )
-			|| !$this->context->getUser()->isAllowed( 'block' )
+			|| !$this->context->getAuthority()->isAllowed( 'block' )
 		) {
 			return '';
 		}
 
-		// Show unblock/change block link
 		$title = $this->entry->getTarget();
-		$links = [
-			$linkRenderer->makeKnownLink(
-				SpecialPage::getTitleFor( 'Unblock', $title->getDBkey() ),
-				$this->msg( 'unblocklink' )->text()
-			),
-			$linkRenderer->makeKnownLink(
-				SpecialPage::getTitleFor( 'Block', $title->getDBkey() ),
-				$this->msg( 'change-blocklink' )->text()
-			)
-		];
+		if ( $this->context->getConfig()->get( MainConfigNames::UseCodexSpecialBlock ) ) {
+			$params = $this->entry->getParameters();
+			if ( isset( $params['blockId'] ) ) {
+				// If we have a block ID, show remove/change links
+				$query = isset( $params['blockId'] ) ? [ 'id' => $params['blockId'] ] : [];
+				$links = [
+					$linkRenderer->makeKnownLink(
+						SpecialPage::getTitleFor( 'Block', $title->getDBkey() ),
+						$this->msg( 'remove-blocklink' )->text(),
+						[],
+						$query + [ 'remove' => '1' ]
+					),
+					$linkRenderer->makeKnownLink(
+						SpecialPage::getTitleFor( 'Block', $title->getDBkey() ),
+						$this->msg( 'change-blocklink' )->text(),
+						[],
+						$query
+					)
+				];
+			} else {
+				// For legacy log entries, just show "manage blocks" since the
+				// Codex block page doesn't have an "unblock by target" mode
+				$links = [
+					$linkRenderer->makeKnownLink(
+						SpecialPage::getTitleFor( 'Block', $title->getDBkey() ),
+						$this->msg( 'manage-blocklink' )->text(),
+					),
+				];
+			}
+		} else {
+			// Show unblock/change links
+			$links = [
+				$linkRenderer->makeKnownLink(
+					SpecialPage::getTitleFor( 'Unblock', $title->getDBkey() ),
+					$this->msg( 'unblocklink' )->text()
+				),
+				$linkRenderer->makeKnownLink(
+					SpecialPage::getTitleFor( 'Block', $title->getDBkey() ),
+					$this->msg( 'change-blocklink' )->text()
+				)
+			];
+		}
 
 		return $this->msg( 'parentheses' )->rawParams(
 			$this->context->getLanguage()->pipeList( $links ) )->escaped();
@@ -187,7 +264,7 @@ class BlockLogFormatter extends LogFormatter {
 	/**
 	 * Translate a block log flag if possible
 	 *
-	 * @param int $flag Flag to translate
+	 * @param string $flag Flag to translate
 	 * @param Language $lang Language object to use
 	 * @return string
 	 */
@@ -240,18 +317,22 @@ class BlockLogFormatter extends LogFormatter {
 		if ( $subtype === 'block' || $subtype === 'reblock' ) {
 			// Defaults for old log entries missing some fields
 			$params += [
-				'5::duration' => 'infinite',
+				'5::duration' => 'infinity',
 				'6:array:flags' => [],
 			];
 
 			if ( !is_array( $params['6:array:flags'] ) ) {
+				// @phan-suppress-next-line PhanSuspiciousValueComparison
 				$params['6:array:flags'] = $params['6:array:flags'] === ''
 					? []
 					: explode( ',', $params['6:array:flags'] );
 			}
 
-			if ( !wfIsInfinity( $params['5::duration'] ) ) {
-				$ts = wfTimestamp( TS_UNIX, $entry->getTimestamp() );
+			if ( wfIsInfinity( $params['5::duration'] ) ) {
+				// Normalize all possible values to one for pre-T241709 rows
+				$params['5::duration'] = 'infinity';
+			} else {
+				$ts = (int)wfTimestamp( TS_UNIX, $entry->getTimestamp() );
 				$expiry = strtotime( $params['5::duration'], $ts );
 				if ( $expiry !== false && $expiry > 0 ) {
 					$params[':timestamp:expiry'] = $expiry;
@@ -262,6 +343,10 @@ class BlockLogFormatter extends LogFormatter {
 		return $params;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @suppress PhanTypeInvalidDimOffset
+	 */
 	public function formatParametersForApi() {
 		$ret = parent::formatParametersForApi();
 		if ( isset( $ret['flags'] ) ) {
@@ -276,6 +361,7 @@ class BlockLogFormatter extends LogFormatter {
 		}
 
 		if ( isset( $ret['restrictions']['namespaces'] ) ) {
+			// @phan-suppress-next-line PhanTypeMismatchArgument False positive
 			ApiResult::setIndexedTagName( $ret['restrictions']['namespaces'], 'ns' );
 		}
 
@@ -285,7 +371,9 @@ class BlockLogFormatter extends LogFormatter {
 	protected function getMessageKey() {
 		$type = $this->entry->getType();
 		$subtype = $this->entry->getSubtype();
-		$sitewide = $this->entry->getParameters()['sitewide'] ?? true;
+		$params = $this->entry->getParameters();
+		$sitewide = $params['sitewide'] ?? true;
+		$count = $params['finalTargetCount'] ?? 0;
 
 		$key = "logentry-$type-$subtype";
 		if ( ( $subtype === 'block' || $subtype === 'reblock' ) && !$sitewide ) {
@@ -300,6 +388,11 @@ class BlockLogFormatter extends LogFormatter {
 			} else {
 				$key = "logentry-non-editing-$type-$subtype";
 			}
+		}
+		if ( $subtype === 'block' && $count > 1 ) {
+			// logentry-block-block-multi, logentry-partialblock-block-multi,
+			// logentry-non-editing-block-block-multi
+			$key .= '-multi';
 		}
 
 		return $key;

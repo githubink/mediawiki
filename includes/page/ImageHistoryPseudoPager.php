@@ -18,13 +18,20 @@
  * @file
  */
 
+use MediaWiki\Cache\LinkBatchFactory;
+use MediaWiki\Html\Html;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Pager\ReverseChronologicalPager;
+use MediaWiki\SpecialPage\SpecialPage;
+use MediaWiki\Title\Title;
 use Wikimedia\Timestamp\TimestampException;
 
 class ImageHistoryPseudoPager extends ReverseChronologicalPager {
+	/** @var bool */
 	protected $preventClickjacking = false;
 
 	/**
-	 * @var File
+	 * @var File|null
 	 */
 	protected $mImg;
 
@@ -51,10 +58,14 @@ class ImageHistoryPseudoPager extends ReverseChronologicalPager {
 	 */
 	public $mRange;
 
+	/** @var LinkBatchFactory */
+	private $linkBatchFactory;
+
 	/**
 	 * @param ImagePage $imagePage
+	 * @param LinkBatchFactory|null $linkBatchFactory
 	 */
-	public function __construct( $imagePage ) {
+	public function __construct( $imagePage, ?LinkBatchFactory $linkBatchFactory = null ) {
 		parent::__construct( $imagePage->getContext() );
 		$this->mImagePage = $imagePage;
 		$this->mTitle = $imagePage->getTitle()->createFragmentTarget( 'filehistory' );
@@ -65,8 +76,13 @@ class ImageHistoryPseudoPager extends ReverseChronologicalPager {
 		// Only display 10 revisions at once by default, otherwise the list is overwhelming
 		$this->mLimitsShown = array_merge( [ 10 ], $this->mLimitsShown );
 		$this->mDefaultLimit = 10;
-		list( $this->mLimit, /* $offset */ ) =
-			$this->mRequest->getLimitOffset( $this->mDefaultLimit, '' );
+		[ $this->mLimit, /* $offset */ ] =
+			$this->mRequest->getLimitOffsetForUser(
+				$this->getUser(),
+				$this->mDefaultLimit,
+				''
+			);
+		$this->linkBatchFactory = $linkBatchFactory ?? MediaWikiServices::getInstance()->getLinkBatchFactory();
 	}
 
 	/**
@@ -77,7 +93,7 @@ class ImageHistoryPseudoPager extends ReverseChronologicalPager {
 	}
 
 	public function getQueryInfo() {
-		return false;
+		return [];
 	}
 
 	/**
@@ -88,7 +104,7 @@ class ImageHistoryPseudoPager extends ReverseChronologicalPager {
 	}
 
 	/**
-	 * @param object $row
+	 * @param stdClass $row
 	 * @return string
 	 */
 	public function formatRow( $row ) {
@@ -103,30 +119,61 @@ class ImageHistoryPseudoPager extends ReverseChronologicalPager {
 		$this->doQuery();
 		if ( count( $this->mHist ) ) {
 			if ( $this->mImg->isLocal() ) {
-				// Do a batch existence check for user pages and talkpages
-				$linkBatch = new LinkBatch();
+				// Do a batch existence check for user pages and talkpages.
+				$linkBatch = $this->linkBatchFactory->newLinkBatch();
 				for ( $i = $this->mRange[0]; $i <= $this->mRange[1]; $i++ ) {
 					$file = $this->mHist[$i];
-					$user = $file->getUser( 'text' );
-					$linkBatch->add( NS_USER, $user );
-					$linkBatch->add( NS_USER_TALK, $user );
+					$uploader = $file->getUploader( File::FOR_THIS_USER, $this->getAuthority() );
+					if ( $uploader ) {
+						$linkBatch->add( NS_USER, $uploader->getName() );
+						$linkBatch->add( NS_USER_TALK, $uploader->getName() );
+					}
 				}
 				$linkBatch->execute();
 			}
 
+			// Batch-format comments
+			$comments = [];
+			for ( $i = $this->mRange[0]; $i <= $this->mRange[1]; $i++ ) {
+				$file = $this->mHist[$i];
+				$comments[$i] = $file->getDescription(
+					File::FOR_THIS_USER,
+					$this->getAuthority()
+				) ?: '';
+			}
+			$formattedComments = MediaWikiServices::getInstance()
+				->getCommentFormatter()
+				->formatStrings( $comments, $this->getTitle() );
+
 			$list = new ImageHistoryList( $this->mImagePage );
 			# Generate prev/next links
 			$navLink = $this->getNavigationBar();
-			$s = $list->beginImageHistoryList( $navLink );
+
+			$s = Html::element( 'h2', [ 'id' => 'filehistory' ], $this->msg( 'filehist' )->text() ) . "\n"
+				. Html::openElement( 'div', [ 'id' => 'mw-imagepage-section-filehistory' ] ) . "\n"
+				. $this->msg( 'filehist-help' )->parseAsBlock()
+				. $navLink . "\n";
+
+			$sList = $list->beginImageHistoryList();
+			$onlyCurrentFile = true;
 			// Skip rows there just for paging links
 			for ( $i = $this->mRange[0]; $i <= $this->mRange[1]; $i++ ) {
 				$file = $this->mHist[$i];
-				$s .= $list->imageHistoryLine( !$file->isOld(), $file );
+				$sList .= $list->imageHistoryLine( !$file->isOld(), $file, $formattedComments[$i] );
+				$onlyCurrentFile = !$file->isOld();
 			}
-			$s .= $list->endImageHistoryList( $navLink );
+			$sList .= $list->endImageHistoryList();
+			if ( $onlyCurrentFile || !$this->mImg->isLocal() ) {
+				// It is not possible to revision-delete the current file or foreign files,
+				// if there is only the current file or the file is not local, show no buttons
+				$s .= $sList;
+			} else {
+				$s .= $this->wrapWithActionButtons( $sList );
+			}
+			$s .= $navLink . "\n" . Html::closeElement( 'div' ) . "\n";
 
 			if ( $list->getPreventClickjacking() ) {
-				$this->preventClickjacking();
+				$this->setPreventClickjacking( true );
 			}
 		}
 		return $s;
@@ -143,7 +190,7 @@ class ImageHistoryPseudoPager extends ReverseChronologicalPager {
 		// Make sure the date (probably from user input) is valid; if not, drop it.
 		if ( $this->mOffset !== null ) {
 			try {
-				$sadlyWeCannotPassThisTimestampDownTheStack = $this->mDb->timestamp( $this->mOffset );
+				$this->mDb->timestamp( $this->mOffset );
 			} catch ( TimestampException $e ) {
 				$this->mOffset = null;
 			}
@@ -172,40 +219,40 @@ class ImageHistoryPseudoPager extends ReverseChronologicalPager {
 		if ( $numRows ) {
 			# Index value of top item in the list
 			$firstIndex = $this->mIsBackwards ?
-				$this->mHist[$numRows - 1]->getTimestamp() : $this->mHist[0]->getTimestamp();
+				[ $this->mHist[$numRows - 1]->getTimestamp() ] : [ $this->mHist[0]->getTimestamp() ];
 			# Discard the extra result row if there is one
 			if ( $numRows > $this->mLimit && $numRows > 1 ) {
 				if ( $this->mIsBackwards ) {
 					# Index value of item past the index
-					$this->mPastTheEndIndex = $this->mHist[0]->getTimestamp();
+					$this->mPastTheEndIndex = [ $this->mHist[0]->getTimestamp() ];
 					# Index value of bottom item in the list
-					$lastIndex = $this->mHist[1]->getTimestamp();
+					$lastIndex = [ $this->mHist[1]->getTimestamp() ];
 					# Display range
 					$this->mRange = [ 1, $numRows - 1 ];
 				} else {
 					# Index value of item past the index
-					$this->mPastTheEndIndex = $this->mHist[$numRows - 1]->getTimestamp();
+					$this->mPastTheEndIndex = [ $this->mHist[$numRows - 1]->getTimestamp() ];
 					# Index value of bottom item in the list
-					$lastIndex = $this->mHist[$numRows - 2]->getTimestamp();
+					$lastIndex = [ $this->mHist[$numRows - 2]->getTimestamp() ];
 					# Display range
 					$this->mRange = [ 0, $numRows - 2 ];
 				}
 			} else {
-				# Setting indexes to an empty string means that they will be
+				# Setting indexes to an empty array means that they will be
 				# omitted if they would otherwise appear in URLs. It just so
 				# happens that this  is the right thing to do in the standard
 				# UI, in all the relevant cases.
-				$this->mPastTheEndIndex = '';
+				$this->mPastTheEndIndex = [];
 				# Index value of bottom item in the list
 				$lastIndex = $this->mIsBackwards ?
-					$this->mHist[0]->getTimestamp() : $this->mHist[$numRows - 1]->getTimestamp();
+					[ $this->mHist[0]->getTimestamp() ] : [ $this->mHist[$numRows - 1]->getTimestamp() ];
 				# Display range
 				$this->mRange = [ 0, $numRows - 1 ];
 			}
 		} else {
-			$firstIndex = '';
-			$lastIndex = '';
-			$this->mPastTheEndIndex = '';
+			$firstIndex = [];
+			$lastIndex = [];
+			$this->mPastTheEndIndex = [];
 		}
 		if ( $this->mIsBackwards ) {
 			$this->mIsFirst = ( $numRows < $queryLimit );
@@ -222,9 +269,55 @@ class ImageHistoryPseudoPager extends ReverseChronologicalPager {
 	}
 
 	/**
+	 * Wrap the content with action buttons at begin and end if the user
+	 * is allow to use the action buttons.
+	 * @param string $formcontents
+	 * @return string
+	 */
+	private function wrapWithActionButtons( $formcontents ) {
+		if ( !$this->getAuthority()->isAllowed( 'deleterevision' ) ) {
+			return $formcontents;
+		}
+
+		# Show button to hide log entries
+		$s = Html::openElement(
+			'form',
+			[ 'action' => wfScript(), 'id' => 'mw-filehistory-deleterevision-submit' ]
+		) . "\n";
+		$s .= Html::hidden( 'target', $this->getTitle()->getPrefixedDBkey() ) . "\n";
+		$s .= Html::hidden( 'type', 'oldimage' ) . "\n";
+		$this->setPreventClickjacking( true );
+
+		$buttons = Html::element(
+			'button',
+			[
+				'type' => 'submit',
+				'name' => 'title',
+				'value' => SpecialPage::getTitleFor( 'Revisiondelete' )->getPrefixedDBkey(),
+				'class' => "deleterevision-filehistory-submit mw-filehistory-deleterevision-button mw-ui-button"
+			],
+			$this->msg( 'showhideselectedfileversions' )->text()
+		) . "\n";
+
+		$s .= $buttons . $formcontents . $buttons;
+		$s .= Html::closeElement( 'form' );
+
+		return $s;
+	}
+
+	/**
 	 * @param bool $enable
+	 * @deprecated since 1.38, use ::setPreventClickjacking()
 	 */
 	protected function preventClickjacking( $enable = true ) {
+		$this->preventClickjacking = $enable;
+	}
+
+	/**
+	 * @param bool $enable
+	 * @since 1.38
+	 */
+	protected function setPreventClickjacking( bool $enable ) {
 		$this->preventClickjacking = $enable;
 	}
 

@@ -1,160 +1,162 @@
-const assert = require( 'assert' ),
-	Api = require( 'wdio-mediawiki/Api' ),
-	BlankPage = require( 'wdio-mediawiki/BlankPage' ),
-	DeletePage = require( '../pageobjects/delete.page' ),
-	RestorePage = require( '../pageobjects/restore.page' ),
-	EditPage = require( '../pageobjects/edit.page' ),
-	HistoryPage = require( '../pageobjects/history.page' ),
-	UndoPage = require( '../pageobjects/undo.page' ),
-	UserLoginPage = require( 'wdio-mediawiki/LoginPage' ),
-	Util = require( 'wdio-mediawiki/Util' );
+'use strict';
 
-describe( 'Page', function () {
-	var content,
-		name;
+const BlankPage = require( 'wdio-mediawiki/BlankPage' );
+const Api = require( 'wdio-mediawiki/Api' );
+const DeletePage = require( '../pageobjects/delete.page' );
+const RestorePage = require( '../pageobjects/restore.page' );
+const EditPage = require( '../pageobjects/edit.page' );
+const HistoryPage = require( '../pageobjects/history.page' );
+const UndoPage = require( '../pageobjects/undo.page' );
+const ProtectPage = require( '../pageobjects/protect.page' );
+const LoginPage = require( 'wdio-mediawiki/LoginPage' );
+const Util = require( 'wdio-mediawiki/Util' );
 
-	before( function () {
-		// disable VisualEditor welcome dialog
-		BlankPage.open();
-		browser.localStorage( 'POST', { key: 've-beta-welcome-dialog', value: '1' } );
+describe( 'Page', () => {
+	let content, name, bot;
+
+	before( async () => {
+		bot = await Api.bot();
 	} );
 
-	beforeEach( function () {
-		browser.deleteCookie();
+	beforeEach( async function () {
+		await browser.deleteAllCookies();
 		content = Util.getTestString( 'beforeEach-content-' );
 		name = Util.getTestString( 'BeforeEach-name-' );
+
+		// First try to load a blank page, so the next command works.
+		await BlankPage.open();
+		// Don't try to run wikitext-specific tests if the test namespace isn't wikitext by default.
+		if ( await Util.isTargetNotWikitext( name ) ) {
+			this.skip();
+		}
 	} );
 
-	it( 'should be previewable', function () {
-		EditPage.preview( name, content );
+	it( 'should be previewable @daily', async () => {
+		await LoginPage.loginAdmin();
+		await EditPage.preview( name, content );
 
-		assert.strictEqual( EditPage.heading.getText(), 'Creating ' + name );
-		assert.strictEqual( EditPage.displayedContent.getText(), content );
-		assert( EditPage.content.isVisible(), 'editor is still present' );
-		assert( !EditPage.conflictingContent.isVisible(), 'no edit conflict happened' );
-		// provoke and dismiss reload warning due to unsaved content
-		browser.url( 'data:text/html,Done' );
-		try {
-			browser.alertAccept();
-		} catch ( e ) {}
+		await expect( await EditPage.heading ).toHaveText( `Creating ${ name }` );
+		await expect( await EditPage.displayedContent ).toHaveText( content );
+		await expect( await EditPage.content ).toBeDisplayed( { message: 'editor is still present' } );
+		await expect( await EditPage.conflictingContent ).not.toBeDisplayed( { message: 'no edit conflict happened' } );
+
+		// T269566: Popup with text
+		// 'Leave site? Changes that you made may not be saved. Cancel/Leave'
+		// appears after the browser tries to leave the page with the preview.
+		await browser.reloadSession();
 	} );
 
-	it( 'should be creatable', function () {
+	it( 'should be creatable', async () => {
 		// create
-		EditPage.edit( name, content );
+		await LoginPage.loginAdmin();
+		await EditPage.edit( name, content );
 
 		// check
-		assert.strictEqual( EditPage.heading.getText(), name );
-		assert.strictEqual( EditPage.displayedContent.getText(), content );
+		await expect( await EditPage.heading ).toHaveText( name );
+		await expect( await EditPage.displayedContent ).toHaveText( content );
 	} );
 
-	it( 'should be re-creatable', function () {
+	it( 'should be re-creatable', async () => {
 		const initialContent = Util.getTestString( 'initialContent-' );
 
-		// create
-		browser.call( function () {
-			return Api.edit( name, initialContent );
-		} );
+		// create and delete
+		await bot.edit( name, initialContent, 'create for delete' );
+		await bot.delete( name, 'delete prior to recreate' );
 
-		// delete
-		browser.call( function () {
-			return Api.delete( name, 'delete prior to recreate' );
-		} );
-
-		// create
-		EditPage.edit( name, content );
+		// re-create
+		await LoginPage.loginAdmin();
+		await EditPage.edit( name, content );
 
 		// check
-		assert.strictEqual( EditPage.heading.getText(), name );
-		assert.strictEqual( EditPage.displayedContent.getText(), content );
+		await expect( await EditPage.heading ).toHaveText( name );
+		await expect( await EditPage.displayedContent ).toHaveText( content );
 	} );
 
-	it( 'should be editable @daily', function () {
+	it( 'should be editable @daily', async () => {
 		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
+		await bot.edit( name, content, 'create for edit' );
 
 		// edit
 		const editContent = Util.getTestString( 'editContent-' );
-		EditPage.edit( name, editContent );
+		await EditPage.edit( name, editContent );
 
 		// check
-		assert.strictEqual( EditPage.heading.getText(), name );
-		// eslint-disable-next-line no-restricted-syntax
-		assert( EditPage.displayedContent.getText().includes( editContent ) );
+		await expect( await EditPage.heading ).toHaveText( name );
+		await expect( await EditPage.displayedContent ).toHaveTextContaining( editContent );
 	} );
 
-	it( 'should have history @daily', function () {
+	it( 'should have history @daily', async () => {
 		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
+		await bot.edit( name, content, `created with "${ content }"` );
 
 		// check
-		HistoryPage.open( name );
-		assert.strictEqual( HistoryPage.comment.getText(), `Created or updated page with "${content}"` );
+		await HistoryPage.open( name );
+		await expect( await HistoryPage.comment ).toHaveText( `created with "${ content }"` );
 	} );
 
-	it( 'should be deletable', function () {
+	it( 'should be deletable', async () => {
+		// create
+		await bot.edit( name, content, 'create for delete' );
+
 		// login
-		UserLoginPage.loginAdmin();
-
-		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
-
+		await LoginPage.loginAdmin();
 		// delete
-		DeletePage.delete( name, content + '-deletereason' );
+		await DeletePage.delete( name, 'delete reason' );
 
 		// check
-		assert.strictEqual(
-			DeletePage.displayedContent.getText(),
-			'"' + name + '" has been deleted. See deletion log for a record of recent deletions.\nReturn to Main Page.'
-		);
+		await expect( await DeletePage.displayedContent ).toHaveTextContaining( `"${ name }" has been deleted.` );
 	} );
 
-	it( 'should be restorable', function () {
+	it( 'should be restorable', async () => {
+		// create and delete
+		await bot.edit( name, content, 'create for delete' );
+		await bot.delete( name, 'delete for restore' );
+
 		// login
-		UserLoginPage.loginAdmin();
-
-		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
-
-		// delete
-		browser.call( function () {
-			return Api.delete( name, content + '-deletereason' );
-		} );
+		await LoginPage.loginAdmin();
 
 		// restore
-		RestorePage.restore( name, content + '-restorereason' );
+		await RestorePage.restore( name, 'restore reason' );
 
 		// check
-		assert.strictEqual( RestorePage.displayedContent.getText(), name + ' has been restored\nConsult the deletion log for a record of recent deletions and restorations.' );
+		await expect( await RestorePage.displayedContent ).toHaveTextContaining( `${ name } has been undeleted` );
 	} );
 
-	it( 'should be undoable', function () {
+	it( 'should be protectable', async () => {
+
+		await bot.edit( name, content, 'create for protect' );
+
+		// login
+		await LoginPage.loginAdmin();
+
+		await ProtectPage.protect(
+			name,
+			'protect reason',
+			'Allow only administrators'
+		);
+
+		// Logout
+		await browser.deleteAllCookies();
+
+		// Check that we can't edit the page anymore
+		await EditPage.openForEditing( name );
+		await expect( await EditPage.save ).not.toExist();
+		await expect( await EditPage.heading ).toHaveText( `View source for ${ name }` );
+	} );
+
+	it( 'should be undoable @daily', async () => {
+
 		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
+		await bot.edit( name, content, 'create to edit and undo' );
 
 		// edit
-		let previousRev, undoRev;
-		browser.call( function () {
-			return Api.edit( name, Util.getTestString( 'editContent-' ) )
-				.then( ( response ) => {
-					previousRev = response.edit.oldrevid;
-					undoRev = response.edit.newrevid;
-				} );
-		} );
+		const response = await bot.edit( name, Util.getTestString( 'editContent-' ) );
+		const previousRev = response.edit.oldrevid;
+		const undoRev = response.edit.newrevid;
 
-		UndoPage.undo( name, previousRev, undoRev );
+		await UndoPage.undo( name, previousRev, undoRev );
 
-		assert.strictEqual( EditPage.displayedContent.getText(), content );
+		await expect( await EditPage.displayedContent ).toHaveTextContaining( content );
 	} );
 
 } );

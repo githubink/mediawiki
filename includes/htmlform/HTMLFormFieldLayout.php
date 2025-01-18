@@ -1,8 +1,17 @@
 <?php
 
-class HTMLFormFieldLayout extends OOUI\FieldLayout {
-	use HTMLFormElement;
+namespace MediaWiki\HTMLForm;
 
+/*
+ * @stable to extend
+ */
+class HTMLFormFieldLayout extends \OOUI\FieldLayout {
+	use \MediaWiki\HTMLForm\HTMLFormElement;
+
+	/**
+	 * @stable to call
+	 * @inheritDoc
+	 */
 	public function __construct( $fieldWidget, array $config = [] ) {
 		parent::__construct( $fieldWidget, $config );
 
@@ -14,3 +23,6 @@ class HTMLFormFieldLayout extends OOUI\FieldLayout {
 		return 'mw.htmlform.FieldLayout';
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( HTMLFormFieldLayout::class, 'HTMLFormFieldLayout' );

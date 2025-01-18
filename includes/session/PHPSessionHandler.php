@@ -23,15 +23,21 @@
 
 namespace MediaWiki\Session;
 
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiServices;
 use Psr\Log\LoggerInterface;
-use BagOStuff;
+use Psr\Log\NullLogger;
+use SessionHandlerInterface;
+use Wikimedia\AtEase\AtEase;
+use Wikimedia\ObjectCache\BagOStuff;
+use Wikimedia\PhpSessionSerializer;
 
 /**
  * Adapter for PHP's session handling
  * @ingroup Session
  * @since 1.27
  */
-class PHPSessionHandler implements \SessionHandlerInterface {
+class PHPSessionHandler implements SessionHandlerInterface {
 	/** @var PHPSessionHandler */
 	protected static $instance = null;
 
@@ -41,21 +47,16 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 	/** @var bool */
 	protected $warn = true;
 
-	/** @var SessionManagerInterface|null */
-	protected $manager;
-
-	/** @var BagOStuff|null */
-	protected $store;
-
-	/** @var LoggerInterface */
-	protected $logger;
+	protected ?SessionManagerInterface $manager = null;
+	protected ?BagOStuff $store = null;
+	protected LoggerInterface $logger;
 
 	/** @var array Track original session fields for later modification check */
 	protected $sessionFieldCache = [];
 
-	protected function __construct( SessionManagerInterface $manager ) {
+	protected function __construct( SessionManager $manager ) {
 		$this->setEnableFlags(
-			\RequestContext::getMain()->getConfig()->get( 'PHPSessionHandling' )
+			MediaWikiServices::getInstance()->getMainConfig()->get( MainConfigNames::PHPSessionHandling )
 		);
 		$manager->setupPHPSessionHandler( $this );
 	}
@@ -105,9 +106,8 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 
 	/**
 	 * Install a session handler for the current web request
-	 * @param SessionManagerInterface $manager
 	 */
-	public static function install( SessionManagerInterface $manager ) {
+	public static function install( SessionManager $manager ) {
 		if ( self::$instance ) {
 			$manager->setupPHPSessionHandler( self::$instance );
 			return;
@@ -125,32 +125,31 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 		session_write_close();
 
 		try {
-			\Wikimedia\suppressWarnings();
+			AtEase::suppressWarnings();
 
 			// Tell PHP not to mess with cookies itself
 			ini_set( 'session.use_cookies', 0 );
-			ini_set( 'session.use_trans_sid', 0 );
 
 			// T124510: Disable automatic PHP session related cache headers.
-			// MediaWiki adds it's own headers and the default PHP behavior may
+			// MediaWiki adds its own headers and the default PHP behavior may
 			// set headers such as 'Pragma: no-cache' that cause problems with
 			// some user agents.
 			session_cache_limiter( '' );
 
-			// Also set a sane serialization handler
-			\Wikimedia\PhpSessionSerializer::setSerializeHandler();
+			// Also set a serialization handler
+			PhpSessionSerializer::setSerializeHandler();
 
 			// Register this as the save handler, and register an appropriate
 			// shutdown function.
 			session_set_save_handler( self::$instance, true );
 		} finally {
-			\Wikimedia\restoreWarnings();
+			AtEase::restoreWarnings();
 		}
 	}
 
 	/**
 	 * Set the manager, store, and logger
-	 * @private Use self::install().
+	 * @internal Use self::install().
 	 * @param SessionManagerInterface $manager
 	 * @param BagOStuff $store
 	 * @param LoggerInterface $logger
@@ -166,17 +165,18 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 			$this->manager = $manager;
 			$this->store = $store;
 			$this->logger = $logger;
-			\Wikimedia\PhpSessionSerializer::setLogger( $this->logger );
+			PhpSessionSerializer::setLogger( $this->logger );
 		}
 	}
 
 	/**
 	 * Initialize the session (handler)
-	 * @private For internal use only
+	 * @internal For internal use only
 	 * @param string $save_path Path used to store session files (ignored)
 	 * @param string $session_name Session name (ignored)
 	 * @return true
 	 */
+	#[\ReturnTypeWillChange]
 	public function open( $save_path, $session_name ) {
 		if ( self::$instance !== $this ) {
 			throw new \UnexpectedValueException( __METHOD__ . ': Wrong instance called!' );
@@ -189,9 +189,10 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 
 	/**
 	 * Close the session (handler)
-	 * @private For internal use only
+	 * @internal For internal use only
 	 * @return true
 	 */
+	#[\ReturnTypeWillChange]
 	public function close() {
 		if ( self::$instance !== $this ) {
 			throw new \UnexpectedValueException( __METHOD__ . ': Wrong instance called!' );
@@ -202,10 +203,11 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 
 	/**
 	 * Read session data
-	 * @private For internal use only
+	 * @internal For internal use only
 	 * @param string $id Session id
 	 * @return string Session data
 	 */
+	#[\ReturnTypeWillChange]
 	public function read( $id ) {
 		if ( self::$instance !== $this ) {
 			throw new \UnexpectedValueException( __METHOD__ . ': Wrong instance called!' );
@@ -222,18 +224,19 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 
 		$data = iterator_to_array( $session );
 		$this->sessionFieldCache[$id] = $data;
-		return (string)\Wikimedia\PhpSessionSerializer::encode( $data );
+		return (string)PhpSessionSerializer::encode( $data );
 	}
 
 	/**
 	 * Write session data
-	 * @private For internal use only
+	 * @internal For internal use only
 	 * @param string $id Session id
 	 * @param string $dataStr Session data. Not that you should ever call this
 	 *   directly, but note that this has the same issues with code injection
 	 *   via user-controlled data as does PHP's unserialize function.
 	 * @return bool
 	 */
+	#[\ReturnTypeWillChange]
 	public function write( $id, $dataStr ) {
 		if ( self::$instance !== $this ) {
 			throw new \UnexpectedValueException( __METHOD__ . ': Wrong instance called!' );
@@ -250,12 +253,12 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 				__METHOD__ . ': Session "{session}" cannot be loaded, skipping write.',
 				[
 					'session' => $id,
-			] );
+				] );
 			return true;
 		}
 
 		// First, decode the string PHP handed us
-		$data = \Wikimedia\PhpSessionSerializer::decode( $dataStr );
+		$data = PhpSessionSerializer::decode( $dataStr );
 		if ( $data === null ) {
 			// @codeCoverageIgnoreStart
 			return false;
@@ -299,12 +302,12 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 		}
 		// Anything deleted in $_SESSION and unchanged in Session should be deleted too
 		// (but not if $_SESSION can't represent it at all)
-		\Wikimedia\PhpSessionSerializer::setLogger( new \Psr\Log\NullLogger() );
+		PhpSessionSerializer::setLogger( new NullLogger() );
 		foreach ( $cache as $key => $value ) {
 			if ( !array_key_exists( $key, $data ) && $session->exists( $key ) &&
-				\Wikimedia\PhpSessionSerializer::encode( [ $key => true ] )
+				PhpSessionSerializer::encode( [ $key => true ] )
 			) {
-				if ( $cache[$key] === $session->get( $key ) ) {
+				if ( $value === $session->get( $key ) ) {
 					// Unchanged in Session, delete it
 					$session->remove( $key );
 					$changed = true;
@@ -316,7 +319,7 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 				}
 			}
 		}
-		\Wikimedia\PhpSessionSerializer::setLogger( $this->logger );
+		PhpSessionSerializer::setLogger( $this->logger );
 
 		// Save and update cache if anything changed
 		if ( $changed ) {
@@ -336,10 +339,11 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 
 	/**
 	 * Destroy a session
-	 * @private For internal use only
+	 * @internal For internal use only
 	 * @param string $id Session id
 	 * @return true
 	 */
+	#[\ReturnTypeWillChange]
 	public function destroy( $id ) {
 		if ( self::$instance !== $this ) {
 			throw new \UnexpectedValueException( __METHOD__ . ': Wrong instance called!' );
@@ -356,17 +360,17 @@ class PHPSessionHandler implements \SessionHandlerInterface {
 
 	/**
 	 * Execute garbage collection.
-	 * @private For internal use only
+	 * @internal For internal use only
 	 * @param int $maxlifetime Maximum session life time (ignored)
 	 * @return true
 	 * @codeCoverageIgnore See T135576
 	 */
+	#[\ReturnTypeWillChange]
 	public function gc( $maxlifetime ) {
 		if ( self::$instance !== $this ) {
 			throw new \UnexpectedValueException( __METHOD__ . ': Wrong instance called!' );
 		}
-		$before = date( 'YmdHis', time() );
-		$this->store->deleteObjectsExpiringBefore( $before );
+		$this->store->deleteObjectsExpiringBefore( wfTimestampNow() );
 		return true;
 	}
 }

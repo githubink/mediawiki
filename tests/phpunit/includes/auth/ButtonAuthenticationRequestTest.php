@@ -1,6 +1,8 @@
 <?php
 
-namespace MediaWiki\Auth;
+namespace MediaWiki\Tests\Auth;
+
+use MediaWiki\Auth\ButtonAuthenticationRequest;
 
 /**
  * @group AuthManager
@@ -10,6 +12,9 @@ class ButtonAuthenticationRequestTest extends AuthenticationRequestTestCase {
 
 	protected function getInstance( array $args = [] ) {
 		$data = array_intersect_key( $args, [ 'name' => 1, 'label' => 1, 'help' => 1 ] );
+		if ( $args['name'] === 'foo' ) {
+			return ButtonAuthenticationRequestForLoadFromSubmission::__set_state( $data );
+		}
 		return ButtonAuthenticationRequest::__set_state( $data );
 	}
 
@@ -19,7 +24,7 @@ class ButtonAuthenticationRequestTest extends AuthenticationRequestTestCase {
 		];
 	}
 
-	public function provideLoadFromSubmission() {
+	public static function provideLoadFromSubmission() {
 		return [
 			'Empty request' => [
 				[ 'name' => 'foo', 'label' => 'bar', 'help' => 'baz' ],
@@ -48,9 +53,8 @@ class ButtonAuthenticationRequestTest extends AuthenticationRequestTestCase {
 		);
 		$reqs[] = new ButtonAuthenticationRequest( 'bar', wfMessage( 'msg1' ), wfMessage( 'help1' ) );
 		$reqs[] = new ButtonAuthenticationRequest( 'bar', wfMessage( 'msg2' ), wfMessage( 'help2' ) );
-		$reqs['testSub'] = $this->getMockBuilder( ButtonAuthenticationRequest::class )
-			->setConstructorArgs( [ 'subclass', wfMessage( 'msg3' ), wfMessage( 'help3' ) ] )
-			->getMock();
+		$reqs['testSub'] =
+			new ButtonAuthenticationRequest( 'subclass', wfMessage( 'msg3' ), wfMessage( 'help3' ) );
 
 		$this->assertNull( ButtonAuthenticationRequest::getRequestByName( $reqs, 'missing' ) );
 		$this->assertSame(
@@ -61,4 +65,10 @@ class ButtonAuthenticationRequestTest extends AuthenticationRequestTestCase {
 			$reqs['testSub'], ButtonAuthenticationRequest::getRequestByName( $reqs, 'subclass' )
 		);
 	}
+}
+
+// Dynamic properties from the testLoadFromSubmission not working in php8.2
+class ButtonAuthenticationRequestForLoadFromSubmission extends ButtonAuthenticationRequest {
+	/** @var string */
+	public $foo;
 }

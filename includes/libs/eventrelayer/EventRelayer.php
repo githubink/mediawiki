@@ -17,18 +17,25 @@
  *
  * @file
  */
-use Psr\Log\LoggerInterface;
+
+namespace Wikimedia\EventRelayer;
+
 use Psr\Log\LoggerAwareInterface;
+use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
 
 /**
  * Base class for reliable event relays
+ *
+ * @stable to extend
  */
 abstract class EventRelayer implements LoggerAwareInterface {
 	/** @var LoggerInterface */
 	protected $logger;
 
 	/**
+	 * @stable to call
+	 *
 	 * @param array $params
 	 */
 	public function __construct( array $params ) {
@@ -64,3 +71,6 @@ abstract class EventRelayer implements LoggerAwareInterface {
 	 */
 	abstract protected function doNotify( $channel, array $events );
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( EventRelayer::class, 'EventRelayer' );

@@ -7,7 +7,7 @@ use MediaWiki\Block\DatabaseBlock;
 use MediaWiki\Block\Restriction\NamespaceRestriction;
 use MediaWiki\Block\Restriction\PageRestriction;
 use MediaWiki\Block\Restriction\Restriction;
-use MediaWiki\MediaWikiServices;
+use MediaWiki\MainConfigNames;
 
 /**
  * @group Database
@@ -16,18 +16,12 @@ use MediaWiki\MediaWikiServices;
  */
 class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 
-	/** @var BlockRestrictionStore */
-	protected $blockRestrictionStore;
+	protected BlockRestrictionStore $blockRestrictionStore;
 
-	public function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
-		$this->blockRestrictionStore = MediaWikiServices::getInstance()->getBlockRestrictionStore();
-	}
-
-	public function tearDown() {
-		parent::tearDown();
-		$this->resetTables();
+		$this->blockRestrictionStore = $this->getServiceContainer()->getBlockRestrictionStore();
 	}
 
 	/**
@@ -36,9 +30,7 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 	 * @covers ::rowToRestriction
 	 */
 	public function testLoadMultipleRestrictions() {
-		$this->setMwGlobals( [
-			'wgBlockDisablesLogin' => false,
-		] );
+		$this->overrideConfigValue( MainConfigNames::BlockDisablesLogin, false );
 		$block = $this->insertBlock();
 
 		$pageFoo = $this->getExistingTestPage( 'Foo' );
@@ -63,7 +55,7 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 	public function testWithNoRestrictions() {
 		$block = $this->insertBlock();
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
-		$this->assertEmpty( $restrictions );
+		$this->assertSame( [], $restrictions );
 	}
 
 	/**
@@ -73,7 +65,7 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 	 */
 	public function testWithEmptyParam() {
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( [] );
-		$this->assertEmpty( $restrictions );
+		$this->assertSame( [], $restrictions );
 	}
 
 	/**
@@ -116,11 +108,11 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
 
-		list( $pageRestriction ) = $restrictions;
+		[ $pageRestriction ] = $restrictions;
 		$this->assertInstanceOf( PageRestriction::class, $pageRestriction );
 		$this->assertEquals( $block->getId(), $pageRestriction->getBlockId() );
 		$this->assertEquals( $page->getId(), $pageRestriction->getValue() );
-		$this->assertEquals( $pageRestriction->getType(), PageRestriction::TYPE );
+		$this->assertEquals( PageRestriction::TYPE, $pageRestriction->getType() );
 		$this->assertEquals( $pageRestriction->getTitle()->getText(), $title );
 	}
 
@@ -138,11 +130,11 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
 
-		list( $namespaceRestriction ) = $restrictions;
+		[ $namespaceRestriction ] = $restrictions;
 		$this->assertInstanceOf( NamespaceRestriction::class, $namespaceRestriction );
 		$this->assertEquals( $block->getId(), $namespaceRestriction->getBlockId() );
 		$this->assertSame( NS_USER, $namespaceRestriction->getValue() );
-		$this->assertEquals( $namespaceRestriction->getType(), NamespaceRestriction::TYPE );
+		$this->assertEquals( NamespaceRestriction::TYPE, $namespaceRestriction->getType() );
 	}
 
 	/**
@@ -155,7 +147,6 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 		$pageBar = $this->getExistingTestPage( 'Bar' );
 
 		$restrictions = [
-			new \stdClass(),
 			new PageRestriction( $block->getId(), $pageFoo->getId() ),
 			new PageRestriction( $block->getId(), $pageBar->getId() ),
 			new NamespaceRestriction( $block->getId(), NS_USER )
@@ -163,13 +154,6 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 
 		$result = $this->blockRestrictionStore->insert( $restrictions );
 		$this->assertTrue( $result );
-
-		$restrictions = [
-			new \stdClass(),
-		];
-
-		$result = $this->blockRestrictionStore->insert( $restrictions );
-		$this->assertFalse( $result );
 
 		$result = $this->blockRestrictionStore->insert( [] );
 		$this->assertFalse( $result );
@@ -193,7 +177,6 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 			] );
 
 		$restrictions = [
-			new \stdClass(),
 			new PageRestriction( $block->getId(), $pageFoo->getId() ),
 			new PageRestriction( $block->getId(), $pageBar->getId() ),
 			new NamespaceRestriction( $block->getId(), NS_USER ),
@@ -221,17 +204,15 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 		] );
 
 		$this->blockRestrictionStore->update( [
-			new \stdClass(),
 			new PageRestriction( $block->getId(), $pageBar->getId() ),
 			new NamespaceRestriction( $block->getId(), NS_USER ),
 		] );
 
-		$db = wfGetDb( DB_REPLICA );
-		$result = $db->select(
-			[ 'ipblocks_restrictions' ],
-			[ '*' ],
-			[ 'ir_ipb_id' => $block->getId() ]
-		);
+		$result = $this->getDb()->newSelectQueryBuilder()
+			->select( [ '*' ] )
+			->from( 'ipblocks_restrictions' )
+			->where( [ 'ir_ipb_id' => $block->getId() ] )
+			->fetchResultSet();
 
 		$this->assertEquals( 2, $result->numRows() );
 		$row = $result->fetchObject();
@@ -252,14 +233,13 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 			new PageRestriction( $block->getId(), $page->getId() ),
 		] );
 
-		$db = wfGetDb( DB_REPLICA );
-		$result = $db->select(
-			[ 'ipblocks_restrictions' ],
-			[ '*' ],
-			[ 'ir_ipb_id' => $block->getId() ]
-		);
+		$result = $this->getDb()->newSelectQueryBuilder()
+			->select( [ '*' ] )
+			->from( 'ipblocks_restrictions' )
+			->where( [ 'ir_ipb_id' => $block->getId() ] )
+			->fetchResultSet();
 
-		$this->assertEquals( 1, $result->numRows() );
+		$this->assertSame( 1, $result->numRows() );
 		$row = $result->fetchObject();
 		$this->assertEquals( $block->getId(), $row->ir_ipb_id );
 		$this->assertEquals( $page->getId(), $row->ir_value );
@@ -275,14 +255,13 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 
 		$this->blockRestrictionStore->update( [] );
 
-		$db = wfGetDb( DB_REPLICA );
-		$result = $db->select(
-			[ 'ipblocks_restrictions' ],
-			[ '*' ],
-			[ 'ir_ipb_id' => $block->getId() ]
-		);
+		$result = $this->getDb()->newSelectQueryBuilder()
+			->select( [ '*' ] )
+			->from( 'ipblocks_restrictions' )
+			->where( [ 'ir_ipb_id' => $block->getId() ] )
+			->fetchResultSet();
 
-		$this->assertEquals( 0, $result->numRows() );
+		$this->assertSame( 0, $result->numRows() );
 	}
 
 	/**
@@ -301,14 +280,13 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 			new PageRestriction( $block->getId(), $page->getId() ),
 		] );
 
-		$db = wfGetDb( DB_REPLICA );
-		$result = $db->select(
-			[ 'ipblocks_restrictions' ],
-			[ '*' ],
-			[ 'ir_ipb_id' => $block->getId() ]
-		);
+		$result = $this->getDb()->newSelectQueryBuilder()
+			->select( [ '*' ] )
+			->from( 'ipblocks_restrictions' )
+			->where( [ 'ir_ipb_id' => $block->getId() ] )
+			->fetchResultSet();
 
-		$this->assertEquals( 1, $result->numRows() );
+		$this->assertSame( 1, $result->numRows() );
 		$row = $result->fetchObject();
 		$this->assertEquals( $block->getId(), $row->ir_ipb_id );
 		$this->assertEquals( $page->getId(), $row->ir_value );
@@ -325,7 +303,8 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 		$this->blockRestrictionStore->insert( [
 			new PageRestriction( $block->getId(), $pageFoo->getId() ),
 		] );
-		$autoblockId = $block->doAutoblock( '127.0.0.1' );
+		$autoblockId = $this->getServiceContainer()->getDatabaseBlockStore()
+			->doAutoblock( $block, '127.0.0.1' );
 
 		// Ensure that the restrictions on the block have not changed.
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
@@ -363,7 +342,8 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 		$this->blockRestrictionStore->insert( [
 			new PageRestriction( $block->getId(), $page->getId() ),
 		] );
-		$autoblockId = $block->doAutoblock( '127.0.0.1' );
+		$autoblockId = $this->getServiceContainer()->getDatabaseBlockStore()
+			->doAutoblock( $block, '127.0.0.1' );
 
 		// Ensure that the restrictions on the block have not changed.
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
@@ -382,7 +362,7 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 
 		// Ensure that the restrictions on the autoblock have been updated.
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $autoblockId );
-		$this->assertCount( 0, $restrictions );
+		$this->assertSame( [], $restrictions );
 	}
 
 	/**
@@ -421,13 +401,11 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
 		$this->assertCount( 1, $restrictions );
 
-		$result = $this->blockRestrictionStore->delete(
-			array_merge( $restrictions, [ new \stdClass() ] )
-		);
+		$result = $this->blockRestrictionStore->delete( $restrictions );
 		$this->assertTrue( $result );
 
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
-		$this->assertCount( 0, $restrictions );
+		$this->assertSame( [], $restrictions );
 	}
 
 	/**
@@ -447,41 +425,7 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 		$this->assertNotFalse( $result );
 
 		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
-		$this->assertCount( 0, $restrictions );
-	}
-
-	/**
-	 * @covers ::deleteByParentBlockId
-	 */
-	public function testDeleteByParentBlockId() {
-		// Create a block with no autoblock.
-		$block = $this->insertBlock();
-		$page = $this->getExistingTestPage( 'Foo' );
-		$this->blockRestrictionStore->insert( [
-			new PageRestriction( $block->getId(), $page->getId() ),
-		] );
-		$autoblockId = $block->doAutoblock( '127.0.0.1' );
-
-		// Ensure that the restrictions on the block have not changed.
-		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
-		$this->assertCount( 1, $restrictions );
-
-		// Ensure that the restrictions on the autoblock are the same as the block.
-		$restrictions = $this->blockRestrictionStore->loadByBlockId( $autoblockId );
-		$this->assertCount( 1, $restrictions );
-
-		// Remove all of the restrictions on the autoblock (but leave the block unchanged).
-		$result = $this->blockRestrictionStore->deleteByParentBlockId( $block->getId() );
-		// NOTE: commented out until https://gerrit.wikimedia.org/r/c/mediawiki/core/+/469324 is merged
-		//$this->assertTrue( $result );
-
-		// Ensure that the restrictions on the block have not changed.
-		$restrictions = $this->blockRestrictionStore->loadByBlockId( $block->getId() );
-		$this->assertCount( 1, $restrictions );
-
-		// Ensure that the restrictions on the autoblock have been removed.
-		$restrictions = $this->blockRestrictionStore->loadByBlockId( $autoblockId );
-		$this->assertCount( 0, $restrictions );
+		$this->assertSame( [], $restrictions );
 	}
 
 	/**
@@ -500,11 +444,9 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 		return [
 			[
 				[
-					new \stdClass(),
 					new PageRestriction( 1, 1 ),
 				],
 				[
-					new \stdClass(),
 					new PageRestriction( 1, 2 )
 				],
 				false,
@@ -563,15 +505,14 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 	 */
 	public function testSetBlockId() {
 		$restrictions = [
-			new \stdClass(),
 			new PageRestriction( 1, 1 ),
 			new PageRestriction( 1, 2 ),
 			new NamespaceRestriction( 1, NS_USER ),
 		];
 
+		$this->assertSame( 1, $restrictions[0]->getBlockId() );
 		$this->assertSame( 1, $restrictions[1]->getBlockId() );
 		$this->assertSame( 1, $restrictions[2]->getBlockId() );
-		$this->assertSame( 1, $restrictions[3]->getBlockId() );
 
 		$result = $this->blockRestrictionStore->setBlockId( 2, $restrictions );
 
@@ -585,29 +526,27 @@ class BlockRestrictionStoreTest extends \MediaWikiLangTestCase {
 		$sysop = $this->getTestSysop()->getUser();
 
 		$block = new DatabaseBlock( [
-			'address' => $badActor->getName(),
-			'user' => $badActor->getId(),
-			'by' => $sysop->getId(),
+			'address' => $badActor,
+			'by' => $sysop,
 			'expiry' => 'infinity',
 			'sitewide' => 0,
 			'enableAutoblock' => true,
 		] );
 
-		$block->insert();
+		$this->getServiceContainer()->getDatabaseBlockStore()->insertBlock( $block );
 
 		return $block;
 	}
 
 	protected function insertRestriction( $blockId, $type, $value ) {
-		$this->db->insert( 'ipblocks_restrictions', [
-			'ir_ipb_id' => $blockId,
-			'ir_type' => $type,
-			'ir_value' => $value,
-		] );
-	}
-
-	protected function resetTables() {
-		$this->db->delete( 'ipblocks', '*', __METHOD__ );
-		$this->db->delete( 'ipblocks_restrictions', '*', __METHOD__ );
+		$this->getDb()->newInsertQueryBuilder()
+			->insertInto( 'ipblocks_restrictions' )
+			->row( [
+				'ir_ipb_id' => $blockId,
+				'ir_type' => $type,
+				'ir_value' => $value,
+			] )
+			->caller( __METHOD__ )
+			->execute();
 	}
 }

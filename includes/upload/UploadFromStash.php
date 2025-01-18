@@ -21,6 +21,10 @@
  * @ingroup Upload
  */
 
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Request\WebRequest;
+use MediaWiki\User\UserIdentity;
+
 /**
  * Implements uploading from previously stored file.
  *
@@ -28,42 +32,41 @@
  * @author Bryan Tong Minh
  */
 class UploadFromStash extends UploadBase {
+	/** @var string */
 	protected $mFileKey;
+	/** @var string */
 	protected $mVirtualTempPath;
-	protected $mFileProps;
+	/** @var string */
 	protected $mSourceType;
 
-	// an instance of UploadStash
+	/** @var UploadStash */
 	private $stash;
 
-	// LocalFile repo
+	/** @var FileRepo */
 	private $repo;
 
 	/**
-	 * @param User|bool $user Default: false
-	 * @param UploadStash|bool $stash Default: false
-	 * @param FileRepo|bool $repo Default: false
+	 * @param UserIdentity|null $user Default: null Sometimes this won't exist, as when running from cron.
+	 * @param UploadStash|false $stash Default: false
+	 * @param FileRepo|false $repo Default: false
 	 */
-	public function __construct( $user = false, $stash = false, $repo = false ) {
-		// user object. sometimes this won't exist, as when running from cron.
-		$this->user = $user;
-
+	public function __construct( ?UserIdentity $user = null, $stash = false, $repo = false ) {
 		if ( $repo ) {
 			$this->repo = $repo;
 		} else {
-			$this->repo = RepoGroup::singleton()->getLocalRepo();
+			$this->repo = MediaWikiServices::getInstance()->getRepoGroup()->getLocalRepo();
 		}
 
 		if ( $stash ) {
 			$this->stash = $stash;
 		} else {
 			if ( $user ) {
-				wfDebug( __METHOD__ . " creating new UploadStash instance for " . $user->getId() . "\n" );
+				wfDebug( __METHOD__ . " creating new UploadStash instance for " . $user->getId() );
 			} else {
-				wfDebug( __METHOD__ . " creating new UploadStash instance with no user\n" );
+				wfDebug( __METHOD__ . " creating new UploadStash instance with no user" );
 			}
 
-			$this->stash = new UploadStash( $this->repo, $this->user );
+			$this->stash = new UploadStash( $this->repo, $user );
 		}
 	}
 
@@ -140,7 +143,14 @@ class UploadFromStash extends UploadBase {
 	 * @return string
 	 */
 	public function getTempFileSha1Base36() {
-		return $this->mFileProps['sha1'];
+		// phan doesn't like us accessing this directly since in
+		// parent class this can be null, however we always set this in
+		// this class so it is safe. Add a check to keep phan happy.
+		if ( !is_array( $this->mFileProps ) ) {
+			throw new LogicException( "mFileProps should never be null" );
+		} else {
+			return $this->mFileProps['sha1'];
+		}
 	}
 
 	/**

@@ -1,29 +1,46 @@
 <?php
 
+namespace MediaWiki\Specials;
+
+use LogicException;
 use MediaWiki\Auth\AuthenticationRequest;
 use MediaWiki\Auth\AuthenticationResponse;
 use MediaWiki\Auth\AuthManager;
+use MediaWiki\Auth\PasswordAuthenticationRequest;
+use MediaWiki\Html\Html;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Message\Message;
 use MediaWiki\Session\SessionManager;
+use MediaWiki\SpecialPage\AuthManagerSpecialPage;
+use MediaWiki\Status\Status;
+use MediaWiki\Title\Title;
 
 /**
- * Special change to change credentials (such as the password).
+ * Change user credentials, such as the password.
  *
- * Also does most of the work for SpecialRemoveCredentials.
+ * This is also powers most of the SpecialRemoveCredentials subclass.
+ *
+ * @see SpecialChangePassword
+ * @ingroup SpecialPage
+ * @ingroup Auth
  */
 class SpecialChangeCredentials extends AuthManagerSpecialPage {
+	/** @inheritDoc */
 	protected static $allowedActions = [ AuthManager::ACTION_CHANGE ];
 
+	/** @var string */
 	protected static $messagePrefix = 'changecredentials';
 
-	/** Change action needs user data; remove action does not */
+	/** @var bool Change action needs user data; remove action does not */
 	protected static $loadUserData = true;
 
-	public function __construct( $name = 'ChangeCredentials' ) {
-		parent::__construct( $name, 'editmyprivateinfo' );
+	public function __construct( AuthManager $authManager ) {
+		parent::__construct( 'ChangeCredentials', 'editmyprivateinfo' );
+		$this->setAuthManager( $authManager );
 	}
 
 	protected function getGroupName() {
-		return 'users';
+		return 'login';
 	}
 
 	public function isListed() {
@@ -37,37 +54,6 @@ class SpecialChangeCredentials extends AuthManagerSpecialPage {
 
 	protected function getDefaultAction( $subPage ) {
 		return AuthManager::ACTION_CHANGE;
-	}
-
-	protected function getPreservedParams( $withToken = false ) {
-		$request = $this->getRequest();
-		$params = parent::getPreservedParams( $withToken );
-		$params += [
-			'returnto' => $request->getVal( 'returnto' ),
-			'returntoquery' => $request->getVal( 'returntoquery' ),
-		];
-		return $params;
-	}
-
-	public function onAuthChangeFormFields(
-		array $requests, array $fieldInfo, array &$formDescriptor, $action
-	) {
-		// This method is never called for remove actions.
-
-		$extraFields = [];
-		Hooks::run( 'ChangePasswordForm', [ &$extraFields ], '1.27' );
-		foreach ( $extraFields as $extra ) {
-			list( $name, $label, $type, $default ) = $extra;
-			$formDescriptor[$name] = [
-				'type' => $type,
-				'name' => $name,
-				'label-message' => $label,
-				'default' => $default,
-			];
-
-		}
-
-		return parent::onAuthChangeFormFields( $requests, $fieldInfo, $formDescriptor, $action );
 	}
 
 	public function execute( $subPage ) {
@@ -87,8 +73,9 @@ class SpecialChangeCredentials extends AuthManagerSpecialPage {
 			return;
 		}
 
-		$this->getOutput()->addBacklinkSubtitle( $this->getPageTitle() );
-
+		$out = $this->getOutput();
+		$out->addModules( 'mediawiki.special.changecredentials' );
+		$out->addBacklinkSubtitle( $this->getPageTitle() );
 		$status = $this->trySubmit();
 
 		if ( $status === false || !$status->isOK() ) {
@@ -113,39 +100,79 @@ class SpecialChangeCredentials extends AuthManagerSpecialPage {
 	protected function loadAuth( $subPage, $authAction = null, $reset = false ) {
 		parent::loadAuth( $subPage, $authAction );
 		if ( $subPage ) {
-			$this->authRequests = array_filter( $this->authRequests, function ( $req ) use ( $subPage ) {
-				return $req->getUniqueId() === $subPage;
-			} );
-			if ( count( $this->authRequests ) > 1 ) {
+			$foundReqs = [];
+			foreach ( $this->authRequests as $req ) {
+				if ( $req->getUniqueId() === $subPage ) {
+					$foundReqs[] = $req;
+				}
+			}
+			if ( count( $foundReqs ) > 1 ) {
 				throw new LogicException( 'Multiple AuthenticationRequest objects with same ID!' );
 			}
+			$this->authRequests = $foundReqs;
+		}
+	}
+
+	/** @inheritDoc */
+	public function onAuthChangeFormFields(
+		array $requests, array $fieldInfo, array &$formDescriptor, $action
+	) {
+		parent::onAuthChangeFormFields( $requests, $fieldInfo, $formDescriptor, $action );
+
+		// Add some UI flair for password changes, the most common use case for this page.
+		if ( AuthenticationRequest::getRequestByClass( $this->authRequests,
+			PasswordAuthenticationRequest::class )
+		) {
+			$formDescriptor = self::mergeDefaultFormDescriptor( $fieldInfo, $formDescriptor, [
+				'password' => [
+					'autocomplete' => 'new-password',
+					'placeholder-message' => 'createacct-yourpassword-ph',
+					'help-message' => 'createacct-useuniquepass',
+				],
+				'retype' => [
+					'autocomplete' => 'new-password',
+					'placeholder-message' => 'createacct-yourpasswordagain-ph',
+				],
+				// T263927 - the Chromium password form guide recommends always having a username field
+				'username' => [
+					'type' => 'text',
+					'baseField' => 'password',
+					'autocomplete' => 'username',
+					'nodata' => true,
+					'readonly' => true,
+					'cssclass' => 'mw-htmlform-hidden-field',
+					'label-message' => 'userlogin-yourname',
+					'placeholder-message' => 'userlogin-yourname-ph',
+				],
+			] );
 		}
 	}
 
 	protected function getAuthFormDescriptor( $requests, $action ) {
 		if ( !static::$loadUserData ) {
 			return [];
-		} else {
-			$descriptor = parent::getAuthFormDescriptor( $requests, $action );
+		}
 
-			$any = false;
-			foreach ( $descriptor as &$field ) {
-				if ( $field['type'] === 'password' && $field['name'] !== 'retype' ) {
-					$any = true;
-					if ( isset( $field['cssclass'] ) ) {
-						$field['cssclass'] .= ' mw-changecredentials-validate-password';
-					} else {
-						$field['cssclass'] = 'mw-changecredentials-validate-password';
-					}
+		$descriptor = parent::getAuthFormDescriptor( $requests, $action );
+
+		$any = false;
+		foreach ( $descriptor as &$field ) {
+			if ( $field['type'] === 'password' && $field['name'] !== 'retype' ) {
+				$any = true;
+				if ( isset( $field['cssclass'] ) ) {
+					$field['cssclass'] .= ' mw-changecredentials-validate-password';
+				} else {
+					$field['cssclass'] = 'mw-changecredentials-validate-password';
 				}
 			}
-
-			if ( $any ) {
-				$this->getOutput()->addModules( 'mediawiki.misc-authed-ooui' );
-			}
-
-			return $descriptor;
 		}
+		unset( $field );
+
+		if ( $any ) {
+			$this->getOutput()->addModules( 'mediawiki.misc-authed-ooui' );
+		}
+
+		return $descriptor;
 	}
 
 	protected function getAuthForm( array $requests, $action ) {
@@ -153,19 +180,19 @@ class SpecialChangeCredentials extends AuthManagerSpecialPage {
 		$req = reset( $requests );
 		$info = $req->describeCredentials();
 
-		$form->addPreText(
+		$form->addPreHtml(
 			Html::openElement( 'dl' )
 			. Html::element( 'dt', [], $this->msg( 'credentialsform-provider' )->text() )
-			. Html::element( 'dd', [], $info['provider'] )
+			. Html::element( 'dd', [], $info['provider']->text() )
 			. Html::element( 'dt', [], $this->msg( 'credentialsform-account' )->text() )
-			. Html::element( 'dd', [], $info['account'] )
+			. Html::element( 'dd', [], $info['account']->text() )
 			. Html::closeElement( 'dl' )
 		);
 
 		// messages used: changecredentials-submit removecredentials-submit
 		$form->setSubmitTextMsg( static::$messagePrefix . '-submit' );
 		$form->showCancel()->setCancelTarget( $this->getReturnUrl() ?: Title::newMainPage() );
-
+		$form->setSubmitID( 'change_credentials_submit' );
 		return $form;
 	}
 
@@ -201,7 +228,7 @@ class SpecialChangeCredentials extends AuthManagerSpecialPage {
 		$groupedRequests = [];
 		foreach ( $this->authRequests as $req ) {
 			$info = $req->describeCredentials();
-			$groupedRequests[(string)$info['provider']][] = $req;
+			$groupedRequests[$info['provider']->text()][] = $req;
 		}
 
 		$linkRenderer = $this->getLinkRenderer();
@@ -214,7 +241,7 @@ class SpecialChangeCredentials extends AuthManagerSpecialPage {
 				$out->addHTML( Html::rawElement( 'dd', [],
 					$linkRenderer->makeLink(
 						$this->getPageTitle( $req->getUniqueId() ),
-						$info['account']
+						$info['account']->text()
 					)
 				) );
 			}
@@ -237,8 +264,11 @@ class SpecialChangeCredentials extends AuthManagerSpecialPage {
 			$out->redirect( $returnUrl );
 		} else {
 			// messages used: changecredentials-success removecredentials-success
-			$out->wrapWikiMsg( "<div class=\"successbox\">\n$1\n</div>", static::$messagePrefix
-				. '-success' );
+			$out->addHTML(
+				Html::successBox(
+					$out->msg( static::$messagePrefix . '-success' )->parse()
+				)
+			);
 			$out->returnToMain();
 		}
 	}
@@ -255,11 +285,13 @@ class SpecialChangeCredentials extends AuthManagerSpecialPage {
 			return null;
 		}
 
-		$title = Title::newFromText( $returnTo );
-		return $title->getFullUrlForRedirect( $returnToQuery );
+		return Title::newFromText( $returnTo )->getFullUrlForRedirect( $returnToQuery );
 	}
 
 	protected function getRequestBlacklist() {
-		return $this->getConfig()->get( 'ChangeCredentialsBlacklist' );
+		return $this->getConfig()->get( MainConfigNames::ChangeCredentialsBlacklist );
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( SpecialChangeCredentials::class, 'SpecialChangeCredentials' );

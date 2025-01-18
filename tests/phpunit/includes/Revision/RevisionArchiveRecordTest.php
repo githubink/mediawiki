@@ -2,67 +2,31 @@
 
 namespace MediaWiki\Tests\Revision;
 
-use CommentStoreComment;
 use InvalidArgumentException;
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Content\TextContent;
+use MediaWiki\Page\PageIdentity;
+use MediaWiki\Page\PageIdentityValue;
+use MediaWiki\Revision\RevisionArchiveRecord;
 use MediaWiki\Revision\RevisionRecord;
 use MediaWiki\Revision\RevisionSlots;
-use MediaWiki\Revision\RevisionArchiveRecord;
 use MediaWiki\Revision\SlotRecord;
+use MediaWiki\Title\Title;
+use MediaWiki\Title\TitleValue;
 use MediaWiki\User\UserIdentity;
 use MediaWiki\User\UserIdentityValue;
-use MediaWikiTestCase;
-use TextContent;
-use Title;
+use MediaWikiIntegrationTestCase;
+use stdClass;
+use Wikimedia\Assert\PreconditionException;
 
 /**
  * @covers \MediaWiki\Revision\RevisionArchiveRecord
  * @covers \MediaWiki\Revision\RevisionRecord
  */
-class RevisionArchiveRecordTest extends MediaWikiTestCase {
+class RevisionArchiveRecordTest extends MediaWikiIntegrationTestCase {
 
-	use RevisionRecordTests;
-
-	/**
-	 * @param array $rowOverrides
-	 *
-	 * @return RevisionArchiveRecord
-	 */
-	protected function newRevision( array $rowOverrides = [] ) {
-		$title = Title::newFromText( 'Dummy' );
-		$title->resetArticleID( 17 );
-
-		$user = new UserIdentityValue( 11, 'Tester', 0 );
-		$comment = CommentStoreComment::newUnsavedComment( 'Hello World' );
-
-		$main = SlotRecord::newUnsaved( SlotRecord::MAIN, new TextContent( 'Lorem Ipsum' ) );
-		$aux = SlotRecord::newUnsaved( 'aux', new TextContent( 'Frumious Bandersnatch' ) );
-		$slots = new RevisionSlots( [ $main, $aux ] );
-
-		$row = [
-			'ar_id' => '5',
-			'ar_rev_id' => '7',
-			'ar_page_id' => strval( $title->getArticleID() ),
-			'ar_timestamp' => '20200101000000',
-			'ar_deleted' => 0,
-			'ar_minor_edit' => 0,
-			'ar_parent_id' => '5',
-			'ar_len' => $slots->computeSize(),
-			'ar_sha1' => $slots->computeSha1(),
-		];
-
-		foreach ( $rowOverrides as $field => $value ) {
-			$field = preg_replace( '/^rev_/', 'ar_', $field );
-			$row[$field] = $value;
-		}
-
-		return new RevisionArchiveRecord( $title, $user, $comment, (object)$row, $slots );
-	}
-
-	public function provideConstructor() {
-		$title = Title::newFromText( 'Dummy' );
-		$title->resetArticleID( 17 );
-
-		$user = new UserIdentityValue( 11, 'Tester', 0 );
+	public static function provideConstructor() {
+		$user = new UserIdentityValue( 11, 'Tester' );
 		$comment = CommentStoreComment::newUnsavedComment( 'Hello World' );
 
 		$main = SlotRecord::newUnsaved( SlotRecord::MAIN, new TextContent( 'Lorem Ipsum' ) );
@@ -72,7 +36,7 @@ class RevisionArchiveRecordTest extends MediaWikiTestCase {
 		$protoRow = [
 			'ar_id' => '5',
 			'ar_rev_id' => '7',
-			'ar_page_id' => strval( $title->getArticleID() ),
+			'ar_page_id' => '17',
 			'ar_timestamp' => '20200101000000',
 			'ar_deleted' => 0,
 			'ar_minor_edit' => 0,
@@ -83,12 +47,31 @@ class RevisionArchiveRecordTest extends MediaWikiTestCase {
 
 		$row = $protoRow;
 		yield 'all info' => [
-			$title,
+			new PageIdentityValue( 17, NS_MAIN, 'Dummy', 'acmewiki' ),
 			$user,
 			$comment,
 			(object)$row,
 			$slots,
 			'acmewiki'
+		];
+
+		yield 'all info, local' => [
+			new PageIdentityValue( 17, NS_MAIN, 'Dummy', PageIdentity::LOCAL ),
+			$user,
+			$comment,
+			(object)$row,
+			$slots,
+		];
+
+		$title = Title::makeTitle( NS_MAIN, 'Dummy' );
+		$title->resetArticleID( 17 );
+
+		yield 'all info, local, with Title' => [
+			$title,
+			$user,
+			$comment,
+			(object)$row,
+			$slots,
 		];
 
 		$row = $protoRow;
@@ -127,8 +110,10 @@ class RevisionArchiveRecordTest extends MediaWikiTestCase {
 		];
 
 		$row = $protoRow;
+		$nonExistingTitle = Title::makeTitle( NS_MAIN, 'DummyDoesNotExist' );
+		$nonExistingTitle->resetArticleID( 0 );
 		yield 'no length, no hash' => [
-			Title::newFromText( 'DummyDoesNotExist' ),
+			$nonExistingTitle,
 			$user,
 			$comment,
 			(object)$row,
@@ -139,41 +124,42 @@ class RevisionArchiveRecordTest extends MediaWikiTestCase {
 	/**
 	 * @dataProvider provideConstructor
 	 *
-	 * @param Title $title
+	 * @param Title $page
 	 * @param UserIdentity $user
 	 * @param CommentStoreComment $comment
-	 * @param object $row
+	 * @param stdClass $row
 	 * @param RevisionSlots $slots
-	 * @param bool $wikiId
+	 * @param string|false $wikiId
 	 */
 	public function testConstructorAndGetters(
-		Title $title,
+		PageIdentity $page,
 		UserIdentity $user,
 		CommentStoreComment $comment,
 		$row,
 		RevisionSlots $slots,
-		$wikiId = false
+		$wikiId = RevisionRecord::LOCAL
 	) {
-		$rec = new RevisionArchiveRecord( $title, $user, $comment, $row, $slots, $wikiId );
+		$rec = new RevisionArchiveRecord( $page, $user, $comment, $row, $slots, $wikiId );
 
-		$this->assertSame( $title, $rec->getPageAsLinkTarget(), 'getPageAsLinkTarget' );
+		$this->assertTrue( $page->isSamePageAs( $rec->getPage() ), 'getPage' );
 		$this->assertSame( $user, $rec->getUser( RevisionRecord::RAW ), 'getUser' );
-		$this->assertSame( $comment, $rec->getComment(), 'getComment' );
+		$this->assertSame( null, $rec->getComment(), 'getComment (public)' );
+		$this->assertSame( $comment, $rec->getComment( RevisionRecord::RAW ), 'getComment (raw)' );
 
 		$this->assertSame( $slots->getSlotRoles(), $rec->getSlotRoles(), 'getSlotRoles' );
 		$this->assertSame( $wikiId, $rec->getWikiId(), 'getWikiId' );
 
 		$this->assertSame( (int)$row->ar_id, $rec->getArchiveId(), 'getArchiveId' );
-		$this->assertSame( (int)$row->ar_rev_id, $rec->getId(), 'getId' );
-		$this->assertSame( (int)$row->ar_page_id, $rec->getPageId(), 'getId' );
+		$this->assertSame( (int)$row->ar_rev_id, $rec->getId( $wikiId ), 'getId' );
+		$this->assertSame( (int)$row->ar_page_id, $rec->getPageId( $wikiId ), 'getId' );
 		$this->assertSame( $row->ar_timestamp, $rec->getTimestamp(), 'getTimestamp' );
 		$this->assertSame( (int)$row->ar_deleted, $rec->getVisibility(), 'getVisibility' );
 		$this->assertSame( (bool)$row->ar_minor_edit, $rec->isMinor(), 'getIsMinor' );
 
 		if ( isset( $row->ar_parent_id ) ) {
-			$this->assertSame( (int)$row->ar_parent_id, $rec->getParentId(), 'getParentId' );
+			$this->assertSame( (int)$row->ar_parent_id, $rec->getParentId( $wikiId ), 'getParentId' );
 		} else {
-			$this->assertSame( 0, $rec->getParentId(), 'getParentId' );
+			$this->assertSame( 0, $rec->getParentId( $wikiId ), 'getParentId' );
 		}
 
 		if ( isset( $row->ar_len ) ) {
@@ -187,13 +173,18 @@ class RevisionArchiveRecordTest extends MediaWikiTestCase {
 		} else {
 			$this->assertSame( $slots->computeSha1(), $rec->getSha1(), 'getSha1' );
 		}
+
+		$this->assertTrue(
+			TitleValue::newFromPage( $page )->isSameLinkAs( $rec->getPageAsLinkTarget() ),
+			'getPageAsLinkTarget'
+		);
 	}
 
-	public function provideConstructorFailure() {
-		$title = Title::newFromText( 'Dummy' );
+	public static function provideConstructorFailure() {
+		$title = Title::makeTitle( NS_MAIN, 'Dummy' );
 		$title->resetArticleID( 17 );
 
-		$user = new UserIdentityValue( 11, 'Tester', 0 );
+		$user = new UserIdentityValue( 11, 'Tester' );
 
 		$comment = CommentStoreComment::newUnsavedComment( 'Hello World' );
 
@@ -213,13 +204,21 @@ class RevisionArchiveRecordTest extends MediaWikiTestCase {
 			'ar_sha1' => $slots->computeSha1(),
 		];
 
-		yield 'not a row' => [
-			$title,
+		$row = $protoRow;
+
+		yield 'mismatching wiki ID' => [
+			new PageIdentityValue(
+				$title->getArticleID(),
+				$title->getNamespace(),
+				$title->getDBkey(),
+				PageIdentity::LOCAL
+			),
 			$user,
 			$comment,
-			'not a row',
+			(object)$row,
 			$slots,
-			'acmewiki'
+			'acmewiki',
+			PreconditionException::class
 		];
 
 		$row = $protoRow;
@@ -250,23 +249,24 @@ class RevisionArchiveRecordTest extends MediaWikiTestCase {
 	/**
 	 * @dataProvider provideConstructorFailure
 	 *
-	 * @param Title $title
+	 * @param PageIdentity $page
 	 * @param UserIdentity $user
 	 * @param CommentStoreComment $comment
-	 * @param object $row
+	 * @param stdClass $row
 	 * @param RevisionSlots $slots
-	 * @param bool $wikiId
+	 * @param string|false $wikiId
+	 * @param string|null $expectedException
 	 */
 	public function testConstructorFailure(
-		Title $title,
+		PageIdentity $page,
 		UserIdentity $user,
 		CommentStoreComment $comment,
 		$row,
 		RevisionSlots $slots,
-		$wikiId = false
+		$wikiId = false,
+		string $expectedException = InvalidArgumentException::class
 	) {
-		$this->setExpectedException( InvalidArgumentException::class );
-		new RevisionArchiveRecord( $title, $user, $comment, $row, $slots, $wikiId );
+		$this->expectException( $expectedException );
+		new RevisionArchiveRecord( $page, $user, $comment, $row, $slots, $wikiId );
 	}
-
 }

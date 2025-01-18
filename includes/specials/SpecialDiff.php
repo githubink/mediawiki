@@ -1,8 +1,5 @@
 <?php
 /**
- * Redirect from Special:Diff/### to index.php?diff=### and
- * from Special:Diff/###/### to index.php?oldid=###&diff=###.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -19,8 +16,13 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup SpecialPage
  */
+
+namespace MediaWiki\Specials;
+
+use MediaWiki\HTMLForm\HTMLForm;
+use MediaWiki\SpecialPage\RedirectSpecialPage;
+use MediaWiki\Title\Title;
 
 /**
  * Redirect from Special:Diff/### to index.php?diff=### and
@@ -47,7 +49,7 @@ class SpecialDiff extends RedirectSpecialPage {
 	 * @return Title|bool
 	 */
 	public function getRedirect( $subpage ) {
-		$parts = explode( '/', $subpage );
+		$parts = $subpage !== null ? explode( '/', $subpage ) : [];
 
 		// Try to parse the values given, generating somewhat pretty URLs if possible
 		if ( count( $parts ) === 1 && $parts[0] !== '' ) {
@@ -78,8 +80,25 @@ class SpecialDiff extends RedirectSpecialPage {
 			],
 			'diff' => [
 				'name' => 'diff',
-				'class' => HTMLTextField::class,
+				// FIXME Set the type for the other field to int - T256425
+				'type' => 'selectorother',
+				'options-messages' => [
+					'diff-form-other-revid' => 'other',
+					'last' => 'prev',
+					'cur' => 'cur',
+					'next' => 'next',
+				],
 				'label-message' => 'diff-form-revid',
+				// Remove validation callback when using int type - T256425
+				'validation-callback' => function ( $value ) {
+					$value = trim( $value ?? '' );
+					if ( preg_match( '/^\d*$/', $value )
+						|| in_array( $value, [ 'prev', 'cur', 'next' ], true )
+					) {
+						return true;
+					}
+					return $this->msg( 'diff-form-error-revid' );
+				},
 			],
 		], $this->getContext(), 'diff-form' );
 		$form->setSubmitTextMsg( 'diff-form-submit' );
@@ -93,7 +112,8 @@ class SpecialDiff extends RedirectSpecialPage {
 			$params[] = $formData['oldid'];
 		}
 		if ( $formData['diff'] ) {
-			$params[] = $formData['diff'];
+			// Remove trim when using int type - T256425
+			$params[] = trim( $formData['diff'] );
 		}
 		$title = $this->getPageTitle( $params ? implode( '/', $params ) : null );
 		$url = $title->getFullUrlForRedirect();
@@ -102,7 +122,7 @@ class SpecialDiff extends RedirectSpecialPage {
 
 	public function getDescription() {
 		// 'diff' message is in lowercase, using own message
-		return $this->msg( 'diff-form' )->text();
+		return $this->msg( 'diff-form' );
 	}
 
 	public function getName() {
@@ -117,3 +137,6 @@ class SpecialDiff extends RedirectSpecialPage {
 		return 'redirects';
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( SpecialDiff::class, 'SpecialDiff' );

@@ -1,6 +1,6 @@
 <?php
 /**
- * Copyright © 2007 Roan Kattouw "<Firstname>.<Lastname>@gmail.com"
+ * Copyright © 2007 Roan Kattouw <roan.kattouw@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,7 +20,22 @@
  * @file
  */
 
-use MediaWiki\Block\DatabaseBlock;
+namespace MediaWiki\Api;
+
+use MediaWiki\Block\AbstractBlock;
+use MediaWiki\Block\Block;
+use MediaWiki\Block\BlockPermissionCheckerFactory;
+use MediaWiki\Block\DatabaseBlockStore;
+use MediaWiki\Block\UnblockUserFactory;
+use MediaWiki\MainConfigNames;
+use MediaWiki\ParamValidator\TypeDef\UserDef;
+use MediaWiki\Title\Title;
+use MediaWiki\User\Options\UserOptionsLookup;
+use MediaWiki\User\UserIdentityLookup;
+use MediaWiki\Watchlist\WatchedItemStoreInterface;
+use MediaWiki\Watchlist\WatchlistManager;
+use Wikimedia\ParamValidator\ParamValidator;
+use Wikimedia\ParamValidator\TypeDef\ExpiryDef;
 
 /**
  * API module that facilitates the unblocking of users. Requires API write mode
@@ -31,66 +46,147 @@ use MediaWiki\Block\DatabaseBlock;
 class ApiUnblock extends ApiBase {
 
 	use ApiBlockInfoTrait;
+	use ApiWatchlistTrait;
+
+	private BlockPermissionCheckerFactory $permissionCheckerFactory;
+	private UnblockUserFactory $unblockUserFactory;
+	private UserIdentityLookup $userIdentityLookup;
+	private WatchedItemStoreInterface $watchedItemStore;
+	private DatabaseBlockStore $blockStore;
+
+	public function __construct(
+		ApiMain $main,
+		string $action,
+		BlockPermissionCheckerFactory $permissionCheckerFactory,
+		UnblockUserFactory $unblockUserFactory,
+		UserIdentityLookup $userIdentityLookup,
+		WatchedItemStoreInterface $watchedItemStore,
+		WatchlistManager $watchlistManager,
+		UserOptionsLookup $userOptionsLookup,
+		DatabaseBlockStore $blockStore
+	) {
+		parent::__construct( $main, $action );
+
+		$this->permissionCheckerFactory = $permissionCheckerFactory;
+		$this->unblockUserFactory = $unblockUserFactory;
+		$this->userIdentityLookup = $userIdentityLookup;
+		$this->watchedItemStore = $watchedItemStore;
+
+		// Variables needed in ApiWatchlistTrait trait
+		$this->watchlistExpiryEnabled = $this->getConfig()->get( MainConfigNames::WatchlistExpiry );
+		$this->watchlistMaxDuration =
+			$this->getConfig()->get( MainConfigNames::WatchlistExpiryMaxDuration );
+		$this->watchlistManager = $watchlistManager;
+		$this->userOptionsLookup = $userOptionsLookup;
+		$this->blockStore = $blockStore;
+	}
 
 	/**
 	 * Unblocks the specified user or provides the reason the unblock failed.
 	 */
 	public function execute() {
-		$user = $this->getUser();
+		$performer = $this->getUser();
 		$params = $this->extractRequestParams();
 
 		$this->requireOnlyOneParameter( $params, 'id', 'user', 'userid' );
 
-		if ( !$user->isAllowed( 'block' ) ) {
+		if ( !$this->getAuthority()->isAllowed( 'block' ) ) {
 			$this->dieWithError( 'apierror-permissiondenied-unblock', 'permissiondenied' );
-		}
-		# T17810: blocked admins should have limited access here
-		$block = $user->getBlock();
-		if ( $block ) {
-			$status = SpecialBlock::checkUnblockSelf( $params['user'], $user );
-			if ( $status !== true ) {
-				$this->dieWithError(
-					$status,
-					null,
-					[ 'blockinfo' => $this->getBlockDetails( $block ) ]
-				);
-			}
-		}
-
-		// Check if user can add tags
-		if ( !is_null( $params['tags'] ) ) {
-			$ableToTag = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $user );
-			if ( !$ableToTag->isOK() ) {
-				$this->dieStatus( $ableToTag );
-			}
 		}
 
 		if ( $params['userid'] !== null ) {
-			$username = User::whoIs( $params['userid'] );
-
-			if ( $username === false ) {
+			$identity = $this->userIdentityLookup->getUserIdentityByUserId( $params['userid'] );
+			if ( !$identity ) {
 				$this->dieWithError( [ 'apierror-nosuchuserid', $params['userid'] ], 'nosuchuserid' );
-			} else {
-				$params['user'] = $username;
 			}
+			$params['user'] = $identity->getName();
 		}
 
-		$data = [
-			'Target' => is_null( $params['id'] ) ? $params['user'] : "#{$params['id']}",
-			'Reason' => $params['reason'],
-			'Tags' => $params['tags']
+		$blockToRemove = null;
+		if ( $params['id'] !== null ) {
+			$blockToRemove = $this->blockStore->newFromID( $params['id'], true );
+			if ( !$blockToRemove ) {
+				$this->dieWithError(
+					[ 'apierror-nosuchblockid', $params['id'] ],
+					'nosuchblockid' );
+			}
+
+			if ( $blockToRemove->getType() === AbstractBlock::TYPE_AUTO ) {
+				$target = '#' . $params['id'];
+			} else {
+				$target = $blockToRemove->getTargetName();
+			}
+		} else {
+			$target = $params['user'];
+		}
+
+		# T17810: blocked admins should have limited access here
+		$status = $this->permissionCheckerFactory
+			->newBlockPermissionChecker(
+				$target,
+				$this->getAuthority()
+			)->checkBlockPermissions();
+
+		if ( $status !== true ) {
+			$this->dieWithError(
+				$status,
+				null,
+				// @phan-suppress-next-line PhanTypeMismatchArgumentNullable Block is checked and not null
+				[ 'blockinfo' => $this->getBlockDetails( $performer->getBlock() ) ]
+			);
+		}
+
+		if ( $blockToRemove !== null ) {
+			$status = $this->unblockUserFactory->newRemoveBlock(
+				$blockToRemove,
+				$this->getAuthority(),
+				$params['reason'],
+				$params['tags'] ?? []
+			)->unblock();
+		} else {
+			$status = $this->unblockUserFactory->newUnblockUser(
+				$target,
+				$this->getAuthority(),
+				$params['reason'],
+				$params['tags'] ?? []
+			)->unblock();
+		}
+
+		if ( !$status->isOK() ) {
+			$this->dieStatus( $status );
+		}
+
+		$block = $status->getValue();
+		$targetType = $block->getType();
+		$targetName = $targetType === Block::TYPE_AUTO ? '' : $block->getTargetName();
+		$targetUserId = $block->getTargetUserIdentity() ? $block->getTargetUserIdentity()->getId() : 0;
+
+		$watchlistExpiry = $this->getExpiryFromParams( $params );
+		$watchuser = $params['watchuser'];
+		$userPage = Title::makeTitle( NS_USER, $targetName );
+		if ( $watchuser && $targetType !== Block::TYPE_RANGE && $targetType !== Block::TYPE_AUTO ) {
+			$this->setWatch( 'watch', $userPage, $this->getUser(), null, $watchlistExpiry );
+		} else {
+			$watchuser = false;
+			$watchlistExpiry = null;
+		}
+
+		$res = [
+			'id' => $block->getId(),
+			'user' => $targetName,
+			'userid' => $targetUserId,
+			'reason' => $params['reason'],
+			'watchuser' => $watchuser,
 		];
-		$block = DatabaseBlock::newFromTarget( $data['Target'] );
-		$retval = SpecialUnblock::processUnblock( $data, $this->getContext() );
-		if ( $retval !== true ) {
-			$this->dieStatus( $this->errorArrayToStatus( $retval ) );
+
+		if ( $watchlistExpiry !== null ) {
+			$res['watchlistexpiry'] = $this->getWatchlistExpiry(
+				$this->watchedItemStore,
+				$userPage,
+				$this->getUser()
+			);
 		}
 
-		$res['id'] = $block->getId();
-		$target = $block->getType() == DatabaseBlock::TYPE_AUTO ? '' : $block->getTarget();
-		$res['user'] = $target instanceof User ? $target->getName() : $target;
-		$res['userid'] = $target instanceof User ? $target->getId() : 0;
-		$res['reason'] = $params['reason'];
 		$this->getResult()->addValue( null, $this->getModuleName(), $res );
 	}
 
@@ -103,20 +199,40 @@ class ApiUnblock extends ApiBase {
 	}
 
 	public function getAllowedParams() {
-		return [
+		$params = [
 			'id' => [
-				ApiBase::PARAM_TYPE => 'integer',
+				ParamValidator::PARAM_TYPE => 'integer',
 			],
-			'user' => null,
+			'user' => [
+				ParamValidator::PARAM_TYPE => 'user',
+				UserDef::PARAM_ALLOWED_USER_TYPES => [ 'name', 'ip', 'temp', 'cidr', 'id' ],
+			],
 			'userid' => [
-				ApiBase::PARAM_TYPE => 'integer'
+				ParamValidator::PARAM_TYPE => 'integer',
+				ParamValidator::PARAM_DEPRECATED => true,
 			],
 			'reason' => '',
 			'tags' => [
-				ApiBase::PARAM_TYPE => 'tags',
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => 'tags',
+				ParamValidator::PARAM_ISMULTI => true,
 			],
+			'watchuser' => false,
 		];
+
+		// Params appear in the docs in the order they are defined,
+		// which is why this is here and not at the bottom.
+		// @todo Find better way to support insertion at arbitrary position
+		if ( $this->watchlistExpiryEnabled ) {
+			$params += [
+				'watchlistexpiry' => [
+					ParamValidator::PARAM_TYPE => 'expiry',
+					ExpiryDef::PARAM_MAX => $this->watchlistMaxDuration,
+					ExpiryDef::PARAM_USE_MAX => true,
+				]
+			];
+		}
+
+		return $params;
 	}
 
 	public function needsToken() {
@@ -136,3 +252,6 @@ class ApiUnblock extends ApiBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Block';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiUnblock::class, 'ApiUnblock' );

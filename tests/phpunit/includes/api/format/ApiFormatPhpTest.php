@@ -1,11 +1,16 @@
 <?php
 
+namespace MediaWiki\Tests\Api\Format;
+
+use MediaWiki\Api\ApiResult;
+
 /**
  * @group API
- * @covers ApiFormatPhp
+ * @covers \MediaWiki\Api\ApiFormatPhp
  */
 class ApiFormatPhpTest extends ApiFormatTestBase {
 
+	/** @inheritDoc */
 	protected $printerName = 'php';
 
 	private static function addFormatVersion( $format, $arr ) {
@@ -20,7 +25,6 @@ class ApiFormatPhpTest extends ApiFormatTestBase {
 	}
 
 	public static function provideGeneralEncoding() {
-		// phpcs:disable Generic.Files.LineLength
 		return array_merge(
 			self::addFormatVersion( 1, [
 				// Basic types
@@ -98,42 +102,6 @@ class ApiFormatPhpTest extends ApiFormatTestBase {
 			] )
 		);
 		// phpcs:enable
-	}
-
-	public function testCrossDomainMangling() {
-		$config = new HashConfig( [ 'MangleFlashPolicy' => false ] );
-		$context = new RequestContext;
-		$context->setConfig( new MultiConfig( [
-			$config,
-			$context->getConfig(),
-		] ) );
-		$main = new ApiMain( $context );
-		$main->getResult()->addValue( null, null, '< Cross-Domain-Policy >' );
-
-		$printer = $main->createPrinterByName( 'php' );
-		ob_start( 'MediaWiki\\OutputHandler::handle' );
-		$printer->initPrinter();
-		$printer->execute();
-		$printer->closePrinter();
-		$ret = ob_get_clean();
-		$this->assertSame( 'a:1:{i:0;s:23:"< Cross-Domain-Policy >";}', $ret );
-
-		$config->set( 'MangleFlashPolicy', true );
-		$printer = $main->createPrinterByName( 'php' );
-		ob_start( 'MediaWiki\\OutputHandler::handle' );
-		try {
-			$printer->initPrinter();
-			$printer->execute();
-			$printer->closePrinter();
-			ob_end_clean();
-			$this->fail( 'Expected exception not thrown' );
-		} catch ( ApiUsageException $ex ) {
-			ob_end_clean();
-			$this->assertTrue(
-				$ex->getStatusValue()->hasMessage( 'apierror-formatphp' ),
-				'Expected exception'
-			);
-		}
 	}
 
 }

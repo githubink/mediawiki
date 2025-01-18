@@ -1,7 +1,9 @@
 <?php
 
+use MediaWiki\Title\TitleValue;
+
 /**
- * @covers BlockLogFormatter
+ * @covers \BlockLogFormatter
  */
 class BlockLogFormatterTest extends LogFormatterTestCase {
 
@@ -23,6 +25,32 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'namespace' => NS_USER,
 					'title' => 'Logtestuser',
 					'params' => [
+						'5::duration' => 'infinity',
+						'6::flags' => 'anononly',
+					],
+				],
+				[
+					'text' => 'Sysop blocked Logtestuser with an expiration time of indefinite'
+						. ' (anonymous users only)',
+					'api' => [
+						'duration' => 'infinity',
+						'flags' => [ 'anononly' ],
+					],
+					'preload' => [ new TitleValue( NS_USER_TALK, 'Logtestuser' ) ],
+				],
+			],
+
+			// Old log format with one of the 4 values for 'infinity'
+			[
+				[
+					'type' => 'block',
+					'action' => 'block',
+					'comment' => 'Block comment',
+					'user' => 0,
+					'user_text' => 'Sysop',
+					'namespace' => NS_USER,
+					'title' => 'Logtestuser',
+					'params' => [
 						'5::duration' => 'infinite',
 						'6::flags' => 'anononly',
 					],
@@ -31,7 +59,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop blocked Logtestuser with an expiration time of indefinite'
 						. ' (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 					],
 					'preload' => [ new TitleValue( NS_USER_TALK, 'Logtestuser' ) ],
@@ -54,7 +82,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop blocked (no username available) '
 						. 'with an expiration time of indefinite',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [],
 					],
 					'preload' => [],
@@ -81,7 +109,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop blocked Logtestuser with an expiration time of indefinite'
 						. ' (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 					],
 				],
@@ -105,7 +133,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'legacy' => true,
 					'text' => 'Sysop blocked Logtestuser with an expiration time of indefinite',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [],
 					],
 				],
@@ -127,7 +155,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'legacy' => true,
 					'text' => 'Sysop blocked Logtestuser with an expiration time of indefinite',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [],
 					],
 				],
@@ -168,7 +196,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop changed block settings for Logtestuser with an expiration time of'
 						. ' indefinite (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 					],
 				],
@@ -194,7 +222,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop changed block settings for Logtestuser with an expiration time of'
 						. ' indefinite (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 					],
 				],
@@ -218,7 +246,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'legacy' => true,
 					'text' => 'Sysop changed block settings for Logtestuser with an expiration time of indefinite',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [],
 					],
 				],
@@ -293,7 +321,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop blocked Logtestuser with an expiration time of indefinite'
 						. ' (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 					],
 				],
@@ -319,7 +347,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop blocked Logtestuser with an expiration time of indefinite'
 						. ' (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 					],
 				],
@@ -328,9 +356,67 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 	}
 
 	/**
-	 * @dataProvider provideSuppressBlockLogDatabaseRows
+	 * Provide different rows from the logging table to test
+	 * for backward compatibility.
+	 * Do not change the existing data, just add a new database row
 	 */
-	public function testSuppressBlockLogDatabaseRows( $row, $extra ) {
+	public static function provideSuppressBlockLogDatabaseRowsNonPrivileged() {
+		return [
+			// Current log format
+			[
+				[
+					'type' => 'suppress',
+					'action' => 'block',
+					'comment' => 'Block comment',
+					'user' => 0,
+					'user_text' => 'Sysop',
+					'namespace' => NS_USER,
+					'title' => 'Logtestuser',
+					'params' => [
+						'5::duration' => 'infinite',
+						'6::flags' => 'anononly',
+					],
+				],
+				[
+					'text' => '(username removed) (log details removed)',
+					'api' => [
+						'duration' => 'infinity',
+						'flags' => [ 'anononly' ],
+					],
+				],
+			],
+
+			// legacy log
+			[
+				[
+					'type' => 'suppress',
+					'action' => 'block',
+					'comment' => 'Block comment',
+					'user' => 0,
+					'user_text' => 'Sysop',
+					'namespace' => NS_USER,
+					'title' => 'Logtestuser',
+					'params' => [
+						'infinite',
+						'anononly',
+					],
+				],
+				[
+					'legacy' => true,
+					'text' => '(username removed) (log details removed)',
+					'api' => [
+						'duration' => 'infinity',
+						'flags' => [ 'anononly' ],
+					],
+				],
+			],
+		];
+	}
+
+	/**
+	 * @dataProvider provideSuppressBlockLogDatabaseRowsNonPrivileged
+	 */
+	public function testSuppressBlockLogDatabaseRowsNonPrivileged( $row, $extra ) {
 		$this->doTestLogFormatter( $row, $extra );
 	}
 
@@ -360,7 +446,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop changed block settings for Logtestuser with an expiration time of'
 						. ' indefinite (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 					],
 				],
@@ -386,7 +472,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop changed block settings for Logtestuser with an expiration time of'
 						. ' indefinite (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 					],
 				],
@@ -395,13 +481,87 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 	}
 
 	/**
+	 * @dataProvider provideSuppressBlockLogDatabaseRows
 	 * @dataProvider provideSuppressReblockLogDatabaseRows
 	 */
-	public function testSuppressReblockLogDatabaseRows( $row, $extra ) {
+	public function testSuppressBlockLogDatabaseRows( $row, $extra ) {
+		$this->setGroupPermissions(
+			[
+				'oversight' => [
+					'viewsuppressed' => true,
+					'suppressionlog' => true,
+				],
+			]
+		);
+		$this->doTestLogFormatter( $row, $extra, [ 'oversight' ] );
+	}
+
+	/**
+	 * Provide different rows from the logging table to test
+	 * for backward compatibility.
+	 * Do not change the existing data, just add a new database row
+	 */
+	public static function provideSuppressReblockLogDatabaseRowsNonPrivileged() {
+		return [
+			// Current log format
+			[
+				[
+					'type' => 'suppress',
+					'action' => 'reblock',
+					'comment' => 'Block comment',
+					'user' => 0,
+					'user_text' => 'Sysop',
+					'namespace' => NS_USER,
+					'title' => 'Logtestuser',
+					'params' => [
+						'5::duration' => 'infinite',
+						'6::flags' => 'anononly',
+					],
+				],
+				[
+					'text' => '(username removed) (log details removed)',
+					'api' => [
+						'duration' => 'infinity',
+						'flags' => [ 'anononly' ],
+					],
+				],
+			],
+
+			// Legacy format
+			[
+				[
+					'type' => 'suppress',
+					'action' => 'reblock',
+					'comment' => 'Block comment',
+					'user' => 0,
+					'user_text' => 'Sysop',
+					'namespace' => NS_USER,
+					'title' => 'Logtestuser',
+					'params' => [
+						'infinite',
+						'anononly',
+					],
+				],
+				[
+					'legacy' => true,
+					'text' => '(username removed) (log details removed)',
+					'api' => [
+						'duration' => 'infinity',
+						'flags' => [ 'anononly' ],
+					],
+				],
+			],
+		];
+	}
+
+	/**
+	 * @dataProvider provideSuppressReblockLogDatabaseRowsNonPrivileged
+	 */
+	public function testSuppressReblockLogDatabaseRowsNonPrivileged( $row, $extra ) {
 		$this->doTestLogFormatter( $row, $extra );
 	}
 
-	public function providePartialBlockLogDatabaseRows() {
+	public static function providePartialBlockLogDatabaseRows() {
 		return [
 			[
 				[
@@ -420,10 +580,10 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					],
 				],
 				[
-					'text' => 'Sysop blocked Logtestuser from editing the pages User:Test1 and Main Page'
+					'text' => 'Sysop blocked Logtestuser from the pages User:Test1 and Main Page'
 						. ' with an expiration time of indefinite (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 						'restrictions' => [
 							'pages' => [
@@ -459,10 +619,10 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					],
 				],
 				[
-					'text' => 'Sysop blocked Logtestuser from editing the namespace User'
+					'text' => 'Sysop blocked Logtestuser from the namespace User'
 						. ' with an expiration time of indefinite (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 						'restrictions' => [
 							'namespaces' => [ NS_USER ],
@@ -491,11 +651,11 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					],
 				],
 				[
-					'text' => 'Sysop blocked Logtestuser from editing the page Main Page and the'
+					'text' => 'Sysop blocked Logtestuser from the page Main Page and the'
 						. ' namespaces User and (Main) with an expiration time of indefinite'
 						. ' (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 						'restrictions' => [
 							'pages' => [
@@ -529,7 +689,7 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 					'text' => 'Sysop blocked Logtestuser from specified non-editing actions'
 						. ' with an expiration time of indefinite (anonymous users only)',
 					'api' => [
-						'duration' => 'infinite',
+						'duration' => 'infinity',
 						'flags' => [ 'anononly' ],
 						'sitewide' => false,
 					],
@@ -542,6 +702,47 @@ class BlockLogFormatterTest extends LogFormatterTestCase {
 	 * @dataProvider providePartialBlockLogDatabaseRows
 	 */
 	public function testPartialBlockLogDatabaseRows( $row, $extra ) {
+		$this->doTestLogFormatter( $row, $extra );
+	}
+
+	public static function provideMultiblocksDatabaseRows() {
+		return [
+			// Sitewide multiblock with expiry
+			[
+				[
+					'type' => 'block',
+					'action' => 'block',
+					'comment' => 'multiblock',
+					'user' => 0,
+					'user_text' => 'Sysop',
+					'namespace' => NS_USER,
+					'title' => 'Target',
+					'timestamp' => '20240101000000',
+					'params' => [
+						'5::duration' => '1 day',
+						'6::flags' => '',
+						'sitewide' => true,
+						'finalTargetCount' => 2,
+					]
+				],
+				[
+					'text' => 'Sysop added a block for Target with an expiration time of 1 day',
+					'api' => [
+						'duration' => '1 day',
+						'flags' => [],
+						'finalTargetCount' => 2,
+						'sitewide' => true,
+						'expiry' => '2024-01-02T00:00:00Z',
+					]
+				]
+			],
+		];
+	}
+
+	/**
+	 * @dataProvider provideMultiblocksDatabaseRows
+	 */
+	public function testMultiblocksDatabaseRows( $row, $extra ) {
 		$this->doTestLogFormatter( $row, $extra );
 	}
 }

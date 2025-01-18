@@ -1,14 +1,33 @@
 <?php
 
-namespace MediaWiki\Auth;
+namespace MediaWiki\Tests\Auth;
 
+use MediaWiki\Auth\AuthenticationRequest;
+use MediaWiki\Auth\AuthenticationResponse;
+use MediaWiki\Auth\AuthManager;
+use MediaWiki\Auth\ButtonAuthenticationRequest;
+use MediaWiki\Auth\ConfirmLinkAuthenticationRequest;
+use MediaWiki\Auth\ConfirmLinkSecondaryAuthenticationProvider;
+use MediaWiki\Config\HashConfig;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Tests\Unit\Auth\AuthenticationProviderTestTrait;
+use MediaWiki\Tests\Unit\DummyServicesTrait;
+use MediaWiki\User\User;
+use MediaWiki\User\UserNameUtils;
+use MediaWikiIntegrationTestCase;
+use StatusValue;
+use stdClass;
 use Wikimedia\TestingAccessWrapper;
 
 /**
  * @group AuthManager
  * @covers \MediaWiki\Auth\ConfirmLinkSecondaryAuthenticationProvider
  */
-class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase {
+class ConfirmLinkSecondaryAuthenticationProviderTest extends MediaWikiIntegrationTestCase {
+	use AuthenticationProviderTestTrait;
+	use DummyServicesTrait;
+
 	/**
 	 * @dataProvider provideGetAuthenticationRequests
 	 * @param string $action
@@ -31,71 +50,71 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 	}
 
 	public function testBeginSecondaryAuthentication() {
-		$user = \User::newFromName( 'UTSysop' );
-		$obj = new \stdClass;
+		$user = $this->createMock( User::class );
+		$obj = new stdClass;
 
 		$mock = $this->getMockBuilder( ConfirmLinkSecondaryAuthenticationProvider::class )
-			->setMethods( [ 'beginLinkAttempt', 'continueLinkAttempt' ] )
+			->onlyMethods( [ 'beginLinkAttempt', 'continueLinkAttempt' ] )
 			->getMock();
 		$mock->expects( $this->once() )->method( 'beginLinkAttempt' )
-			->with( $this->identicalTo( $user ), $this->identicalTo( 'AuthManager::authnState' ) )
-			->will( $this->returnValue( $obj ) );
+			->with( $this->identicalTo( $user ), $this->identicalTo( AuthManager::AUTHN_STATE ) )
+			->willReturn( $obj );
 		$mock->expects( $this->never() )->method( 'continueLinkAttempt' );
 
 		$this->assertSame( $obj, $mock->beginSecondaryAuthentication( $user, [] ) );
 	}
 
 	public function testContinueSecondaryAuthentication() {
-		$user = \User::newFromName( 'UTSysop' );
-		$obj = new \stdClass;
-		$reqs = [ new \stdClass ];
+		$user = $this->createMock( User::class );
+		$obj = new stdClass;
+		$reqs = [ new stdClass ];
 
 		$mock = $this->getMockBuilder( ConfirmLinkSecondaryAuthenticationProvider::class )
-			->setMethods( [ 'beginLinkAttempt', 'continueLinkAttempt' ] )
+			->onlyMethods( [ 'beginLinkAttempt', 'continueLinkAttempt' ] )
 			->getMock();
 		$mock->expects( $this->never() )->method( 'beginLinkAttempt' );
 		$mock->expects( $this->once() )->method( 'continueLinkAttempt' )
 			->with(
 				$this->identicalTo( $user ),
-				$this->identicalTo( 'AuthManager::authnState' ),
+				$this->identicalTo( AuthManager::AUTHN_STATE ),
 				$this->identicalTo( $reqs )
 			)
-			->will( $this->returnValue( $obj ) );
+			->willReturn( $obj );
 
 		$this->assertSame( $obj, $mock->continueSecondaryAuthentication( $user, $reqs ) );
 	}
 
 	public function testBeginSecondaryAccountCreation() {
-		$user = \User::newFromName( 'UTSysop' );
-		$obj = new \stdClass;
+		$user = $this->createMock( User::class );
+		$obj = new stdClass;
 
 		$mock = $this->getMockBuilder( ConfirmLinkSecondaryAuthenticationProvider::class )
-			->setMethods( [ 'beginLinkAttempt', 'continueLinkAttempt' ] )
+			->onlyMethods( [ 'beginLinkAttempt', 'continueLinkAttempt' ] )
 			->getMock();
 		$mock->expects( $this->once() )->method( 'beginLinkAttempt' )
-			->with( $this->identicalTo( $user ), $this->identicalTo( 'AuthManager::accountCreationState' ) )
-			->will( $this->returnValue( $obj ) );
+			->with( $this->identicalTo( $user ), $this->identicalTo( AuthManager::ACCOUNT_CREATION_STATE ) )
+			->willReturn( $obj );
 		$mock->expects( $this->never() )->method( 'continueLinkAttempt' );
 
 		$this->assertSame( $obj, $mock->beginSecondaryAccountCreation( $user, $user, [] ) );
 	}
 
 	public function testContinueSecondaryAccountCreation() {
-		$user = \User::newFromName( 'UTSysop' );
-		$obj = new \stdClass;
-		$reqs = [ new \stdClass ];
+		$user = $this->createMock( User::class );
+		$obj = new stdClass;
+		$reqs = [ new stdClass ];
 
 		$mock = $this->getMockBuilder( ConfirmLinkSecondaryAuthenticationProvider::class )
-			->setMethods( [ 'beginLinkAttempt', 'continueLinkAttempt' ] )
+			->onlyMethods( [ 'beginLinkAttempt', 'continueLinkAttempt' ] )
 			->getMock();
 		$mock->expects( $this->never() )->method( 'beginLinkAttempt' );
 		$mock->expects( $this->once() )->method( 'continueLinkAttempt' )
 			->with(
 				$this->identicalTo( $user ),
-				$this->identicalTo( 'AuthManager::accountCreationState' ),
+				$this->identicalTo( AuthManager::ACCOUNT_CREATION_STATE ),
 				$this->identicalTo( $reqs )
 			)
-			->will( $this->returnValue( $obj ) );
+			->willReturn( $obj );
 
 		$this->assertSame( $obj, $mock->continueSecondaryAccountCreation( $user, $user, $reqs ) );
 	}
@@ -108,13 +127,12 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 		$reqs = [];
 
 		$mb = $this->getMockBuilder( AuthenticationRequest::class )
-			->setMethods( [ 'getUniqueId' ] );
+			->onlyMethods( [ 'getUniqueId' ] );
 		for ( $i = 1; $i <= 3; $i++ ) {
+			$uid = "Request$i";
 			$req = $mb->getMockForAbstractClass();
-			$req->expects( $this->any() )->method( 'getUniqueId' )
-				->will( $this->returnValue( "Request$i" ) );
-			$req->id = $i - 1;
-			$reqs[$req->getUniqueId()] = $req;
+			$req->method( 'getUniqueId' )->willReturn( $uid );
+			$reqs[$uid] = $req;
 		}
 
 		return $reqs;
@@ -122,31 +140,48 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 
 	public function testBeginLinkAttempt() {
 		$badReq = $this->getMockBuilder( AuthenticationRequest::class )
-			->setMethods( [ 'getUniqueId' ] )
+			->onlyMethods( [ 'getUniqueId' ] )
 			->getMockForAbstractClass();
-		$badReq->expects( $this->any() )->method( 'getUniqueId' )
-			->will( $this->returnValue( "BadReq" ) );
+		$badReq->method( 'getUniqueId' )
+			->willReturn( "BadReq" );
 
-		$user = \User::newFromName( 'UTSysop' );
-		$provider = TestingAccessWrapper::newFromObject(
-			new ConfirmLinkSecondaryAuthenticationProvider
-		);
-		$request = new \FauxRequest();
+		$user = $this->createMock( User::class );
+		$provider = new ConfirmLinkSecondaryAuthenticationProvider;
+		$providerPriv = TestingAccessWrapper::newFromObject( $provider );
+		$request = new FauxRequest();
+		$mwServices = $this->getServiceContainer();
+
 		$manager = $this->getMockBuilder( AuthManager::class )
-			->setMethods( [ 'allowsAuthenticationDataChange' ] )
-			->setConstructorArgs( [ $request, \RequestContext::getMain()->getConfig() ] )
+			->onlyMethods( [ 'allowsAuthenticationDataChange' ] )
+			->setConstructorArgs( [
+				$request,
+				$mwServices->getMainConfig(),
+				$mwServices->getObjectFactory(),
+				$mwServices->getHookContainer(),
+				$mwServices->getReadOnlyMode(),
+				$this->createNoOpMock( UserNameUtils::class ),
+				$mwServices->getBlockManager(),
+				$mwServices->getWatchlistManager(),
+				$mwServices->getDBLoadBalancer(),
+				$mwServices->getContentLanguage(),
+				$mwServices->getLanguageConverterFactory(),
+				$mwServices->getBotPasswordStore(),
+				$mwServices->getUserFactory(),
+				$mwServices->getUserIdentityLookup(),
+				$mwServices->getUserOptionsManager()
+			] )
 			->getMock();
-		$manager->expects( $this->any() )->method( 'allowsAuthenticationDataChange' )
-			->will( $this->returnCallback( function ( $req ) {
+		$manager->method( 'allowsAuthenticationDataChange' )
+			->willReturnCallback( static function ( $req ) {
 				return $req->getUniqueId() !== 'BadReq'
-					? \StatusValue::newGood()
-					: \StatusValue::newFatal( 'no' );
-			} ) );
-		$provider->setManager( $manager );
+					? StatusValue::newGood()
+					: StatusValue::newFatal( 'no' );
+			} );
+		$this->initProvider( $provider, null, null, $manager );
 
 		$this->assertEquals(
 			AuthenticationResponse::newAbstain(),
-			$provider->beginLinkAttempt( $user, 'state' )
+			$providerPriv->beginLinkAttempt( $user, 'state' )
 		);
 
 		$request->getSession()->setSecret( 'state', [
@@ -154,14 +189,14 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 		] );
 		$this->assertEquals(
 			AuthenticationResponse::newAbstain(),
-			$provider->beginLinkAttempt( $user, 'state' )
+			$providerPriv->beginLinkAttempt( $user, 'state' )
 		);
 
 		$reqs = $this->getLinkRequests();
 		$request->getSession()->setSecret( 'state', [
 			'maybeLink' => $reqs + [ 'BadReq' => $badReq ]
 		] );
-		$res = $provider->beginLinkAttempt( $user, 'state' );
+		$res = $providerPriv->beginLinkAttempt( $user, 'state' );
 		$this->assertInstanceOf( AuthenticationResponse::class, $res );
 		$this->assertSame( AuthenticationResponse::UI, $res->status );
 		$this->assertSame( 'authprovider-confirmlink-message', $res->message->getKey() );
@@ -177,19 +212,19 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 	}
 
 	public function testContinueLinkAttempt() {
-		$user = \User::newFromName( 'UTSysop' );
-		$obj = new \stdClass;
+		$user = $this->createMock( User::class );
+		$obj = new stdClass;
 		$reqs = $this->getLinkRequests();
 
-		$done = [ false, false, false ];
+		$done = [];
 
 		// First, test the pass-through for not containing the ConfirmLinkAuthenticationRequest
 		$mock = $this->getMockBuilder( ConfirmLinkSecondaryAuthenticationProvider::class )
-			->setMethods( [ 'beginLinkAttempt' ] )
+			->onlyMethods( [ 'beginLinkAttempt' ] )
 			->getMock();
 		$mock->expects( $this->once() )->method( 'beginLinkAttempt' )
 			->with( $this->identicalTo( $user ), $this->identicalTo( 'state' ) )
-			->will( $this->returnValue( $obj ) );
+			->willReturn( $obj );
 		$this->assertSame(
 			$obj,
 			TestingAccessWrapper::newFromObject( $mock )->continueLinkAttempt( $user, 'state', $reqs )
@@ -197,35 +232,52 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 
 		// Now test the actual functioning
 		$provider = $this->getMockBuilder( ConfirmLinkSecondaryAuthenticationProvider::class )
-			->setMethods( [
+			->onlyMethods( [
 				'beginLinkAttempt', 'providerAllowsAuthenticationDataChange',
 				'providerChangeAuthenticationData'
 			] )
 			->getMock();
 		$provider->expects( $this->never() )->method( 'beginLinkAttempt' );
-		$provider->expects( $this->any() )->method( 'providerAllowsAuthenticationDataChange' )
-			->will( $this->returnCallback( function ( $req ) use ( $reqs ) {
+		$provider->method( 'providerAllowsAuthenticationDataChange' )
+			->willReturnCallback( static function ( $req ) {
 				return $req->getUniqueId() === 'Request3'
-					? \StatusValue::newFatal( 'foo' ) : \StatusValue::newGood();
-			} ) );
-		$provider->expects( $this->any() )->method( 'providerChangeAuthenticationData' )
-			->will( $this->returnCallback( function ( $req ) use ( &$done ) {
-				$done[$req->id] = true;
-			} ) );
-		$config = new \HashConfig( [
-			'AuthManagerConfig' => [
+					? StatusValue::newFatal( 'foo' ) : StatusValue::newGood();
+			} );
+		$provider->method( 'providerChangeAuthenticationData' )
+			->willReturnCallback( static function ( $req ) use ( &$done ) {
+				$done[$req->getUniqueId()] = true;
+			} );
+		$config = new HashConfig( [
+			MainConfigNames::AuthManagerConfig => [
 				'preauth' => [],
 				'primaryauth' => [],
 				'secondaryauth' => [
-					[ 'factory' => function () use ( $provider ) {
+					[ 'factory' => static function () use ( $provider ) {
 						return $provider;
 					} ],
 				],
 			],
 		] );
-		$request = new \FauxRequest();
-		$manager = new AuthManager( $request, $config );
-		$provider->setManager( $manager );
+		$request = new FauxRequest();
+		$mwServices = $this->getServiceContainer();
+		$manager = new AuthManager(
+			$request,
+			$config,
+			$this->getDummyObjectFactory(),
+			$mwServices->getHookContainer(),
+			$mwServices->getReadOnlyMode(),
+			$mwServices->getUserNameUtils(),
+			$mwServices->getBlockManager(),
+			$mwServices->getWatchlistManager(),
+			$mwServices->getDBLoadBalancer(),
+			$mwServices->getContentLanguage(),
+			$mwServices->getLanguageConverterFactory(),
+			$mwServices->getBotPasswordStore(),
+			$mwServices->getUserFactory(),
+			$mwServices->getUserIdentityLookup(),
+			$mwServices->getUserOptionsManager()
+		);
+		$this->initProvider( $provider, null, null, $manager );
 		$provider = TestingAccessWrapper::newFromObject( $provider );
 
 		$req = new ConfirmLinkAuthenticationRequest( $reqs );
@@ -248,9 +300,9 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 		] );
 		$this->assertEquals(
 			AuthenticationResponse::newPass(),
-			$res = $provider->continueLinkAttempt( $user, 'state', [ $req ] )
+			$provider->continueLinkAttempt( $user, 'state', [ $req ] )
 		);
-		$this->assertSame( [ false, false, false ], $done );
+		$this->assertSame( [], $done );
 
 		$request->getSession()->setSecret( 'state', [
 			'maybeLink' => [ $reqs['Request2'] ],
@@ -258,8 +310,8 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 		$req->confirmedLinkIDs = [ 'Request1', 'Request2' ];
 		$res = $provider->continueLinkAttempt( $user, 'state', [ $req ] );
 		$this->assertEquals( AuthenticationResponse::newPass(), $res );
-		$this->assertSame( [ false, true, false ], $done );
-		$done = [ false, false, false ];
+		$this->assertSame( [ 'Request2' => true ], $done );
+		$done = [];
 
 		$request->getSession()->setSecret( 'state', [
 			'maybeLink' => $reqs,
@@ -267,8 +319,8 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 		$req->confirmedLinkIDs = [ 'Request1', 'Request2' ];
 		$res = $provider->continueLinkAttempt( $user, 'state', [ $req ] );
 		$this->assertEquals( AuthenticationResponse::newPass(), $res );
-		$this->assertSame( [ true, true, false ], $done );
-		$done = [ false, false, false ];
+		$this->assertSame( [ 'Request1' => true, 'Request2' => true ], $done );
+		$done = [];
 
 		$request->getSession()->setSecret( 'state', [
 			'maybeLink' => $reqs,
@@ -278,12 +330,12 @@ class ConfirmLinkSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 		$this->assertEquals( AuthenticationResponse::UI, $res->status );
 		$this->assertCount( 1, $res->neededRequests );
 		$this->assertInstanceOf( ButtonAuthenticationRequest::class, $res->neededRequests[0] );
-		$this->assertSame( [ true, false, false ], $done );
-		$done = [ false, false, false ];
+		$this->assertSame( [ 'Request1' => true ], $done );
+		$done = [];
 
 		$res = $provider->continueLinkAttempt( $user, 'state', [ $res->neededRequests[0] ] );
 		$this->assertEquals( AuthenticationResponse::newPass(), $res );
-		$this->assertSame( [ false, false, false ], $done );
+		$this->assertSame( [], $done );
 	}
 
 }

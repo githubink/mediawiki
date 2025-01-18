@@ -1,6 +1,8 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Title\ForeignTitle;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
 
 /**
  * Test class for Import methods.
@@ -12,7 +14,7 @@ use MediaWiki\MediaWikiServices;
 class ImportTest extends MediaWikiLangTestCase {
 
 	/**
-	 * @covers WikiImporter
+	 * @covers \WikiImporter
 	 * @dataProvider getUnknownTagsXML
 	 * @param string $xml
 	 * @param string $text
@@ -20,21 +22,21 @@ class ImportTest extends MediaWikiLangTestCase {
 	 */
 	public function testUnknownXMLTags( $xml, $text, $title ) {
 		$source = new ImportStringSource( $xml );
+		$services = $this->getServiceContainer();
 
-		$importer = new WikiImporter(
-			$source,
-			MediaWikiServices::getInstance()->getMainConfig()
-		);
+		$importer = $services->getWikiImporterFactory()->getWikiImporter( $source, $this->getTestSysop()->getAuthority() );
 
 		$importer->doImport();
 		$title = Title::newFromText( $title );
 		$this->assertTrue( $title->exists() );
 
-		$this->assertEquals( WikiPage::factory( $title )->getContent()->getText(), $text );
+		$this->assertEquals(
+			$services->getWikiPageFactory()->newFromTitle( $title )->getContent()->getText(),
+			$text
+		);
 	}
 
 	public function getUnknownTagsXML() {
-		// phpcs:disable Generic.Files.LineLength
 		return [
 			[
 				<<< EOF
@@ -72,7 +74,7 @@ EOF
 	}
 
 	/**
-	 * @covers WikiImporter::handlePage
+	 * @covers \WikiImporter::handlePage
 	 * @dataProvider getRedirectXML
 	 * @param string $xml
 	 * @param string|null $redirectTitle
@@ -81,17 +83,16 @@ EOF
 		$source = new ImportStringSource( $xml );
 
 		$redirect = null;
-		$callback = function ( Title $title, ForeignTitle $foreignTitle, $revCount,
+		$callback = static function ( Title $title, ForeignTitle $foreignTitle, $revCount,
 			$sRevCount, $pageInfo ) use ( &$redirect ) {
 			if ( array_key_exists( 'redirect', $pageInfo ) ) {
 				$redirect = $pageInfo['redirect'];
 			}
 		};
 
-		$importer = new WikiImporter(
-			$source,
-			MediaWikiServices::getInstance()->getMainConfig()
-		);
+		$importer = $this->getServiceContainer()
+			->getWikiImporterFactory()
+			->getWikiImporter( $source, $this->getTestSysop()->getAuthority() );
 		$importer->setPageOutCallback( $callback );
 		$importer->doImport();
 
@@ -99,7 +100,6 @@ EOF
 	}
 
 	public function getRedirectXML() {
-		// phpcs:disable Generic.Files.LineLength
 		return [
 			[
 				<<< EOF
@@ -158,7 +158,7 @@ EOF
 	}
 
 	/**
-	 * @covers WikiImporter::handleSiteInfo
+	 * @covers \WikiImporter::handleSiteInfo
 	 * @dataProvider getSiteInfoXML
 	 * @param string $xml
 	 * @param array|null $namespaces
@@ -167,14 +167,13 @@ EOF
 		$source = new ImportStringSource( $xml );
 
 		$importNamespaces = null;
-		$callback = function ( array $siteinfo, $innerImporter ) use ( &$importNamespaces ) {
+		$callback = static function ( array $siteinfo, $innerImporter ) use ( &$importNamespaces ) {
 			$importNamespaces = $siteinfo['_namespaces'];
 		};
 
-		$importer = new WikiImporter(
-			$source,
-			MediaWikiServices::getInstance()->getMainConfig()
-		);
+		$importer = $this->getServiceContainer()
+			->getWikiImporterFactory()
+			->getWikiImporter( $source, $this->getTestSysop()->getAuthority() );
 		$importer->setSiteInfoCallback( $callback );
 		$importer->doImport();
 
@@ -182,7 +181,6 @@ EOF
 	}
 
 	public function getSiteInfoXML() {
-		// phpcs:disable Generic.Files.LineLength
 		return [
 			[
 				<<< EOF
@@ -219,16 +217,17 @@ EOF
 
 	/**
 	 * @dataProvider provideUnknownUserHandling
-	 * @covers WikiImporter::setUsernamePrefix
-	 * @covers ExternalUserNames::addPrefix
-	 * @covers ExternalUserNames::applyPrefix
+	 * @covers \WikiImporter::setUsernamePrefix
+	 * @covers \MediaWiki\User\ExternalUserNames::addPrefix
+	 * @covers \MediaWiki\User\ExternalUserNames::applyPrefix
 	 * @param bool $assign
 	 * @param bool $create
 	 */
 	public function testUnknownUserHandling( $assign, $create ) {
 		$hookId = -99;
-		$this->setMwGlobals( 'wgHooks', [
-			'ImportHandleUnknownUser' => [ function ( $name ) use ( $assign, $create, &$hookId ) {
+		$this->setTemporaryHook(
+			'ImportHandleUnknownUser',
+			function ( $name ) use ( $assign, $create, &$hookId ) {
 				if ( !$assign ) {
 					$this->fail( 'ImportHandleUnknownUser was called unexpectedly' );
 				}
@@ -241,14 +240,12 @@ EOF
 					return false;
 				}
 				return true;
-			} ]
-		] );
+			}
+		);
 
 		$user = $this->getTestUser()->getUser();
 
 		$n = ( $assign ? 1 : 0 ) + ( $create ? 2 : 0 );
-
-		// phpcs:disable Generic.Files.LineLength
 		$source = new ImportStringSource( <<<EOF
 <mediawiki xmlns="http://www.mediawiki.org/xml/export-0.10/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mediawiki.org/xml/export-0.10/ http://www.mediawiki.org/xml/export-0.10.xsd" version="0.10" xml:lang="en">
   <page>
@@ -285,35 +282,25 @@ EOF
 		);
 		// phpcs:enable
 
-		$importer = new WikiImporter( $source, MediaWikiServices::getInstance()->getMainConfig() );
+		$services = $this->getServiceContainer();
+		$importer = $services->getWikiImporterFactory()->getWikiImporter( $source, $this->getTestSysop()->getAuthority() );
+
 		$importer->setUsernamePrefix( 'Xxx', $assign );
 		$importer->doImport();
 
-		$db = wfGetDB( DB_MASTER );
-		$revQuery = Revision::getQueryInfo();
-
-		$row = $db->selectRow(
-			$revQuery['tables'],
-			$revQuery['fields'],
-			[ 'rev_timestamp' => $db->timestamp( "201601010{$n}0000" ) ],
-			__METHOD__,
-			[],
-			$revQuery['joins']
-		);
+		$db = $this->getDb();
+		$row = $services->getRevisionStore()->newSelectQueryBuilder( $db )
+			->where( [ 'rev_timestamp' => $db->timestamp( "201601010{$n}0000" ) ] )
+			->caller( __METHOD__ )->fetchRow();
 		$this->assertSame(
 			$assign && $create ? 'UserDoesNotExist' : 'Xxx>UserDoesNotExist',
 			$row->rev_user_text
 		);
 		$this->assertSame( $assign && $create ? $hookId : 0, (int)$row->rev_user );
 
-		$row = $db->selectRow(
-			$revQuery['tables'],
-			$revQuery['fields'],
-			[ 'rev_timestamp' => $db->timestamp( "201601010{$n}0001" ) ],
-			__METHOD__,
-			[],
-			$revQuery['joins']
-		);
+		$row = $services->getRevisionStore()->newSelectQueryBuilder( $db )
+			->where( [ 'rev_timestamp' => $db->timestamp( "201601010{$n}0001" ) ] )
+			->caller( __METHOD__ )->fetchRow();
 		$this->assertSame( ( $assign ? '' : 'Xxx>' ) . $user->getName(), $row->rev_user_text );
 		$this->assertSame( $assign ? $user->getId() : 0, (int)$row->rev_user );
 	}

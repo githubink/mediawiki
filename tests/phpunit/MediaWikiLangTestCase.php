@@ -1,27 +1,29 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\MainConfigNames;
 
 /**
  * Base class that store and restore the Language objects
  */
-abstract class MediaWikiLangTestCase extends MediaWikiTestCase {
-	protected function setUp() {
-		global $wgLanguageCode;
-
-		$contLang = MediaWikiServices::getInstance()->getContentLanguage();
-		if ( $wgLanguageCode != $contLang->getCode() ) {
-			throw new MWException( "Error in MediaWikiLangTestCase::setUp(): " .
-				"\$wgLanguageCode ('$wgLanguageCode') is different from content language code (" .
-				$contLang->getCode() . ")" );
+abstract class MediaWikiLangTestCase extends MediaWikiIntegrationTestCase {
+	/**
+	 * The annotation causes this to be called immediately before setUp()
+	 * @before
+	 */
+	final protected function mediaWikiLangSetUp(): void {
+		$services = $this->getServiceContainer();
+		$languageCode = $this->getConfVar( MainConfigNames::LanguageCode );
+		$contLanguageCode = $services->getContentLanguageCode()->toString();
+		if ( $languageCode !== $contLanguageCode ) {
+			throw new RuntimeException( "Error in " . __METHOD__ . ': ' .
+				"\$wgLanguageCode ('$languageCode') is different from content language code " .
+				"('$contLanguageCode')" );
 		}
-
-		parent::setUp();
 
 		$this->setUserLang( 'en' );
 		// For mainpage to be 'Main Page'
 		$this->setContentLang( 'en' );
 
-		MessageCache::singleton()->disable();
+		$services->getMessageCache()->disable();
 	}
 }

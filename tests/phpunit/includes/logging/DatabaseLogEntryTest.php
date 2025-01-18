@@ -1,27 +1,18 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
-use Wikimedia\Rdbms\IDatabase;
+use MediaWiki\User\ActorStore;
+use MediaWiki\User\UserIdentity;
+use MediaWiki\User\UserIdentityValue;
+use Wikimedia\Rdbms\IReadableDatabase;
 
-class DatabaseLogEntryTest extends MediaWikiTestCase {
-	public function setUp() {
-		parent::setUp();
-
-		// These services cache their joins
-		MediaWikiServices::getInstance()->resetServiceForTesting( 'CommentStore' );
-		MediaWikiServices::getInstance()->resetServiceForTesting( 'ActorMigration' );
-	}
-
-	public function tearDown() {
-		parent::tearDown();
-
-		MediaWikiServices::getInstance()->resetServiceForTesting( 'CommentStore' );
-		MediaWikiServices::getInstance()->resetServiceForTesting( 'ActorMigration' );
-	}
+/**
+ * @group Database
+ */
+class DatabaseLogEntryTest extends MediaWikiIntegrationTestCase {
 
 	/**
-	 * @covers       DatabaseLogEntry::newFromId
-	 * @covers       DatabaseLogEntry::getSelectQueryData
+	 * @covers \DatabaseLogEntry::newFromId
+	 * @covers \DatabaseLogEntry::getSelectQueryData
 	 *
 	 * @dataProvider provideNewFromId
 	 *
@@ -29,20 +20,14 @@ class DatabaseLogEntryTest extends MediaWikiTestCase {
 	 * @param array $selectFields
 	 * @param string[]|null $row
 	 * @param string[]|null $expectedFields
-	 * @param int $actorMigration
 	 */
 	public function testNewFromId( $id,
 		array $selectFields,
-		array $row = null,
-		array $expectedFields = null,
-		$actorMigration
+		?array $row = null,
+		?array $expectedFields = null
 	) {
-		$this->setMwGlobals( [
-			'wgActorTableSchemaMigrationStage' => $actorMigration,
-		] );
-
 		$row = $row ? (object)$row : null;
-		$db = $this->getMock( IDatabase::class );
+		$db = $this->createMock( IReadableDatabase::class );
 		$db->expects( self::once() )
 			->method( 'selectRow' )
 			->with( $selectFields['tables'],
@@ -54,7 +39,7 @@ class DatabaseLogEntryTest extends MediaWikiTestCase {
 			)
 			->will( self::returnValue( $row ) );
 
-		/** @var IDatabase $db */
+		/** @var IReadableDatabase $db */
 		$logEntry = DatabaseLogEntry::newFromId( $id, $db );
 
 		if ( !$expectedFields ) {
@@ -66,43 +51,13 @@ class DatabaseLogEntryTest extends MediaWikiTestCase {
 		}
 	}
 
-	public function provideNewFromId() {
-		$oldTables = [
-			'tables' => [
-				'logging', 'user',
-				'comment_log_comment' => 'comment',
-			],
-			'fields' => [
-				'log_id',
-				'log_type',
-				'log_action',
-				'log_timestamp',
-				'log_namespace',
-				'log_title',
-				'log_params',
-				'log_deleted',
-				'user_id',
-				'user_name',
-				'user_editcount',
-				'log_comment_text' => 'comment_log_comment.comment_text',
-				'log_comment_data' => 'comment_log_comment.comment_data',
-				'log_comment_cid' => 'comment_log_comment.comment_id',
-				'log_user' => 'log_user',
-				'log_user_text' => 'log_user_text',
-				'log_actor' => 'NULL',
-			],
-			'options' => [],
-			'join_conds' => [
-				'user' => [ 'LEFT JOIN', 'user_id=log_user' ],
-				'comment_log_comment' => [ 'JOIN', 'comment_log_comment.comment_id = log_comment_id' ],
-			],
-		];
+	public static function provideNewFromId() {
 		$newTables = [
 			'tables' => [
 				'logging',
-				'user',
 				'comment_log_comment' => 'comment',
-				'actor_log_user' => 'actor'
+				'logging_actor' => 'actor',
+				'user' => 'user',
 			],
 			'fields' => [
 				'log_id',
@@ -115,40 +70,37 @@ class DatabaseLogEntryTest extends MediaWikiTestCase {
 				'log_deleted',
 				'user_id',
 				'user_name',
-				'user_editcount',
 				'log_comment_text' => 'comment_log_comment.comment_text',
 				'log_comment_data' => 'comment_log_comment.comment_data',
 				'log_comment_cid' => 'comment_log_comment.comment_id',
-				'log_user' => 'actor_log_user.actor_user',
-				'log_user_text' => 'actor_log_user.actor_name',
-				'log_actor' => 'log_actor',
+				'log_user' => 'logging_actor.actor_user',
+				'log_user_text' => 'logging_actor.actor_name',
+				'log_actor',
 			],
 			'options' => [],
 			'join_conds' => [
-				'user' => [ 'LEFT JOIN', 'user_id=actor_log_user.actor_user' ],
+				'user' => [ 'LEFT JOIN', 'user_id=logging_actor.actor_user' ],
 				'comment_log_comment' => [ 'JOIN', 'comment_log_comment.comment_id = log_comment_id' ],
-				'actor_log_user' => [ 'JOIN', 'actor_log_user.actor_id = log_actor' ],
+				'logging_actor' => [ 'JOIN', 'actor_id=log_actor' ],
 			],
 		];
 		return [
 			[
 				0,
-				$oldTables + [ 'conds' => [ 'log_id' => 0 ] ],
+				$newTables + [ 'conds' => [ 'log_id' => 0 ] ],
 				null,
-				null,
-				SCHEMA_COMPAT_OLD,
+				null
 			],
 			[
 				123,
-				$oldTables + [ 'conds' => [ 'log_id' => 123 ] ],
+				$newTables + [ 'conds' => [ 'log_id' => 123 ] ],
 				[
 					'log_id' => 123,
 					'log_type' => 'foobarize',
 					'log_comment_text' => 'test!',
 					'log_comment_data' => null,
 				],
-				[ 'type' => 'foobarize', 'comment' => 'test!' ],
-				SCHEMA_COMPAT_OLD,
+				[ 'type' => 'foobarize', 'comment' => 'test!' ]
 			],
 			[
 				567,
@@ -159,9 +111,42 @@ class DatabaseLogEntryTest extends MediaWikiTestCase {
 					'log_comment_text' => 'test!',
 					'log_comment_data' => null,
 				],
-				[ 'type' => 'foobarize', 'comment' => 'test!' ],
-				SCHEMA_COMPAT_NEW,
+				[ 'type' => 'foobarize', 'comment' => 'test!' ]
 			],
 		];
+	}
+
+	public static function provideGetPerformerIdentity() {
+		yield 'registered actor' => [
+			'actor_row_fields' => [
+				'user_id' => 42,
+				'log_user_text' => 'Testing',
+				'log_actor' => 24,
+			],
+			UserIdentityValue::newRegistered( 42, 'Testing' ),
+		];
+		yield 'anon actor' => [
+			'actor_row_fields' => [
+				'log_user_text' => '127.0.0.1',
+				'log_actor' => 24,
+			],
+			UserIdentityValue::newAnonymous( '127.0.0.1' ),
+		];
+		yield 'unknown actor' => [
+			'actor_row_fields' => [],
+			new UserIdentityValue( 0, ActorStore::UNKNOWN_USER_NAME ),
+		];
+	}
+
+	/**
+	 * @dataProvider provideGetPerformerIdentity
+	 * @covers \DatabaseLogEntry::getPerformerIdentity
+	 */
+	public function testGetPerformer( array $actorRowFields, UserIdentity $expected ) {
+		$logEntry = DatabaseLogEntry::newFromRow( [
+			'log_id' => 1,
+		] + $actorRowFields );
+		$performer = $logEntry->getPerformerIdentity();
+		$this->assertTrue( $expected->equals( $performer ) );
 	}
 }

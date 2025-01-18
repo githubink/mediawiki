@@ -1,22 +1,24 @@
 <?php
 
+use MediaWiki\MainConfigNames;
+
 /**
  * @group Media
  */
-class BitmapScalingTest extends MediaWikiTestCase {
+class BitmapScalingTest extends MediaWikiIntegrationTestCase {
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
-		$this->setMwGlobals( [
-			'wgMaxImageArea' => 1.25e7, // 3500x3500
-			'wgCustomConvertCommand' => 'dummy', // Set so that we don't get client side rendering
+		$this->overrideConfigValues( [
+			MainConfigNames::MaxImageArea => 1.25e7, // 3500x3500
+			MainConfigNames::CustomConvertCommand => 'dummy', // Set so that we don't get client side rendering
 		] );
 	}
 
 	/**
 	 * @dataProvider provideNormaliseParams
-	 * @covers BitmapHandler::normaliseParams
+	 * @covers \BitmapHandler::normaliseParams
 	 */
 	public function testNormaliseParams( $fileDimensions, $expectedParams, $params, $msg ) {
 		$file = new FakeDimensionFile( $fileDimensions );
@@ -118,7 +120,7 @@ class BitmapScalingTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers BitmapHandler::doTransform
+	 * @covers \BitmapHandler::doTransform
 	 */
 	public function testTooBigImage() {
 		$file = new FakeDimensionFile( [ 4000, 4000 ] );
@@ -129,7 +131,7 @@ class BitmapScalingTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers BitmapHandler::doTransform
+	 * @covers \BitmapHandler::doTransform
 	 */
 	public function testTooBigMustRenderImage() {
 		$file = new FakeDimensionFile( [ 4000, 4000 ] );
@@ -141,7 +143,7 @@ class BitmapScalingTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers BitmapHandler::getImageArea
+	 * @covers \BitmapHandler::getImageArea
 	 */
 	public function testImageArea() {
 		$file = new FakeDimensionFile( [ 7, 9 ] );

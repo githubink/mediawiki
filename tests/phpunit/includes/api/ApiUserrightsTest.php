@@ -1,23 +1,30 @@
 <?php
 
+namespace MediaWiki\Tests\Api;
+
 use MediaWiki\Block\DatabaseBlock;
-use MediaWiki\MediaWikiServices;
+use MediaWiki\MainConfigNames;
+use MediaWiki\MainConfigSchema;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+use TestUserRegistry;
 
 /**
  * @group API
  * @group Database
  * @group medium
  *
- * @covers ApiUserrights
+ * @covers \MediaWiki\Api\ApiUserrights
  */
 class ApiUserrightsTest extends ApiTestCase {
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
-		$this->tablesUsed = array_merge(
-			$this->tablesUsed,
-			[ 'change_tag', 'change_tag_def', 'logging' ]
-		);
+
+		$this->overrideConfigValues( [
+			MainConfigNames::AddGroups => [],
+			MainConfigNames::RemoveGroups => [],
+		] );
 	}
 
 	/**
@@ -32,13 +39,17 @@ class ApiUserrightsTest extends ApiTestCase {
 		$this->setGroupPermissions( 'bureaucrat', 'userrights', false );
 
 		if ( $add ) {
-			$this->mergeMwGlobalArrayValue( 'wgAddGroups', [ 'bureaucrat' => $add ] );
+			$this->overrideConfigValue(
+				MainConfigNames::AddGroups,
+				[ 'bureaucrat' => $add ] + MainConfigSchema::getDefaultValue( MainConfigNames::AddGroups )
+			);
 		}
 		if ( $remove ) {
-			$this->mergeMwGlobalArrayValue( 'wgRemoveGroups', [ 'bureaucrat' => $remove ] );
+			$this->overrideConfigValue(
+				MainConfigNames::RemoveGroups,
+				[ 'bureaucrat' => $remove ] + MainConfigSchema::getDefaultValue( MainConfigNames::RemoveGroups )
+			);
 		}
-
-		$this->resetServices();
 	}
 
 	/**
@@ -56,7 +67,7 @@ class ApiUserrightsTest extends ApiTestCase {
 	 *   or 'userid' is specified in $params.
 	 */
 	protected function doSuccessfulRightsChange(
-		$expectedGroups = 'sysop', array $params = [], User $user = null
+		$expectedGroups = 'sysop', array $params = [], ?User $user = null
 	) {
 		$expectedGroups = (array)$expectedGroups;
 		$params['action'] = 'userrights';
@@ -78,8 +89,10 @@ class ApiUserrightsTest extends ApiTestCase {
 		$res = $this->doApiRequestWithToken( $params );
 
 		$user->clearInstanceCache();
-		MediaWikiServices::getInstance()->getPermissionManager()->invalidateUsersRightsCache();
-		$this->assertSame( $expectedGroups, $user->getGroups() );
+		$this->getServiceContainer()->getPermissionManager()->invalidateUsersRightsCache();
+		$this->assertSame(
+			$expectedGroups, $this->getServiceContainer()->getUserGroupManager()->getUserGroups( $user )
+		);
 
 		$this->assertArrayNotHasKey( 'warnings', $res[0] );
 	}
@@ -87,18 +100,19 @@ class ApiUserrightsTest extends ApiTestCase {
 	/**
 	 * Perform an API userrights request that's expected to fail.
 	 *
-	 * @param string $expectedException Expected exception text
+	 * @param string $expectedCode Expected API error code
 	 * @param array $params As for doSuccessfulRightsChange()
 	 * @param User|null $user As for doSuccessfulRightsChange().  If there's no
 	 *   user who will possibly be affected (such as if an invalid username is
 	 *   provided in $params), pass null.
 	 */
-	protected function doFailedRightsChange(
-		$expectedException, array $params = [], User $user = null
+	private function doFailedRightsChange(
+		$expectedCode, array $params = [], ?User $user = null
 	) {
 		$params['action'] = 'userrights';
+		$userGroupManager = $this->getServiceContainer()->getUserGroupManager();
 
-		$this->setExpectedException( ApiUsageException::class, $expectedException );
+		$this->expectApiErrorCode( $expectedCode );
 
 		if ( !$user ) {
 			// If 'user' or 'userid' is specified and $user was not specified,
@@ -117,13 +131,13 @@ class ApiUserrightsTest extends ApiTestCase {
 		if ( !isset( $params['add'] ) && !isset( $params['remove'] ) ) {
 			$params['add'] = 'sysop';
 		}
-		$expectedGroups = $user->getGroups();
+		$expectedGroups = $userGroupManager->getUserGroups( $user );
 
 		try {
 			$this->doApiRequestWithToken( $params );
 		} finally {
 			$user->clearInstanceCache();
-			$this->assertSame( $expectedGroups, $user->getGroups() );
+			$this->assertSame( $expectedGroups, $userGroupManager->getUserGroups( $user ) );
 		}
 	}
 
@@ -132,17 +146,13 @@ class ApiUserrightsTest extends ApiTestCase {
 	}
 
 	public function testBlockedWithUserrights() {
-		global $wgUser;
+		$user = $this->getTestSysop()->getUser();
 
-		$block = new DatabaseBlock( [ 'address' => $wgUser, 'by' => $wgUser->getId(), ] );
-		$block->insert();
+		$block = new DatabaseBlock( [ 'address' => $user, 'by' => $user, ] );
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
-		try {
-			$this->doSuccessfulRightsChange();
-		} finally {
-			$block->delete();
-			$wgUser->clearInstanceCache();
-		}
+		$this->doSuccessfulRightsChange();
 	}
 
 	public function testBlockedWithoutUserrights() {
@@ -150,15 +160,11 @@ class ApiUserrightsTest extends ApiTestCase {
 
 		$this->setPermissions( true, true );
 
-		$block = new DatabaseBlock( [ 'address' => $user, 'by' => $user->getId() ] );
-		$block->insert();
+		$block = new DatabaseBlock( [ 'address' => $user, 'by' => $user ] );
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
-		try {
-			$this->doFailedRightsChange( 'You have been blocked from editing.' );
-		} finally {
-			$block->delete();
-			$user->clearInstanceCache();
-		}
+		$this->doFailedRightsChange( 'blocked' );
 	}
 
 	public function testAddMultiple() {
@@ -170,68 +176,61 @@ class ApiUserrightsTest extends ApiTestCase {
 
 	public function testTooFewExpiries() {
 		$this->doFailedRightsChange(
-			'2 expiry timestamps were provided where 3 were needed.',
+			'toofewexpiries',
 			[ 'add' => 'sysop|bureaucrat|bot', 'expiry' => 'infinity|tomorrow' ]
 		);
 	}
 
 	public function testTooManyExpiries() {
 		$this->doFailedRightsChange(
-			'3 expiry timestamps were provided where 2 were needed.',
+			'toofewexpiries',
 			[ 'add' => 'sysop|bureaucrat', 'expiry' => 'infinity|tomorrow|never' ]
 		);
 	}
 
 	public function testInvalidExpiry() {
-		$this->doFailedRightsChange( 'Invalid expiry time', [ 'expiry' => 'yummy lollipops!' ] );
+		$this->doFailedRightsChange( 'invalidexpiry', [ 'expiry' => 'yummy lollipops!' ] );
 	}
 
 	public function testMultipleInvalidExpiries() {
 		$this->doFailedRightsChange(
-			'Invalid expiry time "foo".',
+			'invalidexpiry',
 			[ 'add' => 'sysop|bureaucrat', 'expiry' => 'foo|bar' ]
 		);
 	}
 
 	public function testWithTag() {
-		ChangeTags::defineTag( 'custom tag' );
+		$this->getServiceContainer()->getChangeTagsStore()->defineTag( 'custom tag' );
 
 		$user = $this->getMutableTestUser()->getUser();
 
 		$this->doSuccessfulRightsChange( 'sysop', [ 'tags' => 'custom tag' ], $user );
 
-		$dbr = wfGetDB( DB_REPLICA );
 		$this->assertSame(
 			'custom tag',
-			$dbr->selectField(
-				[ 'change_tag', 'logging', 'change_tag_def' ],
-				'ctd_name',
-				[
-					'ct_log_id = log_id',
-					'log_namespace' => NS_USER,
-					'log_title' => strtr( $user->getName(), ' ', '_' )
-				],
-				__METHOD__,
-				[ 'change_tag_def' => [ 'JOIN', 'ctd_id = ct_tag_id' ] ]
-			)
-		);
+			$this->getDb()->newSelectQueryBuilder()
+				->select( 'ctd_name' )
+				->from( 'logging' )
+				->join( 'change_tag', null, 'ct_log_id = log_id' )
+				->join( 'change_tag_def', null, 'ctd_id = ct_tag_id' )
+				->where( [ 'log_namespace' => NS_USER, 'log_title' => strtr( $user->getName(), ' ', '_' ) ] )
+				->caller( __METHOD__ )->fetchField() );
 	}
 
 	public function testWithoutTagPermission() {
-		ChangeTags::defineTag( 'custom tag' );
+		$this->getServiceContainer()->getChangeTagsStore()->defineTag( 'custom tag' );
 
 		$this->setGroupPermissions( 'user', 'applychangetags', false );
-		$this->resetServices();
 
 		$this->doFailedRightsChange(
-			'You do not have permission to apply change tags along with your changes.',
+			'tags-apply-no-permission',
 			[ 'tags' => 'custom tag' ]
 		);
 	}
 
 	public function testNonexistentUser() {
 		$this->doFailedRightsChange(
-			'There is no user by the name "Nonexistent user". Check your spelling.',
+			'nosuchuser',
 			[ 'user' => 'Nonexistent user' ]
 		);
 	}
@@ -250,52 +249,9 @@ class ApiUserrightsTest extends ApiTestCase {
 		] );
 
 		$user->clearInstanceCache();
-		$this->assertSame( [ 'sysop' ], $user->getGroups() );
+		$this->assertSame( [ 'sysop' ], $this->getServiceContainer()->getUserGroupManager()->getUserGroups( $user ) );
 
 		$this->assertArrayNotHasKey( 'warnings', $res[0] );
-	}
-
-	/**
-	 * Helper for testCanProcessExpiries that returns a mock ApiUserrights that either can or cannot
-	 * process expiries.  Although the regular page can process expiries, we use a mock here to
-	 * ensure that it's the result of canProcessExpiries() that makes a difference, and not some
-	 * error in the way we construct the mock.
-	 *
-	 * @param bool $canProcessExpiries
-	 */
-	private function getMockForProcessingExpiries( $canProcessExpiries ) {
-		$sysop = $this->getTestSysop()->getUser();
-		$user = $this->getMutableTestUser()->getUser();
-
-		$token = $sysop->getEditToken( 'userrights' );
-
-		$main = new ApiMain( new FauxRequest( [
-			'action' => 'userrights',
-			'user' => $user->getName(),
-			'add' => 'sysop',
-			'token' => $token,
-		] ) );
-
-		$mockUserRightsPage = $this->getMockBuilder( UserrightsPage::class )
-			->setMethods( [ 'canProcessExpiries' ] )
-			->getMock();
-		$mockUserRightsPage->method( 'canProcessExpiries' )->willReturn( $canProcessExpiries );
-
-		$mockApi = $this->getMockBuilder( ApiUserrights::class )
-			->setConstructorArgs( [ $main, 'userrights' ] )
-			->setMethods( [ 'getUserRightsPage' ] )
-			->getMock();
-		$mockApi->method( 'getUserRightsPage' )->willReturn( $mockUserRightsPage );
-
-		return $mockApi;
-	}
-
-	public function testCanProcessExpiries() {
-		$mock1 = $this->getMockForProcessingExpiries( true );
-		$this->assertArrayHasKey( 'expiry', $mock1->getAllowedParams() );
-
-		$mock2 = $this->getMockForProcessingExpiries( false );
-		$this->assertArrayNotHasKey( 'expiry', $mock2->getAllowedParams() );
 	}
 
 	/**
@@ -308,7 +264,7 @@ class ApiUserrightsTest extends ApiTestCase {
 	 * @param array $expectedGroups Array of expected groups
 	 */
 	public function testAddAndRemoveGroups(
-		array $permissions = null, array $groupsToChange, array $expectedGroups
+		?array $permissions, array $groupsToChange, array $expectedGroups
 	) {
 		if ( $permissions !== null ) {
 			$this->setPermissions( $permissions[0], $permissions[1] );
@@ -325,7 +281,7 @@ class ApiUserrightsTest extends ApiTestCase {
 		$this->doSuccessfulRightsChange( $expectedGroups, $params, $user );
 	}
 
-	public function addAndRemoveGroupsProvider() {
+	public static function addAndRemoveGroupsProvider() {
 		return [
 			'Simple add' => [
 				[ [ 'sysop' ], [] ],
@@ -364,5 +320,13 @@ class ApiUserrightsTest extends ApiTestCase {
 				[ 'bot' ],
 			],
 		];
+	}
+
+	public function testWatched() {
+		$user = $this->getMutableTestUser()->getUser();
+		$userPage = Title::makeTitle( NS_USER, $user->getName() );
+		$this->doSuccessfulRightsChange( 'sysop', [ 'watchuser' => true ], $user );
+		$this->assertTrue( $this->getServiceContainer()->getWatchlistManager()
+			->isWatched( $this->getTestSysop()->getUser(), $userPage ) );
 	}
 }

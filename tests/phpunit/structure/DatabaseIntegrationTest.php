@@ -1,56 +1,116 @@
 <?php
 
-use Wikimedia\Rdbms\IDatabase;
+use MediaWiki\MediaWikiServices;
 use Wikimedia\Rdbms\Database;
 
 /**
  * @group Database
+ * @coversNothing
  */
-class DatabaseIntegrationTest extends MediaWikiTestCase {
+class DatabaseIntegrationTest extends MediaWikiIntegrationTestCase {
 	/**
 	 * @var Database
 	 */
 	protected $db;
 
-	private $functionTest = false;
-
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
-		$this->db = wfGetDB( DB_MASTER );
-	}
-
-	protected function tearDown() {
-		parent::tearDown();
-		if ( $this->functionTest ) {
-			$this->dropFunctions();
-			$this->functionTest = false;
-		}
-		$this->db->restoreFlags( IDatabase::RESTORE_INITIAL );
-	}
-
-	public function testStoredFunctions() {
-		if ( !in_array( wfGetDB( DB_MASTER )->getType(), [ 'mysql', 'postgres' ] ) ) {
-			$this->markTestSkipped( 'MySQL or Postgres required' );
-		}
-		global $IP;
-		$this->dropFunctions();
-		$this->functionTest = true;
-		$this->assertTrue(
-			$this->db->sourceFile( "$IP/tests/phpunit/data/db/{$this->db->getType()}/functions.sql" )
-		);
-		$res = $this->db->query( 'SELECT mw_test_function() AS test', __METHOD__ );
-		$this->assertEquals( 42, $res->fetchObject()->test );
-	}
-
-	private function dropFunctions() {
-		$this->db->query( 'DROP FUNCTION IF EXISTS mw_test_function'
-			. ( $this->db->getType() == 'postgres' ? '()' : '' )
-		);
+		$this->db = MediaWikiServices::getInstance()
+			->getConnectionProvider()
+			->getPrimaryDatabase();
 	}
 
 	public function testUnknownTableCorruptsResults() {
-		$res = $this->db->select( 'page', '*', [ 'page_id' => 1 ] );
+		$res = $this->db->newSelectQueryBuilder()
+			->select( '*' )
+			->from( 'page' )
+			->where( [ 'page_id' => 1 ] )
+			->fetchResultSet();
 		$this->assertFalse( $this->db->tableExists( 'foobarbaz' ) );
-		$this->assertInternalType( 'int', $res->numRows() );
+		$this->assertIsInt( $res->numRows() );
+	}
+
+	public function testUniformTablePrefix() {
+		global $IP;
+		$path = "$IP/sql/tables.json";
+		$tables = json_decode( file_get_contents( $path ), true );
+
+		// @todo Remove exception once these tables are fixed
+		$excludeList = [
+			'user_newtalk',
+			'objectcache',
+		];
+
+		$prefixes = [];
+		foreach ( $tables as $table ) {
+			$tableName = $table['name'];
+
+			if ( in_array( $tableName, $excludeList ) ) {
+				continue;
+			}
+
+			foreach ( $table['columns'] as $column ) {
+				$prefixes[] = strtok( $column['name'], '_' );
+			}
+			foreach ( $table['indexes'] ?? [] as $index ) {
+				$prefixes[] = strtok( $index['name'], '_' );
+			}
+
+			if ( count( array_unique( $prefixes ) ) === 1 ) {
+				$prefixes = []; // reset
+				continue;
+			}
+
+			$list = implode( '_, ', $prefixes ) . '_';
+
+			$this->fail(
+				"Columns and indexes of '$tableName' table should"
+				. " have uniform prefix. Non-uniform found: [ $list ]"
+			);
+		}
+
+		$this->assertSame( [], $prefixes );
+	}
+
+	/**
+	 * T352229
+	 */
+	public function testBooleanValues() {
+		$res = $this->db->newSelectQueryBuilder()
+			->select( [ 'false' => '1=0', 'true' => '1=1' ] )
+			->fetchResultSet();
+		$obj = $res->fetchObject();
+		$this->assertCount( 2, (array)$obj );
+		$this->assertSame( '0', $obj->false );
+		$this->assertSame( '1', $obj->true );
+
+		$res->seek( 0 );
+		$row = $res->fetchRow();
+		$this->assertCount( 4, $row );
+		$this->assertSame( '0', $row[0] );
+		$this->assertSame( '1', $row[1] );
+		$this->assertSame( '0', $row['false'] );
+		$this->assertSame( '1', $row['true'] );
+	}
+
+	public function testListTables() {
+		$prefix = $this->db->tablePrefix() . 'listtables_';
+		$table = $prefix . 'table';
+		$view = $prefix . 'view';
+		$allTables = $this->db->listTables();
+		$this->assertIsArray( $allTables );
+
+		$this->assertSame( [], $this->db->listTables( $prefix ) );
+
+		try {
+			$this->db->query( "CREATE TABLE $table (i INT)" );
+			$this->assertSame( [ $table ], $this->db->listTables( $prefix ) );
+			// Confirm that listTables() does not include views (T45571)
+			$this->db->query( "CREATE VIEW $view AS SELECT * FROM $table" );
+			$this->assertSame( [ $table ], $this->db->listTables( $prefix ) );
+		} finally {
+			$this->db->query( "DROP VIEW IF EXISTS $view" );
+			$this->db->query( "DROP TABLE IF EXISTS $table" );
+		}
 	}
 }

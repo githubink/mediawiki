@@ -21,8 +21,11 @@
 
 namespace MediaWiki\Auth;
 
+use MediaWiki\Language\RawMessage;
+
 /**
  * This is a value object for authentication requests with a username, password, and domain
+ * @stable to extend
  * @ingroup Auth
  * @since 1.27
  */
@@ -30,16 +33,21 @@ class PasswordDomainAuthenticationRequest extends PasswordAuthenticationRequest 
 	/** @var string[] Domains available */
 	private $domainList;
 
-	/** @var string Domain */
+	/** @var string|null */
 	public $domain = null;
 
 	/**
+	 * @stable to call
 	 * @param string[] $domainList List of available domains
 	 */
 	public function __construct( array $domainList ) {
 		$this->domainList = $domainList;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getFieldInfo() {
 		$ret = parent::getFieldInfo();
 
@@ -52,13 +60,17 @@ class PasswordDomainAuthenticationRequest extends PasswordAuthenticationRequest 
 				'help' => wfMessage( 'authmanager-domain-help' ),
 			];
 			foreach ( $this->domainList as $domain ) {
-				$ret['domain']['options'][$domain] = new \RawMessage( '$1', [ $domain ] );
+				$ret['domain']['options'][$domain] = new RawMessage( '$1', [ $domain ] );
 			}
 		}
 
 		return $ret;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function describeCredentials() {
 		return [
 			'provider' => wfMessage( 'authmanager-provider-password-domain' ),

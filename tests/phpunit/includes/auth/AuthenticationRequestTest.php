@@ -1,42 +1,48 @@
 <?php
 
-namespace MediaWiki\Auth;
+namespace MediaWiki\Tests\Auth;
+
+use MediaWiki\Auth\AuthenticationRequest;
+use MediaWiki\Auth\PasswordAuthenticationRequest;
+use MediaWiki\Message\Message;
+use MediaWikiIntegrationTestCase;
+use UnexpectedValueException;
 
 /**
  * @group AuthManager
  * @covers \MediaWiki\Auth\AuthenticationRequest
  */
-class AuthenticationRequestTest extends \MediaWikiTestCase {
+class AuthenticationRequestTest extends MediaWikiIntegrationTestCase {
 	public function testBasics() {
 		$mock = $this->getMockForAbstractClass( AuthenticationRequest::class );
 
 		$this->assertSame( get_class( $mock ), $mock->getUniqueId() );
 
-		$this->assertType( 'array', $mock->getMetadata() );
+		$this->assertIsArray( $mock->getMetadata() );
 
 		$ret = $mock->describeCredentials();
-		$this->assertInternalType( 'array', $ret );
+		$this->assertIsArray( $ret );
 		$this->assertArrayHasKey( 'provider', $ret );
-		$this->assertInstanceOf( \Message::class, $ret['provider'] );
+		$this->assertInstanceOf( Message::class, $ret['provider'] );
 		$this->assertArrayHasKey( 'account', $ret );
-		$this->assertInstanceOf( \Message::class, $ret['account'] );
+		$this->assertInstanceOf( Message::class, $ret['account'] );
 	}
 
 	public function testLoadRequestsFromSubmission() {
 		$mb = $this->getMockBuilder( AuthenticationRequest::class )
-			->setMethods( [ 'loadFromSubmission' ] );
+			->onlyMethods( [ 'loadFromSubmission' ] );
 
 		$data = [ 'foo', 'bar' ];
 
 		$req1 = $mb->getMockForAbstractClass();
 		$req1->expects( $this->once() )->method( 'loadFromSubmission' )
 			->with( $this->identicalTo( $data ) )
-			->will( $this->returnValue( false ) );
+			->willReturn( false );
 
 		$req2 = $mb->getMockForAbstractClass();
 		$req2->expects( $this->once() )->method( 'loadFromSubmission' )
 			->with( $this->identicalTo( $data ) )
-			->will( $this->returnValue( true ) );
+			->willReturn( true );
 
 		$this->assertSame(
 			[ $req2 ],
@@ -99,16 +105,16 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 
 		for ( $i = 0; $i < 3; $i++ ) {
 			$req = $mb->getMockForAbstractClass();
-			$req->expects( $this->any() )->method( 'getFieldInfo' )->will( $this->returnValue( [
+			$req->method( 'getFieldInfo' )->willReturn( [
 				'username' => [
 					'type' => 'string',
 				],
-			] ) );
+			] );
 			$reqs[] = $req;
 		}
 
 		$req = $mb->getMockForAbstractClass();
-		$req->expects( $this->any() )->method( 'getFieldInfo' )->will( $this->returnValue( [] ) );
+		$req->method( 'getFieldInfo' )->willReturn( [] );
 		$req->username = 'baz';
 		$reqs[] = $req;
 
@@ -125,7 +131,7 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 		try {
 			AuthenticationRequest::getUsernameFromRequests( $reqs );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertSame(
 				'Conflicting username fields: "bar" from ' .
 					get_class( $reqs[1] ) . '::$username vs. "foo" from ' .
@@ -140,7 +146,7 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 
 		$req1 = $this->createMock( AuthenticationRequest::class );
 		$req1->required = AuthenticationRequest::REQUIRED;
-		$req1->expects( $this->any() )->method( 'getFieldInfo' )->will( $this->returnValue( [
+		$req1->method( 'getFieldInfo' )->willReturn( [
 			'string1' => [
 				'type' => 'string',
 				'label' => $msg,
@@ -163,11 +169,11 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 				'label' => $msg,
 				'help' => $msg,
 			],
-		] ) );
+		] );
 
 		$req2 = $this->createMock( AuthenticationRequest::class );
 		$req2->required = AuthenticationRequest::REQUIRED;
-		$req2->expects( $this->any() )->method( 'getFieldInfo' )->will( $this->returnValue( [
+		$req2->method( 'getFieldInfo' )->willReturn( [
 			'string1' => [
 				'type' => 'string',
 				'label' => $msg,
@@ -185,27 +191,29 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 				'label' => $msg,
 				'help' => $msg,
 			],
-		] ) );
+		] );
 
 		$req3 = $this->createMock( AuthenticationRequest::class );
 		$req3->required = AuthenticationRequest::REQUIRED;
-		$req3->expects( $this->any() )->method( 'getFieldInfo' )->will( $this->returnValue( [
+		$req3->method( 'getFieldInfo' )->willReturn( [
 			'string1' => [
 				'type' => 'checkbox',
 				'label' => $msg,
 				'help' => $msg,
 			],
-		] ) );
+		] );
 
 		$req4 = $this->createMock( AuthenticationRequest::class );
 		$req4->required = AuthenticationRequest::REQUIRED;
-		$req4->expects( $this->any() )->method( 'getFieldInfo' )->will( $this->returnValue( [] ) );
+		$req4->method( 'getFieldInfo' )->willReturn( [] );
 
 		// Basic combining
 
+		$this->assertEquals( [], AuthenticationRequest::mergeFieldInfo( [] ) );
+
 		$fields = AuthenticationRequest::mergeFieldInfo( [ $req1 ] );
 		$expect = $req1->getFieldInfo();
-		foreach ( $expect as $name => &$options ) {
+		foreach ( $expect as &$options ) {
 			$options['optional'] = !empty( $options['optional'] );
 			$options['sensitive'] = !empty( $options['sensitive'] );
 		}
@@ -218,7 +226,7 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 		try {
 			AuthenticationRequest::mergeFieldInfo( [ $req1, $req3 ] );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertSame(
 				'Field type conflict for "string1", "string" vs "checkbox"',
 				$ex->getMessage()
@@ -251,7 +259,7 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 
 		$fields = AuthenticationRequest::mergeFieldInfo( [ $req1, $req2 ] );
 		$expect = $req1->getFieldInfo() + $req2->getFieldInfo();
-		foreach ( $expect as $name => &$options ) {
+		foreach ( $expect as &$options ) {
 			$options['sensitive'] = !empty( $options['sensitive'] );
 		}
 		$expect['string1']['optional'] = false;
@@ -270,14 +278,14 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 	 * @param array|bool $expectState
 	 */
 	public function testLoadFromSubmission( $fieldInfo, $data, $expectState ) {
-		$mock = $this->getMockForAbstractClass( AuthenticationRequest::class );
-		$mock->expects( $this->any() )->method( 'getFieldInfo' )
-			->will( $this->returnValue( $fieldInfo ) );
+		$mock = $this->getMockForAbstractClass( AuthenticationRequestForLoadFromSubmission::class );
+		$mock->method( 'getFieldInfo' )
+			->willReturn( $fieldInfo );
 
 		$ret = $mock->loadFromSubmission( $data );
 		if ( is_array( $expectState ) ) {
 			$this->assertTrue( $ret );
-			$expect = call_user_func( [ get_class( $mock ), '__set_state' ], $expectState );
+			$expect = $mock::__set_state( $expectState );
 			$this->assertEquals( $expect, $mock );
 		} else {
 			$this->assertFalse( $ret );
@@ -514,4 +522,16 @@ class AuthenticationRequestTest extends \MediaWikiTestCase {
 			],
 		];
 	}
+}
+
+// Dynamic properties from the testLoadFromSubmission not working in php8.2
+abstract class AuthenticationRequestForLoadFromSubmission extends AuthenticationRequest {
+	/** @var array */
+	public $choose;
+	/** @var bool */
+	public $push;
+	/** @var bool */
+	public $check;
+	/** @var string */
+	public $field;
 }

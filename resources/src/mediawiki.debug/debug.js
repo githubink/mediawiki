@@ -1,8 +1,9 @@
+/* eslint-disable es-x/no-array-prototype-includes */
+
 ( function () {
 	'use strict';
 
-	var debug,
-		hovzer = $.getFootHovzer();
+	const hovzer = $.getFootHovzer();
 
 	OO.ui.getViewportSpacing = function () {
 		return {
@@ -14,32 +15,29 @@
 	};
 
 	/**
-	 * Debug toolbar.
+	 * Access the debug toolbar. Enabled server-side through `$wgDebugToolbar`.
 	 *
-	 * Enabled server-side through `$wgDebugToolbar`.
-	 *
-	 * @class mw.Debug
-	 * @singleton
+	 * @namespace mw.Debug
 	 * @author John Du Hart
 	 * @since 1.19
 	 */
-	debug = mw.Debug = {
+	const debug = mw.Debug = {
 		/**
-		 * Toolbar container element
+		 * Toolbar container element.
 		 *
-		 * @property {jQuery}
+		 * @type {jQuery}
 		 */
 		$container: null,
 
 		/**
-		 * Object containing data for the debug toolbar
+		 * Object containing data for the debug toolbar.
 		 *
-		 * @property {Object}
+		 * @type {Object}
 		 */
 		data: {},
 
 		/**
-		 * Initialize the debugging pane
+		 * Initialize the debugging pane.
 		 *
 		 * Shouldn't be called before the document is ready
 		 * (since it binds to elements on the page).
@@ -59,7 +57,7 @@
 		},
 
 		/**
-		 * Switch between panes
+		 * Switch between panes.
 		 *
 		 * Should be called with an HTMLElement as its thisArg,
 		 * because it's meant to be an event handler.
@@ -69,11 +67,11 @@
 		 * @param {jQuery.Event} e
 		 */
 		switchPane: function ( e ) {
-			var currentPaneId = debug.$container.data( 'currentPane' ),
+			const currentPaneId = debug.$container.data( 'currentPane' ),
 				requestedPaneId = $( this ).prop( 'id' ).slice( 9 ),
 				$currentPane = $( '#mw-debug-pane-' + currentPaneId ),
-				$requestedPane = $( '#mw-debug-pane-' + requestedPaneId ),
-				hovDone = false;
+				$requestedPane = $( '#mw-debug-pane-' + requestedPaneId );
+			let hovDone = false;
 
 			function updateHov() {
 				if ( !hovDone ) {
@@ -85,8 +83,8 @@
 			// Skip hash fragment handling. Prevents screen from jumping.
 			e.preventDefault();
 
-			$( this ).addClass( 'current ' );
-			$( '.mw-debug-panelink' ).not( this ).removeClass( 'current ' );
+			$( this ).addClass( 'current' );
+			$( '.mw-debug-panelink' ).not( this ).removeClass( 'current' );
 
 			// Hide the current pane
 			if ( requestedPaneId === currentPaneId ) {
@@ -111,12 +109,10 @@
 		},
 
 		/**
-		 * Construct the HTML for the debugging toolbar
+		 * Construct the HTML for the debugging toolbar.
 		 */
 		buildHtml: function () {
-			var $container, $bits, panes, id, gitInfo;
-
-			$container = $( '<div>' )
+			const $container = $( '<div>' )
 				.attr( {
 					id: 'mw-debug-toolbar',
 					lang: 'en',
@@ -124,7 +120,7 @@
 				} )
 				.addClass( 'mw-debug' );
 
-			$bits = $( '<div>' ).addClass( 'mw-debug-bits' );
+			const $bits = $( '<div>' ).addClass( 'mw-debug-bits' );
 
 			/**
 			 * Returns a jQuery element for a debug-bit div
@@ -188,30 +184,29 @@
 
 			paneTriggerBitDiv( 'includes', 'PHP includes', this.data.includes.length );
 
-			gitInfo = '';
+			let $gitInfo;
 			if ( this.data.gitRevision !== false ) {
-				gitInfo = '(' + this.data.gitRevision.slice( 0, 7 ) + ')';
+				const gitInfoText = '(' + this.data.gitRevision.slice( 0, 7 ) + ')';
 				if ( this.data.gitViewUrl !== false ) {
-					gitInfo = $( '<a>' )
+					$gitInfo = $( '<a>' )
 						.attr( 'href', this.data.gitViewUrl )
-						.text( gitInfo );
+						.text( gitInfoText );
+				} else {
+					$gitInfo = $( document.createTextNode( gitInfoText ) );
 				}
 			}
 
 			bitDiv( 'mwversion' )
 				.append( $( '<a>' ).attr( 'href', 'https://www.mediawiki.org/' ).text( 'MediaWiki' ) )
 				.append( document.createTextNode( ': ' + this.data.mwVersion + ' ' ) )
-				.append( gitInfo );
+				.append( $gitInfo );
 
 			if ( this.data.gitBranch !== false ) {
 				bitDiv( 'gitbranch' ).text( 'Git branch: ' + this.data.gitBranch );
 			}
 
 			bitDiv( 'phpversion' )
-				.append( this.data.phpEngine === 'HHVM' ?
-					$( '<a>' ).attr( 'href', 'https://hhvm.com/' ).text( 'HHVM' ) :
-					$( '<a>' ).attr( 'href', 'https://php.net/' ).text( 'PHP' )
-				)
+				.append( $( '<a>' ).attr( 'href', 'https://php.net/' ).text( 'PHP' ) )
 				.append( ': ' + this.data.phpVersion );
 
 			bitDiv( 'time' )
@@ -222,7 +217,7 @@
 
 			$bits.appendTo( $container );
 
-			panes = {
+			const panes = {
 				console: this.buildConsoleTable(),
 				querylist: this.buildQueryTable(),
 				debuglog: this.buildDebugLogTable(),
@@ -230,13 +225,13 @@
 				includes: this.buildIncludesPane()
 			};
 
-			for ( id in panes ) {
+			for ( const paneId in panes ) {
 				$( '<div>' )
 					.prop( {
 						className: 'mw-debug-pane',
-						id: 'mw-debug-pane-' + id
+						id: 'mw-debug-pane-' + paneId
 					} )
-					.append( panes[ id ] )
+					.append( panes[ paneId ] )
 					.appendTo( $container );
 			}
 
@@ -244,20 +239,19 @@
 		},
 
 		/**
-		 * Build the console panel
+		 * Build the console panel.
 		 *
 		 * @return {jQuery} Console panel
 		 */
 		buildConsoleTable: function () {
-			var $table, entryTypeText, i, length, entry;
-
-			$table = $( '<table>' ).attr( 'id', 'mw-debug-console' );
+			const $table = $( '<table>' ).attr( 'id', 'mw-debug-console' );
+			const length = this.data.log.length;
 
 			$( '<colgroup>' ).css( 'width', /* padding = */ 20 + ( 10 * /* fontSize = */ 11 ) ).appendTo( $table );
 			$( '<colgroup>' ).appendTo( $table );
 			$( '<colgroup>' ).css( 'width', 350 ).appendTo( $table );
 
-			entryTypeText = function ( entryType ) {
+			const entryTypeText = function ( entryType ) {
 				switch ( entryType ) {
 					case 'log':
 						return 'Log';
@@ -270,10 +264,14 @@
 				}
 			};
 
-			for ( i = 0, length = this.data.log.length; i < length; i += 1 ) {
-				entry = this.data.log[ i ];
+			for ( let i = 0; i < length; i++ ) {
+				const entry = this.data.log[ i ];
 				entry.typeText = entryTypeText( entry.type );
 
+				// The following classes are used here:
+				// * mw-debug-console-log
+				// * mw-debug-console-warn
+				// * mw-debug-console-deprecated
 				$( '<tr>' )
 					.append( $( '<td>' )
 						.text( entry.typeText )
@@ -288,14 +286,13 @@
 		},
 
 		/**
-		 * Build query list pane
+		 * Build query list pane.
 		 *
 		 * @return {jQuery}
 		 */
 		buildQueryTable: function () {
-			var $table, i, length, query;
-
-			$table = $( '<table>' ).attr( 'id', 'mw-debug-querylist' );
+			const $table = $( '<table>' ).attr( 'id', 'mw-debug-querylist' );
+			const length = this.data.queries.length;
 
 			$( '<tr>' )
 				.append( $( '<th>' ).attr( 'scope', 'col' ).text( '#' ).css( 'width', '4em' ) )
@@ -304,13 +301,13 @@
 				.append( $( '<th>' ).attr( 'scope', 'col' ).text( 'Call' ).css( 'width', '18em' ) )
 				.appendTo( $table );
 
-			for ( i = 0, length = this.data.queries.length; i < length; i += 1 ) {
-				query = this.data.queries[ i ];
+			for ( let i = 0; i < length; i++ ) {
+				const query = this.data.queries[ i ];
 
 				$( '<tr>' )
 					.append( $( '<td>' ).text( i + 1 ) )
 					.append( $( '<td>' ).text( query.sql ) )
-					.append( $( '<td>' ).text( ( query.time * 1000 ).toFixed( 4 ) + 'ms' ).addClass( 'stats' ) )
+					.append( $( '<td>' ).text( ( query.time * 1000 ).toFixed( 3 ) + 'ms' ).addClass( 'stats' ) )
 					.append( $( '<td>' ).text( query.function ) )
 					.appendTo( $table );
 			}
@@ -319,16 +316,16 @@
 		},
 
 		/**
-		 * Build legacy debug log pane
+		 * Build legacy debug log pane.
 		 *
 		 * @return {jQuery}
 		 */
 		buildDebugLogTable: function () {
-			var $list, i, length, line;
-			$list = $( '<ul>' );
+			const $list = $( '<ul>' );
+			const length = this.data.debugLog.length;
 
-			for ( i = 0, length = this.data.debugLog.length; i < length; i += 1 ) {
-				line = this.data.debugLog[ i ];
+			for ( let i = 0; i < length; i++ ) {
+				const line = this.data.debugLog[ i ];
 				$( '<li>' )
 					.html( mw.html.escape( line ).replace( /\n/g, '<br />\n' ) )
 					.appendTo( $list );
@@ -338,24 +335,25 @@
 		},
 
 		/**
-		 * Build request information pane
+		 * Build request information pane.
 		 *
 		 * @return {jQuery}
 		 */
 		buildRequestPane: function () {
 
 			function buildTable( title, data ) {
-				var $unit, $table, key;
+				const $unit = $( '<div>' ).append( $( '<h2>' ).text( title ) );
 
-				$unit = $( '<div>' ).append( $( '<h2>' ).text( title ) );
-
-				$table = $( '<table>' ).appendTo( $unit );
+				const $table = $( '<table>' ).appendTo( $unit );
 
 				$( '<tr>' )
-					.html( '<th scope="col">Key</th><th scope="col">Value</th>' )
+					.append(
+						$( '<th>' ).attr( 'scope', 'col' ).text( 'Key' ),
+						$( '<th>' ).attr( 'scope', 'col' ).text( 'Value' )
+					)
 					.appendTo( $table );
 
-				for ( key in data ) {
+				for ( const key in data ) {
 					$( '<tr>' )
 						.append( $( '<th>' ).attr( 'scope', 'row' ).text( key ) )
 						.append( $( '<td>' ).text( data[ key ] ) )
@@ -372,17 +370,16 @@
 		},
 
 		/**
-		 * Build included files pane
+		 * Build included files pane.
 		 *
 		 * @return {jQuery}
 		 */
 		buildIncludesPane: function () {
-			var $table, i, length, file;
+			const $table = $( '<table>' );
+			const length = this.data.includes.length;
 
-			$table = $( '<table>' );
-
-			for ( i = 0, length = this.data.includes.length; i < length; i += 1 ) {
-				file = this.data.includes[ i ];
+			for ( let i = 0; i < length; i++ ) {
+				const file = this.data.includes[ i ];
 				$( '<tr>' )
 					.append( $( '<td>' ).text( file.name ) )
 					.append( $( '<td>' ).text( file.size ).addClass( 'nr' ) )
@@ -393,7 +390,7 @@
 		}
 	};
 
-	$( function () {
+	$( () => {
 		debug.init();
 	} );
 

@@ -16,12 +16,18 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Change tagging
  */
+
+use MediaWiki\Html\Html;
+use MediaWiki\Linker\Linker;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\RevisionList\RevisionItem;
 
 /**
  * Item class for a live revision table row with its associated change tags.
+ *
  * @since 1.25
+ * @ingroup ChangeTags
  */
 class ChangeTagsRevisionItem extends RevisionItem {
 	/**
@@ -39,17 +45,19 @@ class ChangeTagsRevisionItem extends RevisionItem {
 		$difflink = $this->list->msg( 'parentheses' )
 			->rawParams( $this->getDiffLink() )->escaped();
 		$revlink = $this->getRevisionLink();
-		$userlink = Linker::revUserLink( $this->revision );
-		$comment = Linker::revComment( $this->revision );
+		$userlink = Linker::revUserLink( $this->getRevisionRecord() );
+		$comment = MediaWikiServices::getInstance()->getCommentFormatter()
+			->formatRevision( $this->getRevisionRecord(), $this->list->getAuthority() );
 		if ( $this->isDeleted() ) {
-			$revlink = "<span class=\"history-deleted\">$revlink</span>";
+			$class = Linker::getRevisionDeletedClass( $this->getRevisionRecord() );
+			$revlink = "<span class=\"$class\">$revlink</span>";
 		}
 
 		$content = "$difflink $revlink $userlink $comment";
 		$attribs = [];
 		$tags = $this->getTags();
 		if ( $tags ) {
-			list( $tagSummary, $classes ) = ChangeTags::formatSummaryRow(
+			[ $tagSummary, $classes ] = ChangeTags::formatSummaryRow(
 				$tags,
 				'edittags',
 				$this->list->getContext()
@@ -57,6 +65,6 @@ class ChangeTagsRevisionItem extends RevisionItem {
 			$content .= " $tagSummary";
 			$attribs['class'] = implode( ' ', $classes );
 		}
-		return Xml::tags( 'li', $attribs, $content );
+		return Html::rawElement( 'li', $attribs, $content );
 	}
 }

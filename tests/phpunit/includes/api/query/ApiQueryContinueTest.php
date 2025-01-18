@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Copyright © 2013 Yuri Astrakhan "<Firstname><Lastname>@gmail.com"
  *
@@ -18,6 +19,10 @@
  * http://www.gnu.org/copyleft/gpl.html
  */
 
+namespace MediaWiki\Tests\Api\Query;
+
+use Exception;
+
 /**
  * These tests validate the new continue functionality of the api query module by
  * doing multiple requests with varying parameters, merging the results, and checking
@@ -26,17 +31,18 @@
  * @group API
  * @group Database
  * @group medium
- * @covers ApiQuery
+ * @covers \MediaWiki\Api\ApiQuery
  */
 class ApiQueryContinueTest extends ApiQueryContinueTestBase {
+	/** @var Exception|null */
 	protected $exceptionFromAddDBData;
 
 	/**
 	 * Create a set of pages. These must not change, otherwise the tests might give wrong results.
 	 *
-*@see MediaWikiTestCase::addDBDataOnce()
+	 * @see MediaWikiIntegrationTestCase::addDBDataOnce()
 	 */
-	function addDBDataOnce() {
+	public function addDBDataOnce() {
 		try {
 			$this->editPage( 'Template:AQCT-T1', '**Template:AQCT-T1**' );
 			$this->editPage( 'Template:AQCT-T2', '**Template:AQCT-T2**' );
@@ -60,7 +66,7 @@ class ApiQueryContinueTest extends ApiQueryContinueTestBase {
 	 */
 	public function test1List() {
 		$this->mVerbose = false;
-		$mk = function ( $l ) {
+		$mk = static function ( $l ) {
 			return [
 				'list' => 'allpages',
 				'apprefix' => 'AQCT-',
@@ -84,7 +90,7 @@ class ApiQueryContinueTest extends ApiQueryContinueTestBase {
 	 */
 	public function test2Lists() {
 		$this->mVerbose = false;
-		$mk = function ( $l1, $l2 ) {
+		$mk = static function ( $l1, $l2 ) {
 			return [
 				'list' => 'allpages|alltransclusions',
 				'apprefix' => 'AQCT-',
@@ -110,7 +116,7 @@ class ApiQueryContinueTest extends ApiQueryContinueTestBase {
 	 */
 	public function testGen1Prop() {
 		$this->mVerbose = false;
-		$mk = function ( $g, $p ) {
+		$mk = static function ( $g, $p ) {
 			return [
 				'generator' => 'allpages',
 				'gapprefix' => 'AQCT-',
@@ -135,7 +141,7 @@ class ApiQueryContinueTest extends ApiQueryContinueTestBase {
 	 */
 	public function testGen2Prop() {
 		$this->mVerbose = false;
-		$mk = function ( $g, $p1, $p2 ) {
+		$mk = static function ( $g, $p1, $p2 ) {
 			return [
 				'generator' => 'allpages',
 				'gapprefix' => 'AQCT-',
@@ -166,7 +172,7 @@ class ApiQueryContinueTest extends ApiQueryContinueTestBase {
 	 */
 	public function testGen1Prop1List() {
 		$this->mVerbose = false;
-		$mk = function ( $g, $p, $l ) {
+		$mk = static function ( $g, $p, $l ) {
 			return [
 				'generator' => 'allpages',
 				'gapprefix' => 'AQCT-',
@@ -198,7 +204,7 @@ class ApiQueryContinueTest extends ApiQueryContinueTestBase {
 	 */
 	public function testGen2Prop2List1Meta() {
 		$this->mVerbose = false;
-		$mk = function ( $g, $p1, $p2, $l1, $l2 ) {
+		$mk = static function ( $g, $p1, $p2, $l1, $l2 ) {
 			return [
 				'generator' => 'allpages',
 				'gapprefix' => 'AQCT-',
@@ -237,7 +243,7 @@ class ApiQueryContinueTest extends ApiQueryContinueTestBase {
 	 */
 	public function testSameGenAndProp() {
 		$this->mVerbose = false;
-		$mk = function ( $g, $gDir, $p, $pDir ) {
+		$mk = static function ( $g, $gDir, $p, $pDir ) {
 			return [
 				'titles' => 'AQCT-1',
 				'generator' => 'templates',
@@ -283,7 +289,7 @@ class ApiQueryContinueTest extends ApiQueryContinueTestBase {
 	 */
 	public function testSameGenList() {
 		$this->mVerbose = false;
-		$mk = function ( $g, $gDir, $l, $pDir ) {
+		$mk = static function ( $g, $gDir, $l, $pDir ) {
 			return [
 				'generator' => 'allpages',
 				'gapprefix' => 'AQCT-',

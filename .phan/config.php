@@ -20,37 +20,62 @@
 
 $cfg = require __DIR__ . '/../vendor/mediawiki/mediawiki-phan-config/src/config.php';
 
+// Whilst MediaWiki is still supporting PHP 7.4+, this lets us run phan on higher versions of PHP
+// like 8.0 without phan trying to get us to make PHP 7.4-incompatible changes. This value should
+// match the PHP version specified in composer.json and PHPVersionCheck.php.
+$cfg['minimum_target_php_version'] = '7.4.3';
+
 $cfg['file_list'] = array_merge(
 	$cfg['file_list'],
-	function_exists( 'register_postsend_function' ) ? [] : [ '.phan/stubs/hhvm.php' ],
-	function_exists( 'wikidiff2_do_diff' ) ? [] : [ '.phan/stubs/wikidiff.php' ],
-	class_exists( PEAR::class ) ? [] : [ '.phan/stubs/mail.php' ],
-	defined( 'PASSWORD_ARGON2I' ) ? [] : [ '.phan/stubs/password.php' ],
-	// Per composer.json, PHPUnit 6 is used for PHP 7.0+, PHPUnit 4 otherwise.
-	// Load the interface for the version of PHPUnit that isn't installed.
-	// Phan only supports PHP 7.0+ (and not HHVM), so we only need to stub PHPUnit 4.
-	class_exists( PHPUnit_TextUI_Command::class ) ? [] : [ '.phan/stubs/phpunit4.php' ],
-	class_exists( ProfilerExcimer::class ) ? [] : [ '.phan/stubs/excimer.php' ],
+	class_exists( Socket::class ) ? [] : [ '.phan/stubs/Socket.php' ],
+	class_exists( AllowDynamicProperties::class ) ? [] : [ '.phan/stubs/AllowDynamicProperties.php' ],
+	class_exists( WeakMap::class ) ? [] : [ '.phan/stubs/WeakMap.php' ],
 	[
-		'maintenance/cleanupTable.inc',
-		'maintenance/CodeCleanerGlobalsPass.inc',
-		'maintenance/commandLine.inc',
-		'maintenance/sqlite.inc',
-		'maintenance/userDupes.inc',
-		'maintenance/language/checkLanguage.inc',
-		'maintenance/language/languages.inc',
+		// This makes constants and globals known to Phan before processing all other files.
+		// You can check the parser order with --dump-parsed-file-list
+		'includes/Defines.php',
+		// @todo This isn't working yet, see globals_type_map below
+		// 'includes/Setup.php',
+		'tests/phpunit/MediaWikiIntegrationTestCase.php',
+		'tests/phpunit/includes/TestUser.php',
 	]
 );
 
+$cfg['exclude_file_list'] = array_merge(
+	$cfg['exclude_file_list'],
+	[
+		// Avoid microsoft/tolerant-php-parser dependency
+		'maintenance/findDeprecated.php',
+		'maintenance/CodeCleanerGlobalsPass.php',
+		// Avoid nikic/php-parser dependency
+		'maintenance/shell.php',
+	]
+);
+
+if ( PHP_VERSION_ID >= 80000 ) {
+	// Exclude PHP 8.0 polyfills if PHP 8.0+ is running
+	$cfg['exclude_file_list'] = array_merge(
+		$cfg['exclude_file_list'],
+		[
+			'vendor/symfony/polyfill-php80/Resources/stubs/Attribute.php',
+			'vendor/symfony/polyfill-php80/Resources/stubs/PhpToken.php',
+			'vendor/symfony/polyfill-php80/Resources/stubs/Stringable.php',
+			'vendor/symfony/polyfill-php80/Resources/stubs/UnhandledMatchError.php',
+			'vendor/symfony/polyfill-php80/Resources/stubs/ValueError.php',
+		]
+	);
+}
+
 $cfg['autoload_internal_extension_signatures'] = [
+	'excimer' => '.phan/internal_stubs/excimer.phan_php',
 	'imagick' => '.phan/internal_stubs/imagick.phan_php',
 	'memcached' => '.phan/internal_stubs/memcached.phan_php',
-	'oci8' => '.phan/internal_stubs/oci8.phan_php',
 	'pcntl' => '.phan/internal_stubs/pcntl.phan_php',
+	'pgsql' => '.phan/internal_stubs/pgsql.phan_php',
 	'redis' => '.phan/internal_stubs/redis.phan_php',
 	'sockets' => '.phan/internal_stubs/sockets.phan_php',
-	'sqlsrv' => '.phan/internal_stubs/sqlsrv.phan_php',
-	'tideways' => '.phan/internal_stubs/tideways.phan_php',
+	'tideways_xhprof' => '.phan/internal_stubs/tideways_xhprof.phan_php',
+	'wikidiff2' => '.phan/internal_stubs/wikidiff.php'
 ];
 
 $cfg['directory_list'] = [
@@ -59,88 +84,115 @@ $cfg['directory_list'] = [
 	'maintenance/',
 	'mw-config/',
 	'resources/',
-	'vendor/',
-	'.phan/stubs/',
+	'tests/common/',
+	'tests/parser/',
+	'tests/phan',
+	'tests/phpunit/mocks/',
+	// Do NOT add .phan/stubs/ here: stubs are conditionally loaded in file_list
 ];
+
+// Include only direct production dependencies in vendor/
+// Omit dev dependencies and most indirect dependencies
+
+$composerJson = json_decode(
+	file_get_contents( __DIR__ . '/../composer.json' ),
+	true
+);
+
+$directDeps = [];
+foreach ( $composerJson['require'] as $dep => $version ) {
+	$parts = explode( '/', $dep );
+	if ( count( $parts ) === 2 ) {
+		$directDeps[] = $dep;
+	}
+}
+
+// This is a list of all composer packages that are referenced by core but
+// are not listed as requirements in composer.json.
+$indirectDeps = [
+	'composer/spdx-licenses',
+	'doctrine/dbal',
+	'doctrine/sql-formatter',
+	'guzzlehttp/psr7',
+	'pear/net_url2',
+	'pear/pear-core-minimal',
+	'phpunit/phpunit',
+	'psr/http-client',
+	'psr/http-factory',
+	'psr/http-message',
+	'seld/jsonlint',
+	'wikimedia/testing-access-wrapper',
+	'wikimedia/zest-css',
+];
+
+foreach ( [ ...$directDeps, ...$indirectDeps ] as $dep ) {
+	$cfg['directory_list'][] = "vendor/$dep";
+}
 
 $cfg['exclude_analysis_directory_list'] = [
 	'vendor/',
-	'.phan/stubs/',
+	'.phan/',
+	'tests/phpunit/',
 	// The referenced classes are not available in vendor, only when
 	// included from composer.
 	'includes/composer/',
 	// Directly references classes that only exist in Translate extension
 	'maintenance/language/',
 	// External class
-	'includes/libs/jsminplus.php',
+	'includes/libs/objectcache/utils/MemcachedClient.php',
+	// File may be valid, but may contain numerous "errors" such as iterating over an
+	// empty array due to the version checking in T246594 not being currently used.
+	'includes/PHPVersionCheck.php',
 ];
 
-$cfg['suppress_issue_types'] = array_merge( $cfg['suppress_issue_types'], [
-	// approximate error count: 18
-	"PhanAccessMethodInternal",
-	// approximate error count: 17
-	"PhanCommentParamOnEmptyParamList",
-	// approximate error count: 29
-	"PhanCommentParamWithoutRealParam",
-	// approximate error count: 2
-	"PhanCompatibleNegativeStringOffset",
-	// approximate error count: 21
-	"PhanParamReqAfterOpt",
-	// approximate error count: 26
-	"PhanParamSignatureMismatch",
-	// approximate error count: 4
-	"PhanParamSignatureMismatchInternal",
-	// approximate error count: 127
-	"PhanParamTooMany",
-	// approximate error count: 2
-	"PhanTraitParentReference",
-	// approximate error count: 30
-	"PhanTypeArraySuspicious",
-	// approximate error count: 27
-	"PhanTypeArraySuspiciousNullable",
-	// approximate error count: 26
-	"PhanTypeComparisonFromArray",
-	// approximate error count: 63
-	"PhanTypeInvalidDimOffset",
-	// approximate error count: 7
-	"PhanTypeInvalidLeftOperandOfIntegerOp",
-	// approximate error count: 2
-	"PhanTypeInvalidRightOperandOfIntegerOp",
-	// approximate error count: 154
-	"PhanTypeMismatchArgument",
-	// approximate error count: 27
-	"PhanTypeMismatchArgumentInternal",
-	// approximate error count: 2
-	"PhanTypeMismatchDimEmpty",
-	// approximate error count: 27
-	"PhanTypeMismatchDimFetch",
-	// approximate error count: 10
-	"PhanTypeMismatchForeach",
-	// approximate error count: 77
-	"PhanTypeMismatchProperty",
-	// approximate error count: 84
-	"PhanTypeMismatchReturn",
-	// approximate error count: 12
-	"PhanTypeObjectUnsetDeclaredProperty",
-	// approximate error count: 9
-	"PhanTypeSuspiciousNonTraversableForeach",
-	// approximate error count: 3
-	"PhanTypeSuspiciousStringExpression",
-	// approximate error count: 22
-	"PhanUndeclaredConstant",
-	// approximate error count: 3
-	"PhanUndeclaredInvokeInCallable",
-	// approximate error count: 237
-	"PhanUndeclaredMethod",
-	// approximate error count: 846
-	"PhanUndeclaredProperty",
-	// approximate error count: 2
-	"PhanUndeclaredVariableAssignOp",
-	// approximate error count: 55
-	"PhanUndeclaredVariableDim",
-] );
+// TODO: Ideally we'd disable this in core, given we don't need backwards compatibility here and aliases
+// should not be used. However, that would have unwanted side effects such as being unable to test
+// taint-check (T321806).
+$cfg['enable_class_alias_support'] = true;
+// Exclude Parsoid's src/DOM in favor of .phan/stubs/DomImpl.php
+$cfg['exclude_file_list'] = array_merge(
+	$cfg['exclude_file_list'],
+	array_map( fn ( $f ) => "vendor/wikimedia/parsoid/src/DOM/{$f}.php", [
+		'Attr', 'CharacterData', 'Comment', 'Document', 'DocumentFragment',
+		'DocumentType', 'Element', 'Node', 'ProcessingInstruction', 'Text',
+	] )
+);
+$cfg['file_list'][] = '.phan/stubs/DomImpl.php';
 
 $cfg['ignore_undeclared_variables_in_global_scope'] = true;
-$cfg['globals_type_map']['IP'] = 'string';
+// @todo It'd be great if we could just make phan read these from config-schema.php, to avoid
+// duplicating the types. config-schema.php has JSON types though, not PHP types.
+// @todo As we are removing access to global variables from the code base,
+// remove them from here as well, so phan complains when something tries to use them.
+$cfg['globals_type_map'] = array_merge( $cfg['globals_type_map'], [
+	'IP' => 'string',
+	'wgTitle' => \MediaWiki\Title\Title::class,
+	'wgGalleryOptions' => 'array',
+	'wgDirectoryMode' => 'int',
+	'wgDummyLanguageCodes' => 'string[]',
+	'wgNamespaceProtection' => 'array<int,string|string[]>',
+	'wgNamespaceAliases' => 'array<string,int>',
+	'wgLockManagers' => 'array[]',
+	'wgForeignFileRepos' => 'array[]',
+	'wgDefaultUserOptions' => 'array',
+	'wgSkipSkins' => 'string[]',
+	'wgLogTypes' => 'string[]',
+	'wgLogNames' => 'array<string,string>',
+	'wgLogHeaders' => 'array<string,string>',
+	'wgLogActionsHandlers' => 'array<string,class-string>',
+	'wgPasswordPolicy' => 'array<string,array<string,string|array>>',
+	'wgVirtualRestConfig' => 'array<string,array>',
+	'wgLocalInterwikis' => 'string[]',
+	'wgDebugLogGroups' => 'string|false|array{destination:string,sample?:int,level:int}',
+	'wgCookiePrefix' => 'string|false',
+	'wgOut' => \MediaWiki\Output\OutputPage::class,
+	'wgExtraNamespaces' => 'string[]',
+	'wgRequest' => \MediaWiki\Request\WebRequest::class,
+] );
+
+// Include a local config file if it exists
+if ( file_exists( __DIR__ . '/local-config.php' ) ) {
+	require __DIR__ . '/local-config.php';
+}
 
 return $cfg;

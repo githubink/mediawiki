@@ -25,60 +25,30 @@
  * @author Daniel Kinzler
  */
 
-use MediaWiki\MediaWikiServices;
+namespace MediaWiki\Content;
+
+use MediaWiki\Title\Title;
 
 /**
  * Content object for CSS pages.
  *
+ * @newable
  * @ingroup Content
  */
 class CssContent extends TextContent {
 
 	/**
-	 * @var bool|Title|null
+	 * @var Title|null|false
 	 */
 	private $redirectTarget = false;
 
 	/**
+	 * @stable to call
 	 * @param string $text CSS code.
 	 * @param string $modelId the content content model
 	 */
 	public function __construct( $text, $modelId = CONTENT_MODEL_CSS ) {
 		parent::__construct( $text, $modelId );
-	}
-
-	/**
-	 * Returns a Content object with pre-save transformations applied using
-	 * Parser::preSaveTransform().
-	 *
-	 * @param Title $title
-	 * @param User $user
-	 * @param ParserOptions $popts
-	 *
-	 * @return CssContent
-	 *
-	 * @see TextContent::preSaveTransform
-	 */
-	public function preSaveTransform( Title $title, User $user, ParserOptions $popts ) {
-		// @todo Make pre-save transformation optional for script pages
-
-		$text = $this->getText();
-		$pst = MediaWikiServices::getInstance()->getParser()
-			->preSaveTransform( $text, $title, $user, $popts );
-
-		return new static( $pst );
-	}
-
-	/**
-	 * @return string CSS wrapped in a <pre> tag.
-	 */
-	protected function getHtml() {
-		$html = "";
-		$html .= "<pre class=\"mw-code mw-css\" dir=\"ltr\">\n";
-		$html .= htmlspecialchars( $this->getText() );
-		$html .= "\n</pre>\n";
-
-		return $html;
 	}
 
 	/**
@@ -90,6 +60,7 @@ class CssContent extends TextContent {
 			return $this;
 		}
 
+		// @phan-suppress-next-line PhanTypeMismatchReturnSuperType False positive
 		return $this->getContentHandler()->makeRedirectContent( $target );
 	}
 
@@ -104,8 +75,7 @@ class CssContent extends TextContent {
 		$text = $this->getText();
 		if ( strpos( $text, '/* #REDIRECT */' ) === 0 ) {
 			// Extract the title from the url
-			preg_match( '/title=(.*?)&action=raw/', $text, $matches );
-			if ( isset( $matches[1] ) ) {
+			if ( preg_match( '/title=(.*?)&action=raw/', $text, $matches ) ) {
 				$title = Title::newFromText( urldecode( $matches[1] ) );
 				if ( $title ) {
 					// Have a title, check that the current content equals what
@@ -121,3 +91,5 @@ class CssContent extends TextContent {
 	}
 
 }
+/** @deprecated class alias since 1.43 */
+class_alias( CssContent::class, 'CssContent' );

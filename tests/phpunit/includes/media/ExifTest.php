@@ -1,25 +1,23 @@
 <?php
 
+use MediaWiki\MainConfigNames;
+
 /**
  * @group Media
- * @covers Exif
+ * @covers \Exif
+ * @requires extension exif
  */
-class ExifTest extends MediaWikiTestCase {
+class ExifTest extends MediaWikiIntegrationTestCase {
+	private const FILE_PATH = __DIR__ . '/../../data/media/';
 
-	/** @var string */
-	protected $mediaPath;
-
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
-		$this->checkPHPExtension( 'exif' );
 
-		$this->mediaPath = __DIR__ . '/../../data/media/';
-
-		$this->setMwGlobals( 'wgShowEXIF', true );
+		$this->overrideConfigValue( MainConfigNames::ShowEXIF, true );
 	}
 
 	public function testGPSExtraction() {
-		$filename = $this->mediaPath . 'exif-gps.jpg';
+		$filename = self::FILE_PATH . 'exif-gps.jpg';
 		$seg = JpegMetadataExtractor::segmentSplitter( $filename );
 		$exif = new Exif( $filename, $seg['byteOrder'] );
 		$data = $exif->getFilteredData();
@@ -30,11 +28,11 @@ class ExifTest extends MediaWikiTestCase {
 			'GPSDOP' => '5/1',
 			'GPSVersionID' => '2.2.0.0',
 		];
-		$this->assertEquals( $expected, $data, '', 0.0000000001 );
+		$this->assertEqualsWithDelta( $expected, $data, 0.0000000001 );
 	}
 
 	public function testUnicodeUserComment() {
-		$filename = $this->mediaPath . 'exif-user-comment.jpg';
+		$filename = self::FILE_PATH . 'exif-user-comment.jpg';
 		$seg = JpegMetadataExtractor::segmentSplitter( $filename );
 		$exif = new Exif( $filename, $seg['byteOrder'] );
 		$data = $exif->getFilteredData();

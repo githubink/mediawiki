@@ -21,6 +21,11 @@
  * @ingroup FileBackend
  */
 
+namespace Wikimedia\FileBackend\FSFile;
+
+use Wikimedia\AtEase\AtEase;
+use Wikimedia\Timestamp\ConvertibleTimestamp;
+
 /**
  * Class representing a non-directory file on the file system
  *
@@ -66,7 +71,11 @@ class FSFile {
 	 * @return int|bool
 	 */
 	public function getSize() {
-		return filesize( $this->path );
+		AtEase::suppressWarnings();
+		$size = filesize( $this->path );
+		AtEase::restoreWarnings();
+
+		return $size;
 	}
 
 	/**
@@ -75,11 +84,11 @@ class FSFile {
 	 * @return string|bool TS_MW timestamp or false on failure
 	 */
 	public function getTimestamp() {
-		Wikimedia\suppressWarnings();
+		AtEase::suppressWarnings();
 		$timestamp = filemtime( $this->path );
-		Wikimedia\restoreWarnings();
+		AtEase::restoreWarnings();
 		if ( $timestamp !== false ) {
-			$timestamp = wfTimestamp( TS_MW, $timestamp );
+			$timestamp = ConvertibleTimestamp::convert( TS_MW, $timestamp );
 		}
 
 		return $timestamp;
@@ -117,9 +126,9 @@ class FSFile {
 			$info['mime'] = $mime;
 
 			if ( strpos( $mime, '/' ) !== false ) {
-				list( $info['major_mime'], $info['minor_mime'] ) = explode( '/', $mime, 2 );
+				[ $info['major_mime'], $info['minor_mime'] ] = explode( '/', $mime, 2 );
 			} else {
-				list( $info['major_mime'], $info['minor_mime'] ) = [ $mime, 'unknown' ];
+				[ $info['major_mime'], $info['minor_mime'] ] = [ $mime, 'unknown' ];
 			}
 		}
 
@@ -168,12 +177,12 @@ class FSFile {
 			return $this->sha1Base36;
 		}
 
-		Wikimedia\suppressWarnings();
+		AtEase::suppressWarnings();
 		$this->sha1Base36 = sha1_file( $this->path );
-		Wikimedia\restoreWarnings();
+		AtEase::restoreWarnings();
 
 		if ( $this->sha1Base36 !== false ) {
-			$this->sha1Base36 = Wikimedia\base_convert( $this->sha1Base36, 16, 36, 31 );
+			$this->sha1Base36 = \Wikimedia\base_convert( $this->sha1Base36, 16, 36, 31 );
 		}
 
 		return $this->sha1Base36;
@@ -213,7 +222,7 @@ class FSFile {
 	 * fairly neatly.
 	 *
 	 * @param string $path
-	 * @return bool|string False on failure
+	 * @return false|string False on failure
 	 */
 	public static function getSha1Base36FromPath( $path ) {
 		$fsFile = new self( $path );
@@ -221,3 +230,6 @@ class FSFile {
 		return $fsFile->getSha1Base36();
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( FSFile::class, 'FSFile' );

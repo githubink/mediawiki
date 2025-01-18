@@ -30,8 +30,8 @@ use Monolog\Formatter\NormalizerFormatter;
  *
  * @deprecated since 1.32
  * @since 1.25
+ * @ingroup Debug
  * @copyright © 2013 Wikimedia Foundation and contributors
- * @see \MediaWiki\Logger\LegacyLogger
  */
 class LegacyFormatter extends NormalizerFormatter {
 
@@ -39,7 +39,7 @@ class LegacyFormatter extends NormalizerFormatter {
 		parent::__construct( 'c' );
 	}
 
-	public function format( array $record ) {
+	public function format( array $record ): string {
 		$normalized = parent::format( $record );
 		return LegacyLogger::format(
 			$normalized['channel'], $normalized['message'], $normalized

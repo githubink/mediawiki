@@ -19,14 +19,18 @@
  * @ingroup Testing
  */
 
+use MediaWiki\Installer\DatabaseUpdater;
 use Wikimedia\Rdbms\IMaintainableDatabase;
 
 class DbTestRecorder extends TestRecorder {
+	/** @var string */
 	public $version;
-	/** @var Database */
+	/** @var IMaintainableDatabase */
 	private $db;
+	/** @var int */
+	private $curRun;
 
-	public function __construct( IMaintainableDatabase $db ) {
+	public function __construct( $db ) {
 		$this->db = $db;
 	}
 
@@ -34,11 +38,11 @@ class DbTestRecorder extends TestRecorder {
 	 * Set up result recording; insert a record for the run with the date
 	 * and all that fun stuff
 	 */
-	function start() {
+	public function start() {
 		$this->db->begin( __METHOD__ );
 
-		if ( !$this->db->tableExists( 'testrun' )
-			|| !$this->db->tableExists( 'testitem' )
+		if ( !$this->db->tableExists( 'testrun', __METHOD__ )
+			|| !$this->db->tableExists( 'testitem', __METHOD__ )
 		) {
 			print "WARNING> `testrun` table not found in database. Trying to create table.\n";
 			$updater = DatabaseUpdater::newForDB( $this->db );
@@ -46,42 +50,40 @@ class DbTestRecorder extends TestRecorder {
 			echo "OK, resuming.\n";
 		}
 
-		$this->db->insert( 'testrun',
-			[
+		$this->db->newInsertQueryBuilder()
+			->insertInto( 'testrun' )
+			->row( [
 				'tr_date' => $this->db->timestamp(),
 				'tr_mw_version' => $this->version,
 				'tr_php_version' => PHP_VERSION,
 				'tr_db_version' => $this->db->getServerVersion(),
 				'tr_uname' => php_uname()
-			],
-			__METHOD__ );
-		if ( $this->db->getType() === 'postgres' ) {
-			$this->curRun = $this->db->currentSequenceValue( 'testrun_id_seq' );
-		} else {
-			$this->curRun = $this->db->insertId();
-		}
+			] )
+			->caller( __METHOD__ )
+			->execute();
+		$this->curRun = $this->db->insertId();
 	}
 
 	/**
 	 * Record an individual test item's success or failure to the db
-	 *
-	 * @param array $test
-	 * @param ParserTestResult $result
 	 */
-	function record( $test, ParserTestResult $result ) {
-		$this->db->insert( 'testitem',
-			[
+	public function record( ParserTestResult $result ) {
+		$desc = $result->getDescription();
+		$this->db->newInsertQueryBuilder()
+			->insertInto( 'testitem' )
+			->row( [
 				'ti_run' => $this->curRun,
-				'ti_name' => $test['desc'],
+				'ti_name' => $desc,
 				'ti_success' => $result->isSuccess() ? 1 : 0,
-			],
-			__METHOD__ );
+			] )
+			->caller( __METHOD__ )
+			->execute();
 	}
 
 	/**
 	 * Commit transaction and clean up for result recording
 	 */
-	function end() {
+	public function end() {
 		$this->db->commit( __METHOD__ );
 	}
 }

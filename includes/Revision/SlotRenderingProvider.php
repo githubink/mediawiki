@@ -1,13 +1,8 @@
 <?php
-/**
- * Created by PhpStorm.
- * User: daki
- * Date: 05.09.18
- * Time: 16:08
- */
+
 namespace MediaWiki\Revision;
 
-use ParserOutput;
+use MediaWiki\Parser\ParserOutput;
 
 /**
  * A lazy provider of ParserOutput objects for a revision's individual slots.

@@ -1,39 +1,51 @@
 <?php
 
+namespace MediaWiki\Specials;
+
+use ErrorPageError;
+use LogicException;
 use MediaWiki\Auth\AuthenticationRequest;
 use MediaWiki\Auth\AuthenticationResponse;
 use MediaWiki\Auth\AuthManager;
+use MediaWiki\HTMLForm\HTMLForm;
+use MediaWiki\MainConfigNames;
+use MediaWiki\SpecialPage\AuthManagerSpecialPage;
+use StatusValue;
 
 /**
- * Links/unlinks external accounts to the current user.
+ * Link/unlink external accounts to the current user.
  *
  * To interact with this page, account providers need to register themselves with AuthManager.
+ *
+ * @ingroup SpecialPage
+ * @ingroup Auth
  */
 class SpecialLinkAccounts extends AuthManagerSpecialPage {
+	/** @inheritDoc */
 	protected static $allowedActions = [
 		AuthManager::ACTION_LINK, AuthManager::ACTION_LINK_CONTINUE,
 	];
 
-	public function __construct() {
+	public function __construct( AuthManager $authManager ) {
 		parent::__construct( 'LinkAccounts' );
+		$this->setAuthManager( $authManager );
 	}
 
 	protected function getGroupName() {
-		return 'users';
+		return 'login';
 	}
 
 	public function isListed() {
-		return AuthManager::singleton()->canLinkAccounts();
+		return $this->getAuthManager()->canLinkAccounts();
 	}
 
 	protected function getRequestBlacklist() {
-		return $this->getConfig()->get( 'ChangeCredentialsBlacklist' );
+		return $this->getConfig()->get( MainConfigNames::ChangeCredentialsBlacklist );
 	}
 
 	/**
 	 * @param null|string $subPage
 	 * @throws ErrorPageError
-	 * @throws LogicException
 	 */
 	public function execute( $subPage ) {
 		$this->setHeaders();
@@ -109,3 +121,6 @@ class SpecialLinkAccounts extends AuthManagerSpecialPage {
 		$this->displayForm( StatusValue::newFatal( $this->msg( 'linkaccounts-success-text' ) ) );
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( SpecialLinkAccounts::class, 'SpecialLinkAccounts' );

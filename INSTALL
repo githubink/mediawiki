@@ -2,17 +2,28 @@
 Installing MediaWiki
 ---
 
-Starting with MediaWiki 1.2.0, it's possible to install and configure the wiki
-"in-place", as long as you have the necessary prerequisites available.
+It is possible to install and configure the wiki "in-place", as long as you have
+the necessary prerequisites available.
 
-Required software:
-* Web server with PHP 7.0.0 or HHVM 3.18.5 or higher.
+Required software as of MediaWiki 1.44.0:
+
+* Web server with PHP 8.1.0 or higher, plus the following extensions:
+** ctype
+** dom
+** fileinfo
+** iconv
+** intl
+** json
+** libxml
+** mbstring
+** openssl
+** xml
+** xmlreader
 * A SQL server, the following types are supported
-** MySQL 5.5.8 or higher
-** PostgreSQL 9.2 or higher
+** MariaDB 10.3 or higher
+** MySQL 5.7.0 or higher
+** PostgreSQL 10 or higher
 ** SQLite 3.8.0 or higher
-** Oracle 9.0.1 or higher
-** Microsoft SQL Server 2005 (9.00.1399)
 
 MediaWiki is developed and tested mainly on Unix/Linux platforms, but should
 work on Windows as well.
@@ -27,7 +38,7 @@ Additional documentation is available online, which may include more detailed
 notes on particular operating systems and workarounds for difficult hosting
 environments:
 
-https://www.mediawiki.org/wiki/Special:MyLanguage/Manual:Installation_guide
+https://www.mediawiki.org/wiki/Special:MyLanguage/Manual:Installing_MediaWiki
 
 
 ******************* WARNING *******************
@@ -38,7 +49,7 @@ ATTEMPTING TO INSTALL OR UPGRADE!!!
 ******************* WARNING *******************
 
 ----
-In-place web install
+In-place Web install
 ----
 
 Decompress the MediaWiki installation archive either on your server, or on your
@@ -79,8 +90,11 @@ help (please provide enough information to work with, and preferably be aware of
 what you're doing!) and keep track of major changes to the software, including
 performance improvements and security patches.
 
-https://lists.wikimedia.org/mailman/listinfo/mediawiki-announce (low traffic)
+https://lists.wikimedia.org/postorius/lists/mediawiki-announce.lists.wikimedia.org/
+  (low traffic)
 
-https://lists.wikimedia.org/mailman/listinfo/mediawiki-l (site admin support)
+https://lists.wikimedia.org/postorius/lists/mediawiki-l.lists.wikimedia.org/
+  (site admin support)
 
-https://lists.wikimedia.org/mailman/listinfo/wikitech-l (development)
+https://lists.wikimedia.org/postorius/lists/wikitech-l.lists.wikimedia.org/
+  (development)

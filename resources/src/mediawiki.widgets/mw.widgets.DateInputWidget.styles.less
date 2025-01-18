@@ -4,39 +4,19 @@
  * @copyright 2011-2015 MediaWiki Widgets Team and others; see AUTHORS.txt
  * @license The MIT License (MIT); see LICENSE.txt
  */
+@import 'mediawiki.skin.variables.less';
 
 // Variables taken from OOUI's WikimediaUI theme
 @ooui-font-size-browser: 16; // assumed browser default of `16px`
 @ooui-font-size-base: 0.875em; // equals `14px` at browser default of `16px`
+@ooui-unit: em;
 
-@background-color-base: #fff;
+@padding-input-text: @padding-vertical-base @padding-horizontal-input-text;
+@padding-horizontal-input-text: 8px;
+@padding-vertical-base: 6px;
 
-@color-base--emphasized: #000;
-
-@border-base: 1px solid #a2a9b1;
-@border-color-base--focus: #36c;
-@border-color-input--hover: #72777d;
-@border-radius-base: 2px;
-
-@padding-input-text: @padding-top-base @padding-horizontal-input-text @padding-bottom-base;
-@padding-horizontal-input-text: 8 / @ooui-font-size-browser / @ooui-font-size-base; // equals `0.57142857em`≈`7px`
-@padding-top-base: 8 / @ooui-font-size-browser / @ooui-font-size-base;
-@padding-bottom-base: 7 / @ooui-font-size-browser / @ooui-font-size-base; // equals `0.5em`≈`7px`
-
-@box-shadow-widget: inset 0 0 0 1px transparent;
-@box-shadow-widget--focus: inset 0 0 0 1px #36c;
-
-@line-height-widget-singleline: 15 / @ooui-font-size-browser / @ooui-font-size-base; // equals `1.07142857em`≈`15px`; Firefox needs a value, Chrome the unit;
-
-@transition-ease-medium: @transition-duration-medium; // `ease` is the initial value
-@transition-duration-medium: 250ms;
-
-// Mixins taken from OOUI
-.oo-ui-box-sizing( @type: border-box ) {
-	-webkit-box-sizing: @type;
-	-moz-box-sizing: @type;
-	box-sizing: @type;
-}
+// `line-height` has to be relative/in `em` to enable user override in browser settings.
+@line-height-widget-base: unit( 18 / @ooui-font-size-browser / @ooui-font-size-base, @ooui-unit ); // equals `18px` at base `font-size: 14px;
 
 .oo-ui-inline-spacing( @spacing, @cancelled-spacing: 0 ) {
 	margin-right: @spacing;
@@ -44,13 +24,6 @@
 	&:last-child {
 		margin-right: @cancelled-spacing;
 	}
-}
-
-.oo-ui-transition( @value1, @value2: X, ... ) {
-	@value: ~`"@{arguments}".replace( /[\[\]]|\,\sX/g, '' )`; // stylelint-disable-line function-comma-space-after, function-whitespace-after, string-quotes, value-keyword-case
-	-webkit-transition: @value;
-	-moz-transition: @value;
-	transition: @value;
 }
 
 // DateInputWidget rules
@@ -61,7 +34,7 @@
 		// .oo-ui-inline-spacing( 0.5em ); already inherited from `.oo-ui-inputWidget`
 
 		.oo-ui-labelElement-label {
-			line-height: @line-height-widget-singleline;
+			line-height: @line-height-widget-base;
 		}
 	}
 
@@ -81,31 +54,30 @@
 	// Ensure `.mw-widget-dateInputWidget-handle` similar appearance to OOUI's `.oo-ui-textInputWidget`
 	&-handle {
 		background-color: @background-color-base;
-		color: @color-base--emphasized;
-		.oo-ui-box-sizing( border-box );
+		color: @color-emphasized;
+		box-sizing: border-box;
 		width: 100%;
 		border: @border-base;
 		border-radius: @border-radius-base;
 		padding: @padding-input-text;
-		line-height: @line-height-widget-singleline;
+		line-height: @line-height-widget-base;
 	}
 
 	&.oo-ui-widget-enabled {
 		.mw-widget-dateInputWidget-handle {
-			box-shadow: @box-shadow-widget; // necessary for smooth transition
-			.oo-ui-transition(
-				border-color @transition-ease-medium,
-				box-shadow @transition-ease-medium
-			);
+			// `transparent` necessary for smooth transition
+			box-shadow: @box-shadow-inset-small @box-shadow-color-transparent;
+			transition-property: border-color, box-shadow;
+			transition-duration: @transition-duration-medium;
 
 			&:hover {
 				border-color: @border-color-input--hover;
 			}
 
 			&:focus {
-				outline: 0;
-				border-color: @border-color-base--focus;
-				box-shadow: @box-shadow-widget--focus;
+				outline: @outline-base--focus;
+				border-color: @border-color-progressive--focus;
+				box-shadow: @box-shadow-inset-small @box-shadow-color-progressive--focus;
 			}
 
 			& > .oo-ui-labelElement-label {
@@ -119,4 +91,10 @@
 			cursor: text;
 		}
 	}
+}
+
+// Pending state (T382186)
+.client-nojs .mw-widget-dateInputWidget .mw-widgets-pendingTextInputWidget,
+.client-js .mw-widget-dateInputWidget input[ type='date' ] {
+	display: none;
 }

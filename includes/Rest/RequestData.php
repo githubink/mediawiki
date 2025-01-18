@@ -12,25 +12,31 @@ use Psr\Http\Message\UriInterface;
  * of testing or internal requests.
  */
 class RequestData extends RequestBase {
+	/** @var string */
 	private $method;
 
 	/** @var UriInterface */
 	private $uri;
 
+	/** @var string */
 	private $protocolVersion;
 
 	/** @var StreamInterface */
 	private $body;
 
+	/** @var array */
 	private $serverParams;
 
+	/** @var array */
 	private $cookieParams;
 
+	/** @var array */
 	private $queryParams;
 
 	/** @var UploadedFileInterface[] */
 	private $uploadedFiles;
 
+	/** @var array */
 	private $postParams;
 
 	/**
@@ -48,7 +54,7 @@ class RequestData extends RequestBase {
 	 *     - uploadedFiles: An array of objects implementing UploadedFileInterface
 	 *     - postParams: Equivalent to $_POST
 	 *     - pathParams: The path template parameters
-	 *     - headers: An array with the the key being the header name
+	 *     - headers: An array with the key being the header name
 	 *     - cookiePrefix: A prefix to add to cookie names in getCookie()
 	 */
 	public function __construct( $params = [] ) {
@@ -63,6 +69,7 @@ class RequestData extends RequestBase {
 		$this->postParams = $params['postParams'] ?? [];
 		$this->setPathParams( $params['pathParams'] ?? [] );
 		$this->setHeaders( $params['headers'] ?? [] );
+		$this->setParsedBody( $params['parsedBody'] ?? null );
 		parent::__construct( $params['cookiePrefix'] ?? '' );
 	}
 
@@ -101,4 +108,25 @@ class RequestData extends RequestBase {
 	public function getPostParams() {
 		return $this->postParams;
 	}
+
+	public function hasBody(): bool {
+		if ( parent::hasBody() ) {
+			return true;
+		}
+
+		if ( $this->parsedBody !== null ) {
+			return true;
+		}
+
+		if ( $this->postParams !== [] ) {
+			return true;
+		}
+
+		if ( $this->getBody()->getSize() > 0 ) {
+			return true;
+		}
+
+		return false;
+	}
+
 }

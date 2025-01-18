@@ -21,9 +21,13 @@
  * @file
  */
 
+namespace MediaWiki\Deferred;
+
 /**
  * Abstract base class for update jobs that do something with some secondary
  * data extracted from article.
+ *
+ * @stable to extend
  */
 abstract class DataUpdate implements DeferrableUpdate {
 	/** @var mixed Result from LBFactory::getEmptyTransactionTicket() */
@@ -33,6 +37,9 @@ abstract class DataUpdate implements DeferrableUpdate {
 	/** @var string Short update cause user description */
 	protected $causeAgent = 'unknown';
 
+	/**
+	 * @stable to call
+	 */
 	public function __construct() {
 		// noop
 	}
@@ -68,16 +75,7 @@ abstract class DataUpdate implements DeferrableUpdate {
 		return $this->causeAgent;
 	}
 
-	/**
-	 * Convenience method, calls doUpdate() on every DataUpdate in the array.
-	 *
-	 * @param DataUpdate[] $updates A list of DataUpdate instances
-	 * @throws Exception
-	 * @deprecated Since 1.28 Use DeferredUpdates::execute()
-	 */
-	public static function runUpdates( array $updates ) {
-		foreach ( $updates as $update ) {
-			$update->doUpdate();
-		}
-	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( DataUpdate::class, 'DataUpdate' );

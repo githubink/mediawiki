@@ -1,9 +1,31 @@
 <?php
 
+use MediaWiki\Cache\LinkCache;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\Linker\LinkRendererFactory;
+use MediaWiki\Tests\Unit\Permissions\MockAuthorityTrait;
+use MediaWiki\Title\Title;
+use MediaWiki\Title\TitleFactory;
+use MediaWiki\User\UserIdentityValue;
+use Wikimedia\Rdbms\IDatabase;
+use Wikimedia\Rdbms\LBFactory;
+
 /**
- * @covers ProtectLogFormatter
+ * @covers \ProtectLogFormatter
  */
 class ProtectLogFormatterTest extends LogFormatterTestCase {
+
+	use MockAuthorityTrait;
+
+	protected function setUp(): void {
+		parent::setUp();
+
+		$db = $this->createNoOpMock( IDatabase::class, [ 'getInfinity' ] );
+		$db->method( 'getInfinity' )->willReturn( 'infinity' );
+		$lbFactory = $this->createMock( LBFactory::class );
+		$lbFactory->method( 'getReplicaDatabase' )->willReturn( $db );
+		$this->setService( 'DBLoadBalancerFactory', $lbFactory );
+	}
 
 	/**
 	 * Provide different rows from the logging table to test
@@ -205,7 +227,7 @@ class ProtectLogFormatterTest extends LogFormatterTestCase {
 					],
 				],
 				[
-					'text' => 'User changed protection level for ProtectPage ' .
+					'text' => 'User changed protection settings for ProtectPage ' .
 						'[Edit=Allow only administrators] ' .
 						'(indefinite) [Move=Allow only administrators] (indefinite)',
 					'api' => [
@@ -257,7 +279,7 @@ class ProtectLogFormatterTest extends LogFormatterTestCase {
 					],
 				],
 				[
-					'text' => 'User changed protection level for ProtectPage ' .
+					'text' => 'User changed protection settings for ProtectPage ' .
 						'[Edit=Allow only administrators] (indefinite) ' .
 						'[Move=Allow only administrators] (indefinite) [cascading]',
 					'api' => [
@@ -296,7 +318,7 @@ class ProtectLogFormatterTest extends LogFormatterTestCase {
 				],
 				[
 					'legacy' => true,
-					'text' => 'User changed protection level for ProtectPage ' .
+					'text' => 'User changed protection settings for ProtectPage ' .
 						'[edit=sysop] (indefinite)[move=sysop] (indefinite)',
 					'api' => [
 						'description' => '[edit=sysop] (indefinite)[move=sysop] (indefinite)',
@@ -320,7 +342,7 @@ class ProtectLogFormatterTest extends LogFormatterTestCase {
 				],
 				[
 					'legacy' => true,
-					'text' => 'User changed protection level for ProtectPage ' .
+					'text' => 'User changed protection settings for ProtectPage ' .
 						'[edit=sysop] (indefinite)[move=sysop] (indefinite) [cascading]',
 					'api' => [
 						'description' => '[edit=sysop] (indefinite)[move=sysop] (indefinite)',
@@ -427,5 +449,60 @@ class ProtectLogFormatterTest extends LogFormatterTestCase {
 	 */
 	public function testMoveProtLogDatabaseRows( $row, $extra ) {
 		$this->doTestLogFormatter( $row, $extra );
+	}
+
+	public static function provideGetActionLinks() {
+		yield [
+			[ 'protect' ],
+			true
+		];
+		yield [
+			[],
+			false
+		];
+	}
+
+	/**
+	 * @param string[] $permissions
+	 * @param bool $shouldMatch
+	 * @dataProvider provideGetActionLinks
+	 * @covers \ProtectLogFormatter::getActionLinks
+	 */
+	public function testGetActionLinks( array $permissions, $shouldMatch ) {
+		RequestContext::resetMain();
+		$user = $this->mockUserAuthorityWithPermissions( new UserIdentityValue( 42, __METHOD__ ), $permissions );
+		$row = $this->expandDatabaseRow( [
+			'type' => 'protect',
+			'action' => 'unprotect',
+			'comment' => 'unprotect comment',
+			'namespace' => NS_MAIN,
+			'title' => 'ProtectPage',
+			'params' => [],
+		], false );
+		$context = new RequestContext();
+		$context->setAuthority( $user );
+		$context->setLanguage( 'en' );
+		$formatter = $this->getServiceContainer()->getLogFormatterFactory()->newFromRow( $row );
+		$formatter->setContext( $context );
+		$titleFactory = $this->createMock( TitleFactory::class );
+		$titleFactory->method( 'makeTitle' )->willReturnCallback( static function ( ...$params ) {
+			$ret = Title::makeTitle( ...$params );
+			$ret->resetArticleID( 0 );
+			return $ret;
+		} );
+		$this->setService( 'TitleFactory', $titleFactory );
+		$formatter->setLinkRenderer( ( new LinkRendererFactory(
+			$this->getServiceContainer()->getTitleFormatter(),
+			$this->createMock( LinkCache::class ),
+			$this->getServiceContainer()->getSpecialPageFactory(),
+			$this->getServiceContainer()->getHookContainer()
+		) )->create() );
+		if ( $shouldMatch ) {
+			$this->assertStringMatchesFormat(
+				'%Aaction=protect%A', $formatter->getActionLinks() );
+		} else {
+			$this->assertStringNotMatchesFormat(
+				'%Aaction=protect%A', $formatter->getActionLinks() );
+		}
 	}
 }

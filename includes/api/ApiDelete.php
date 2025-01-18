@@ -1,6 +1,6 @@
 <?php
 /**
- * Copyright © 2007 Roan Kattouw "<Firstname>.<Lastname>@gmail.com"
+ * Copyright © 2007 Roan Kattouw <roan.kattouw@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,6 +20,23 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use ChangeTags;
+use File;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Page\DeletePage;
+use MediaWiki\Page\DeletePageFactory;
+use MediaWiki\Page\File\FileDeleteForm;
+use MediaWiki\Status\Status;
+use MediaWiki\Title\Title;
+use MediaWiki\User\Options\UserOptionsLookup;
+use MediaWiki\Watchlist\WatchlistManager;
+use RepoGroup;
+use StatusValue;
+use Wikimedia\ParamValidator\ParamValidator;
+use WikiPage;
+
 /**
  * API module that facilitates deleting pages. The API equivalent of action=delete.
  * Requires API write mode to be enabled.
@@ -27,6 +44,32 @@
  * @ingroup API
  */
 class ApiDelete extends ApiBase {
+
+	use ApiWatchlistTrait;
+
+	private RepoGroup $repoGroup;
+	private DeletePageFactory $deletePageFactory;
+
+	public function __construct(
+		ApiMain $mainModule,
+		string $moduleName,
+		RepoGroup $repoGroup,
+		WatchlistManager $watchlistManager,
+		UserOptionsLookup $userOptionsLookup,
+		DeletePageFactory $deletePageFactory
+	) {
+		parent::__construct( $mainModule, $moduleName );
+		$this->repoGroup = $repoGroup;
+		$this->deletePageFactory = $deletePageFactory;
+
+		// Variables needed in ApiWatchlistTrait trait
+		$this->watchlistExpiryEnabled = $this->getConfig()->get( MainConfigNames::WatchlistExpiry );
+		$this->watchlistMaxDuration =
+			$this->getConfig()->get( MainConfigNames::WatchlistExpiryMaxDuration );
+		$this->watchlistManager = $watchlistManager;
+		$this->userOptionsLookup = $userOptionsLookup;
+	}
+
 	/**
 	 * Extracts the title and reason from the request parameters and invokes
 	 * the local delete() function with these as arguments. It does not make use of
@@ -41,8 +84,10 @@ class ApiDelete extends ApiBase {
 
 		$pageObj = $this->getTitleOrPageId( $params, 'fromdbmaster' );
 		$titleObj = $pageObj->getTitle();
+		$this->getErrorFormatter()->setContextTitle( $titleObj );
 		if ( !$pageObj->exists() &&
-			!( $titleObj->getNamespace() == NS_FILE && self::canDeleteFile( $pageObj->getFile() ) )
+			// @phan-suppress-next-line PhanUndeclaredMethod
+			!( $titleObj->getNamespace() === NS_FILE && self::canDeleteFile( $pageObj->getFile() ) )
 		) {
 			$this->dieWithError( 'apierror-missingtitle' );
 		}
@@ -50,35 +95,31 @@ class ApiDelete extends ApiBase {
 		$reason = $params['reason'];
 		$user = $this->getUser();
 
-		// Check that the user is allowed to carry out the deletion
-		$this->checkTitleUserPermissions( $titleObj, 'delete' );
+		$tags = $params['tags'] ?: [];
 
-		// If change tagging was requested, check that the user is allowed to tag,
-		// and the tags are valid
-		if ( $params['tags'] ) {
-			$tagStatus = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $user );
-			if ( !$tagStatus->isOK() ) {
-				$this->dieStatus( $tagStatus );
-			}
-		}
-
-		if ( $titleObj->getNamespace() == NS_FILE ) {
-			$status = self::deleteFile(
+		if ( $titleObj->getNamespace() === NS_FILE ) {
+			$status = $this->deleteFile(
 				$pageObj,
-				$user,
 				$params['oldimage'],
 				$reason,
 				false,
-				$params['tags']
+				$tags,
+				$params['deletetalk']
 			);
+			// TODO What kind of non-fatal errors should we expect here?
+			$wasScheduled = $status->isOK() && $status->getValue() === false;
 		} else {
-			$status = self::delete( $pageObj, $user, $reason, $params['tags'] );
+			$status = $this->delete( $pageObj, $reason, $tags, $params['deletetalk'] );
+			$wasScheduled = $status->isGood() && $status->getValue() === false;
 		}
 
 		if ( !$status->isOK() ) {
 			$this->dieStatus( $status );
 		}
-		$this->addMessagesFromStatus( $status, [ 'warning' ], [ 'delete-scheduled' ] );
+
+		if ( $wasScheduled ) {
+			$this->addWarning( [ 'delete-scheduled', $titleObj->getPrefixedText() ] );
+		}
 
 		// Deprecated parameters
 		if ( $params['watch'] ) {
@@ -88,16 +129,20 @@ class ApiDelete extends ApiBase {
 		} else {
 			$watch = $params['watchlist'];
 		}
-		$this->setWatch( $watch, $titleObj, 'watchdeletion' );
+
+		$watchlistExpiry = $this->getExpiryFromParams( $params );
+		$this->setWatch( $watch, $titleObj, $user, 'watchdeletion', $watchlistExpiry );
 
 		$r = [
 			'title' => $titleObj->getPrefixedText(),
 			'reason' => $reason,
 		];
-		if ( $status->hasMessage( 'delete-scheduled' ) ) {
+
+		// TODO: We could expose additional information (scheduled and log ID) about the status of the talk page
+		// deletion.
+		if ( $wasScheduled ) {
 			$r['scheduled'] = true;
-		}
-		if ( $status->value !== null ) {
+		} else {
 			// Scheduled deletions don't currently have a log entry available at this point
 			$r['logid'] = $status->value;
 		}
@@ -107,31 +152,45 @@ class ApiDelete extends ApiBase {
 	/**
 	 * We have our own delete() function, since Article.php's implementation is split in two phases
 	 *
-	 * @param Page|WikiPage $page Page or WikiPage object to work on
-	 * @param User $user User doing the action
+	 * @param WikiPage $page WikiPage object to work on
 	 * @param string|null &$reason Reason for the deletion. Autogenerated if null
-	 * @param array $tags Tags to tag the deletion with
-	 * @return Status
+	 * @param string[] $tags Tags to tag the deletion with
+	 * @param bool $deleteTalk
+	 * @return StatusValue Same as DeletePage::deleteIfAllowed, but if the status is good, then:
+	 *  - For immediate deletions, the value is the ID of the deletion
+	 *  - For scheduled deletions, the value is false
+	 *   If $deleteTalk is set, no information about the deletion of the talk page is included in the returned Status.
 	 */
-	protected static function delete( Page $page, User $user, &$reason = null, $tags = [] ) {
+	private function delete( WikiPage $page, &$reason, array $tags, bool $deleteTalk ): StatusValue {
 		$title = $page->getTitle();
 
 		// Auto-generate a summary, if necessary
-		if ( is_null( $reason ) ) {
-			// Need to pass a throwaway variable because generateReason expects
-			// a reference
-			$hasHistory = false;
-			$reason = $page->getAutoDeleteReason( $hasHistory );
+		if ( $reason === null ) {
+			$reason = $page->getAutoDeleteReason();
 			if ( $reason === false ) {
 				// Should be reachable only if the page has no revisions
 				return Status::newFatal( 'cannotdelete', $title->getPrefixedText() ); // @codeCoverageIgnore
 			}
 		}
 
-		$error = '';
-
-		// Luckily, Article.php provides a reusable delete function that does the hard work for us
-		return $page->doDeleteArticleReal( $reason, false, 0, true, $error, $user, $tags );
+		$deletePage = $this->deletePageFactory->newDeletePage( $page, $this->getAuthority() );
+		if ( $deleteTalk ) {
+			$checkStatus = $deletePage->canProbablyDeleteAssociatedTalk();
+			if ( !$checkStatus->isGood() ) {
+				foreach ( $checkStatus->getMessages() as $msg ) {
+					$this->addWarning( $msg );
+				}
+			} else {
+				$deletePage->setDeleteAssociatedTalk( true );
+			}
+		}
+		$deletionStatus = $deletePage->setTags( $tags )->deleteIfAllowed( $reason );
+		if ( $deletionStatus->isGood() ) {
+			$deletionStatus->value = $deletePage->deletionsWereScheduled()[DeletePage::PAGE_BASE]
+				? false
+				: $deletePage->getSuccessfulDeletionsIDs()[DeletePage::PAGE_BASE];
+		}
+		return $deletionStatus;
 	}
 
 	/**
@@ -143,39 +202,62 @@ class ApiDelete extends ApiBase {
 	}
 
 	/**
-	 * @param Page $page Object to work on
-	 * @param User $user User doing the action
+	 * @param WikiPage $page Object to work on
 	 * @param string $oldimage Archive name
 	 * @param string|null &$reason Reason for the deletion. Autogenerated if null.
 	 * @param bool $suppress Whether to mark all deleted versions as restricted
-	 * @param array $tags Tags to tag the deletion with
-	 * @return Status
+	 * @param string[] $tags Tags to tag the deletion with
+	 * @param bool $deleteTalk
+	 * @return StatusValue
 	 */
-	protected static function deleteFile( Page $page, User $user, $oldimage,
-		&$reason = null, $suppress = false, $tags = []
+	private function deleteFile(
+		WikiPage $page,
+		$oldimage,
+		&$reason,
+		bool $suppress,
+		array $tags,
+		bool $deleteTalk
 	) {
 		$title = $page->getTitle();
 
+		// @phan-suppress-next-line PhanUndeclaredMethod There's no right typehint for it
 		$file = $page->getFile();
 		if ( !self::canDeleteFile( $file ) ) {
-			return self::delete( $page, $user, $reason, $tags );
+			return $this->delete( $page, $reason, $tags, $deleteTalk );
+		}
+
+		// Check that the user is allowed to carry out the deletion
+		$this->checkTitleUserPermissions( $page->getTitle(), 'delete' );
+		if ( $tags ) {
+			// If change tagging was requested, check that the user is allowed to tag,
+			// and the tags are valid
+			$tagStatus = ChangeTags::canAddTagsAccompanyingChange( $tags, $this->getAuthority() );
+			if ( !$tagStatus->isOK() ) {
+				$this->dieStatus( $tagStatus );
+			}
 		}
 
 		if ( $oldimage ) {
 			if ( !FileDeleteForm::isValidOldSpec( $oldimage ) ) {
 				return Status::newFatal( 'invalidoldimage' );
 			}
-			$oldfile = RepoGroup::singleton()->getLocalRepo()->newFromArchiveName( $title, $oldimage );
+			$oldfile = $this->repoGroup->getLocalRepo()->newFromArchiveName( $title, $oldimage );
 			if ( !$oldfile->exists() || !$oldfile->isLocal() || $oldfile->getRedirected() ) {
 				return Status::newFatal( 'nodeleteablefile' );
 			}
 		}
 
-		if ( is_null( $reason ) ) { // Log and RC don't like null reasons
-			$reason = '';
-		}
-
-		return FileDeleteForm::doDelete( $title, $file, $oldimage, $reason, $suppress, $user, $tags );
+		return FileDeleteForm::doDelete(
+			$title,
+			$file,
+			$oldimage,
+			// Log and RC don't like null reasons
+			$reason ?? '',
+			$suppress,
+			$this->getUser(),
+			$tags,
+			$deleteTalk
+		);
 	}
 
 	public function mustBePosted() {
@@ -187,32 +269,31 @@ class ApiDelete extends ApiBase {
 	}
 
 	public function getAllowedParams() {
-		return [
+		$params = [
 			'title' => null,
 			'pageid' => [
-				ApiBase::PARAM_TYPE => 'integer'
+				ParamValidator::PARAM_TYPE => 'integer'
 			],
 			'reason' => null,
 			'tags' => [
-				ApiBase::PARAM_TYPE => 'tags',
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => 'tags',
+				ParamValidator::PARAM_ISMULTI => true,
 			],
+			'deletetalk' => false,
 			'watch' => [
-				ApiBase::PARAM_DFLT => false,
-				ApiBase::PARAM_DEPRECATED => true,
+				ParamValidator::PARAM_DEFAULT => false,
+				ParamValidator::PARAM_DEPRECATED => true,
 			],
-			'watchlist' => [
-				ApiBase::PARAM_DFLT => 'preferences',
-				ApiBase::PARAM_TYPE => [
-					'watch',
-					'unwatch',
-					'preferences',
-					'nochange'
-				],
-			],
+		];
+
+		// Params appear in the docs in the order they are defined,
+		// which is why this is here and not at the bottom.
+		$params += $this->getWatchlistParams();
+
+		return $params + [
 			'unwatch' => [
-				ApiBase::PARAM_DFLT => false,
-				ApiBase::PARAM_DEPRECATED => true,
+				ParamValidator::PARAM_DEFAULT => false,
+				ParamValidator::PARAM_DEPRECATED => true,
 			],
 			'oldimage' => null,
 		];
@@ -223,10 +304,13 @@ class ApiDelete extends ApiBase {
 	}
 
 	protected function getExamplesMessages() {
+		$title = Title::newMainPage()->getPrefixedText();
+		$mp = rawurlencode( $title );
+
 		return [
-			'action=delete&title=Main%20Page&token=123ABC'
+			"action=delete&title={$mp}&token=123ABC"
 				=> 'apihelp-delete-example-simple',
-			'action=delete&title=Main%20Page&token=123ABC&reason=Preparing%20for%20move'
+			"action=delete&title={$mp}&token=123ABC&reason=Preparing%20for%20move"
 				=> 'apihelp-delete-example-reason',
 		];
 	}
@@ -235,3 +319,6 @@ class ApiDelete extends ApiBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Delete';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiDelete::class, 'ApiDelete' );

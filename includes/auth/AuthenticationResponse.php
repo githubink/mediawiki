@@ -23,39 +23,40 @@
 
 namespace MediaWiki\Auth;
 
-use Message;
+use InvalidArgumentException;
+use MediaWiki\Message\Message;
 
 /**
  * This is a value object to hold authentication response data
  *
  * An AuthenticationResponse represents both the status of the authentication
- * (success, failure, in progress) and it its state (what data is needed to continue).
+ * (success, failure, in progress) and its state (what data is needed to continue).
  *
  * @ingroup Auth
  * @since 1.27
  */
 class AuthenticationResponse {
 	/** Indicates that the authentication succeeded. */
-	const PASS = 'PASS';
+	public const PASS = 'PASS';
 
 	/** Indicates that the authentication failed. */
-	const FAIL = 'FAIL';
+	public const FAIL = 'FAIL';
 
 	/** Indicates that third-party authentication succeeded but no user exists.
 	 * Either treat this like a UI response or pass $this->createRequest to
 	 * AuthManager::beginCreateAccount(). For use by AuthManager only (providers
 	 * should just return a PASS with no username).
 	 */
-	const RESTART = 'RESTART';
+	public const RESTART = 'RESTART';
 
 	/** Indicates that the authentication provider does not handle this request. */
-	const ABSTAIN = 'ABSTAIN';
+	public const ABSTAIN = 'ABSTAIN';
 
 	/** Indicates that the authentication needs further user input of some sort. */
-	const UI = 'UI';
+	public const UI = 'UI';
 
 	/** Indicates that the authentication needs to be redirected to a third party to proceed. */
-	const REDIRECT = 'REDIRECT';
+	public const REDIRECT = 'REDIRECT';
 
 	/** @var string One of the constants above */
 	public $status;
@@ -85,8 +86,8 @@ class AuthenticationResponse {
 	public $messageType = 'warning';
 
 	/**
-	 * @var string|null Local user name from authentication.
-	 * May be null if the authentication passed but no local user is known.
+	 * @var string|null Local username from authentication.
+	 * The value may be null if the authentication passed, but no local user is known.
 	 */
 	public $username = null;
 
@@ -127,6 +128,16 @@ class AuthenticationResponse {
 	public $loginRequest = null;
 
 	/**
+	 * @var string[]|null String data that is optionally provided on a FAIL. It describes information about the
+	 *  failed AuthenticationResponse that shouldn't be shared with the client.
+	 *
+	 *  The CheckUser extension uses this so that it can receive whether a login request for a locked
+	 *  account had the correct password. Using the I18n message would allow the client to see if the
+	 *  password they tried on the locked account was correct while this method does not show the client this info.
+	 */
+	public $failReasons = null;
+
+	/**
 	 * @param string|null $username Local username
 	 * @return AuthenticationResponse
 	 * @see AuthenticationResponse::PASS
@@ -140,14 +151,16 @@ class AuthenticationResponse {
 
 	/**
 	 * @param Message $msg
+	 * @param string[] $failReasons An array of strings that describes the reason(s) for a login failure
 	 * @return AuthenticationResponse
 	 * @see AuthenticationResponse::FAIL
 	 */
-	public static function newFail( Message $msg ) {
+	public static function newFail( Message $msg, array $failReasons = [] ) {
 		$ret = new AuthenticationResponse;
 		$ret->status = self::FAIL;
 		$ret->message = $msg;
 		$ret->messageType = 'error';
+		$ret->failReasons = $failReasons;
 		return $ret;
 	}
 
@@ -182,10 +195,10 @@ class AuthenticationResponse {
 	 */
 	public static function newUI( array $reqs, Message $msg, $msgtype = 'warning' ) {
 		if ( !$reqs ) {
-			throw new \InvalidArgumentException( '$reqs may not be empty' );
+			throw new InvalidArgumentException( '$reqs may not be empty' );
 		}
 		if ( $msgtype !== 'warning' && $msgtype !== 'error' ) {
-			throw new \InvalidArgumentException( $msgtype . ' is not a valid message type.' );
+			throw new InvalidArgumentException( $msgtype . ' is not a valid message type.' );
 		}
 
 		$ret = new AuthenticationResponse;
@@ -205,7 +218,7 @@ class AuthenticationResponse {
 	 */
 	public static function newRedirect( array $reqs, $redirectTarget, $redirectApiData = null ) {
 		if ( !$reqs ) {
-			throw new \InvalidArgumentException( '$reqs may not be empty' );
+			throw new InvalidArgumentException( '$reqs may not be empty' );
 		}
 
 		$ret = new AuthenticationResponse;

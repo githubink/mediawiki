@@ -1,32 +1,21 @@
 <?php
 
 use MediaWiki\MediaWikiServices;
+use MediaWiki\User\User;
 use Psr\Log\LoggerInterface;
+use Wikimedia\FileBackend\FSFile\TempFSFile;
+use Wikimedia\Rdbms\IDBAccessObject;
 
 /**
  * @since 1.31
  */
 class ImportableUploadRevisionImporter implements UploadRevisionImporter {
 
-	/**
-	 * @var LoggerInterface
-	 */
-	private $logger;
+	private bool $enableUploads;
+	private LoggerInterface $logger;
 
-	/**
-	 * @var bool
-	 */
-	private $enableUploads;
+	private bool $shouldCreateNullRevision = true;
 
-	/**
-	 * @var bool
-	 */
-	private $shouldCreateNullRevision = true;
-
-	/**
-	 * @param bool $enableUploads
-	 * @param LoggerInterface $logger
-	 */
 	public function __construct(
 		$enableUploads,
 		LoggerInterface $logger
@@ -37,7 +26,7 @@ class ImportableUploadRevisionImporter implements UploadRevisionImporter {
 
 	/**
 	 * Setting this to false will deactivate the creation of a null revision as part of the upload
-	 * process logging in LocalFile::recordUpload2, see T193621
+	 * process logging in LocalFile::recordUpload3, see T193621
 	 *
 	 * @param bool $shouldCreateNullRevision
 	 */
@@ -54,27 +43,28 @@ class ImportableUploadRevisionImporter implements UploadRevisionImporter {
 		return $statusValue;
 	}
 
+	/** @inheritDoc */
 	public function import( ImportableUploadRevision $importableRevision ) {
 		# Construct a file
 		$archiveName = $importableRevision->getArchiveName();
+		$localRepo = MediaWikiServices::getInstance()->getRepoGroup()->getLocalRepo();
 		if ( $archiveName ) {
-			$this->logger->debug( __METHOD__ . "Importing archived file as $archiveName\n" );
+			$this->logger->debug( __METHOD__ . ": Importing archived file as $archiveName" );
 			$file = OldLocalFile::newFromArchiveName( $importableRevision->getTitle(),
-				RepoGroup::singleton()->getLocalRepo(), $archiveName );
+				$localRepo, $archiveName );
 		} else {
-			$file = MediaWikiServices::getInstance()->getRepoGroup()->getLocalRepo()
-				->newFile( $importableRevision->getTitle() );
-			$file->load( File::READ_LATEST );
-			$this->logger->debug( __METHOD__ . 'Importing new file as ' . $file->getName() . "\n" );
+			$file = $localRepo->newFile( $importableRevision->getTitle() );
+			$file->load( IDBAccessObject::READ_LATEST );
+			$this->logger->debug( __METHOD__ . ': Importing new file as ' . $file->getName() );
 			if ( $file->exists() && $file->getTimestamp() > $importableRevision->getTimestamp() ) {
 				$archiveName = $importableRevision->getTimestamp() . '!' . $file->getName();
 				$file = OldLocalFile::newFromArchiveName( $importableRevision->getTitle(),
-					RepoGroup::singleton()->getLocalRepo(), $archiveName );
-				$this->logger->debug( __METHOD__ . "File already exists; importing as $archiveName\n" );
+					$localRepo, $archiveName );
+				$this->logger->debug( __METHOD__ . ": File already exists; importing as $archiveName" );
 			}
 		}
 		if ( !$file ) {
-			$this->logger->debug( __METHOD__ . ': Bad file for ' . $importableRevision->getTitle() . "\n" );
+			$this->logger->debug( __METHOD__ . ': Bad file for ' . $importableRevision->getTitle() );
 			return $this->newNotOkStatus();
 		}
 
@@ -86,7 +76,7 @@ class ImportableUploadRevisionImporter implements UploadRevisionImporter {
 			$autoDeleteSource = true;
 		}
 		if ( !strlen( $source ) ) {
-			$this->logger->debug( __METHOD__ . ": Could not fetch remote file.\n" );
+			$this->logger->debug( __METHOD__ . ": Could not fetch remote file." );
 			return $this->newNotOkStatus();
 		}
 
@@ -98,7 +88,7 @@ class ImportableUploadRevisionImporter implements UploadRevisionImporter {
 		$sha1File = ltrim( sha1_file( $source ), '0' );
 		$sha1 = $importableRevision->getSha1();
 		if ( $sha1 && ( $sha1 !== $sha1File ) ) {
-			$this->logger->debug( __METHOD__ . ": Corrupt file $source.\n" );
+			$this->logger->debug( __METHOD__ . ": Corrupt file $source." );
 			return $this->newNotOkStatus();
 		}
 
@@ -129,25 +119,20 @@ class ImportableUploadRevisionImporter implements UploadRevisionImporter {
 		}
 
 		if ( $status->isGood() ) {
-			$this->logger->debug( __METHOD__ . ": Successful\n" );
+			$this->logger->debug( __METHOD__ . ": Successful" );
 		} else {
-			$this->logger->debug( __METHOD__ . ': failed: ' . $status->getHTML() . "\n" );
+			$this->logger->debug( __METHOD__ . ': failed: ' . $status->getHTML() );
 		}
 
 		return $status;
 	}
 
 	/**
-	 * @deprecated DO NOT CALL ME.
-	 * This method was introduced when factoring UploadImporter out of WikiRevision.
-	 * It only has 1 use by the deprecated downloadSource method in WikiRevision.
-	 * Do not use this in new code.
-	 *
 	 * @param ImportableUploadRevision $wikiRevision
 	 *
-	 * @return bool|string
+	 * @return string|false
 	 */
-	public function downloadSource( ImportableUploadRevision $wikiRevision ) {
+	private function downloadSource( ImportableUploadRevision $wikiRevision ) {
 		if ( !$this->enableUploads ) {
 			return false;
 		}
@@ -155,7 +140,7 @@ class ImportableUploadRevisionImporter implements UploadRevisionImporter {
 		$tempo = tempnam( wfTempDir(), 'download' );
 		$f = fopen( $tempo, 'wb' );
 		if ( !$f ) {
-			$this->logger->debug( "IMPORT: couldn't write to temp file $tempo\n" );
+			$this->logger->debug( "IMPORT: couldn't write to temp file $tempo" );
 			return false;
 		}
 
@@ -164,7 +149,7 @@ class ImportableUploadRevisionImporter implements UploadRevisionImporter {
 		$data = MediaWikiServices::getInstance()->getHttpRequestFactory()->
 			get( $src, [], __METHOD__ );
 		if ( !$data ) {
-			$this->logger->debug( "IMPORT: couldn't fetch source $src\n" );
+			$this->logger->debug( "IMPORT: couldn't fetch source $src" );
 			fclose( $f );
 			unlink( $tempo );
 			return false;

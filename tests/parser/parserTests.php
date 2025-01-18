@@ -2,7 +2,7 @@
 /**
  * MediaWiki parser test suite
  *
- * Copyright © 2004 Brion Vibber <brion@pobox.com>
+ * Copyright © 2004 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,16 +24,22 @@
  * @ingroup Testing
  */
 
-// Some methods which are discouraged for normal code throw exceptions unless
-// we declare this is just a test.
+require_once __DIR__ . '/../../maintenance/Maintenance.php';
+
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Settings\SettingsBuilder;
+use MediaWiki\Specials\SpecialVersion;
+use MediaWiki\Tests\AnsiTermColorer;
+use MediaWiki\Tests\DummyTermColorer;
+use Wikimedia\Parsoid\Utils\ScriptUtils;
+
+define( 'MW_AUTOLOAD_TEST_CLASSES', true );
 define( 'MW_PARSER_TEST', true );
 
-require __DIR__ . '/../../maintenance/Maintenance.php';
-
-use MediaWiki\MediaWikiServices;
-
 class ParserTestsMaintenance extends Maintenance {
-	function __construct() {
+
+	public function __construct() {
 		parent::__construct();
 		$this->addDescription( 'Run parser tests' );
 
@@ -47,6 +53,8 @@ class ParserTestsMaintenance extends Maintenance {
 			false, true );
 		$this->addOption( 'filter', 'Alias for --regex', false, true );
 		$this->addOption( 'file', 'Run test cases from a custom file instead of parserTests.txt',
+			false, true, false, true );
+		$this->addOption( 'dir', 'Run test cases for all *.txt files in a directory',
 			false, true, false, true );
 		$this->addOption( 'record', 'Record tests in database' );
 		$this->addOption( 'compare', 'Compare with recorded results, without updating the database.' );
@@ -71,14 +79,39 @@ class ParserTestsMaintenance extends Maintenance {
 			'are: removeTbody to remove <tbody> tags; and trimWhitespace ' .
 			'to trim whitespace from the start and end of text nodes.',
 			false, true );
-		$this->addOption( 'use-tidy-config',
-			'Use the wiki\'s Tidy configuration instead of known-good' .
-			'defaults.' );
+		$this->addOption( 'wt2html', 'Parsoid: Wikitext -> HTML' );
+		$this->addOption( 'wt2wt',
+			'Parsoid Roundtrip testing: Wikitext -> HTML(DOM) -> Wikitext' );
+		$this->addOption( 'html2wt', 'Parsoid: HTML -> Wikitext' );
+		$this->addOption( 'numchanges',
+			'Max different selser edit tests to generate from the Parsoid DOM' );
+		$this->addOption( 'html2html',
+			'Parsoid Roundtrip testing: HTML -> Wikitext -> HTML' );
+		$this->addOption( 'selser',
+			'Parsoid Roundtrip testing: Wikitext -> DOM(HTML) -> Wikitext (with selective serialization). ' .
+					'Set to "noauto" to just run the tests with manual selser changes.',
+			false, true );
+		$this->addOption( 'changetree',
+			'Changes to apply to Parsoid HTML to generate new HTML to be serialized (use with selser)',
+			false, true );
+		$this->addOption( 'parsoid', 'Run Parsoid tests' );
+		$this->addOption( 'trace', 'Use --trace=help for supported options (Parsoid only)', false, true );
+		$this->addOption( 'dump', 'Use --dump=help for supported options (Parsoid only)', false, true );
+		$this->addOption( 'updateKnownFailures', 'Update knownFailures.json with failing tests' );
+		$this->addOption( 'knownFailures',
+			'Compare against known failures (default: true). If false, ignores knownFailures.json file',
+			false, true );
+		$this->addOption( 'update-tests',
+			'Update parserTests.txt with results from wt2html fails.  Note that editTests.php exists ' .
+				'for finer grained editing of tests.' );
 	}
 
-	public function finalSetup() {
-		parent::finalSetup();
-		self::requireTestsAutoloader();
+	public function finalSetup( SettingsBuilder $settingsBuilder ) {
+		// Some methods which are discouraged for normal code throw exceptions unless
+		// we declare this is just a test.
+		define( 'MW_PARSER_TEST', true );
+
+		parent::finalSetup( $settingsBuilder );
 		TestSetup::applyInitialConfig();
 	}
 
@@ -88,8 +121,8 @@ class ParserTestsMaintenance extends Maintenance {
 		// Cases of weird db corruption were encountered when running tests on earlyish
 		// versions of SQLite
 		if ( $wgDBtype == 'sqlite' ) {
-			$db = wfGetDB( DB_MASTER );
-			$version = $db->getServerVersion();
+			$dbw = MediaWikiServices::getInstance()->getConnectionProvider()->getPrimaryDatabase();
+			$version = $dbw->getServerVersion();
 			if ( version_compare( $version, '3.6' ) < 0 ) {
 				die( "Parser tests require SQLite version 3.6 or later, you have $version\n" );
 			}
@@ -146,13 +179,24 @@ class ParserTestsMaintenance extends Maintenance {
 			]
 		) );
 
+		$traceFlags = array_fill_keys( explode( ',', $this->getOption( 'trace', '' ) ), true );
+		$dumpFlags = array_fill_keys( explode( ',', $this->getOption( 'dump', '' ) ), true );
+		if ( $traceFlags['help'] ?? false ) {
+			print "-------------- PARSOID ONLY --------------\n";
+			print ScriptUtils::traceUsageHelp();
+			exit( 1 );
+		}
+		if ( $dumpFlags['help'] ?? false ) {
+			print "-------------- PARSOID ONLY --------------\n";
+			print ScriptUtils::dumpUsageHelp();
+			exit( 1 );
+		}
+
 		$recorderLB = false;
 		if ( $record || $compare ) {
-			$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
-			$recorderLB = $lbFactory->newMainLB();
-			// This connection will have the wiki's table prefix, not parsertest_
-			$recorderDB = $recorderLB->getConnection( DB_MASTER );
-
+			// Make an untracked DB_PRIMARY connection (wiki's table prefix, not parsertest_)
+			$recorderLB = $this->getServiceContainer()->getDBLoadBalancerFactory()->newMainLB();
+			$recorderDB = $recorderLB->getMaintenanceConnectionRef( DB_PRIMARY );
 			// Add recorder before previewer because recorder will create the
 			// DB table if it doesn't exist
 			if ( $record ) {
@@ -160,35 +204,59 @@ class ParserTestsMaintenance extends Maintenance {
 			}
 			$recorder->addRecorder( new DbTestPreviewer(
 				$recorderDB,
-				function ( $name ) use ( $regex ) {
+				static function ( $name ) use ( $regex ) {
 					// Filter reports of old tests by the filter regex
-					if ( $regex === false ) {
-						return true;
-					} else {
-						return (bool)preg_match( $regex, $name );
-					}
+					return $regex === false || (bool)preg_match( $regex, $name );
 				} ) );
 		}
 
 		// Default parser tests and any set from extensions or local config
-		$files = $this->getOption( 'file', ParserTestRunner::getParserTestFiles() );
-
+		$dirs = $this->getOption( 'dir', [] );
+		$files = $this->getOption( 'file', ParserTestRunner::getParserTestFiles( $dirs ) );
 		$norm = $this->hasOption( 'norm' ) ? explode( ',', $this->getOption( 'norm' ) ) : [];
 
+		$selserOpt = $this->getOption( 'selser', false ); /* can also be 'noauto' */
+		if ( $selserOpt !== 'noauto' ) {
+			$selserOpt = ScriptUtils::booleanOption( $selserOpt );
+		}
 		$tester = new ParserTestRunner( $recorder, [
 			'norm' => $norm,
 			'regex' => $regex,
 			'keep-uploads' => $this->hasOption( 'keep-uploads' ),
 			'run-disabled' => $this->hasOption( 'run-disabled' ),
 			'disable-save-parse' => $this->hasOption( 'disable-save-parse' ),
-			'use-tidy-config' => $this->hasOption( 'use-tidy-config' ),
 			'file-backend' => $this->getOption( 'file-backend' ),
 			'upload-dir' => $this->getOption( 'upload-dir' ),
+			// Passing a parsoid-specific option implies --parsoid
+			'parsoid' => (
+				$this->hasOption( 'parsoid' ) ||
+				$this->hasOption( 'wt2html' ) ||
+				$this->hasOption( 'wt2wt' ) ||
+				$this->hasOption( 'html2wt' ) ||
+				$this->hasOption( 'html2html' ) ||
+				$selserOpt ),
+			'wt2html' => $this->hasOption( 'wt2html' ),
+			'wt2wt' => $this->hasOption( 'wt2wt' ),
+			'html2wt' => $this->hasOption( 'html2wt' ),
+			'html2html' => $this->hasOption( 'html2html' ),
+			'numchanges' => $this->getOption( 'numchanges', 20 ),
+			'selser' => $selserOpt,
+			'changetree' => json_decode( $this->getOption( 'changetree', '' ), true ),
+			'knownFailures' => ScriptUtils::booleanOption( $this->getOption( 'knownFailures', true ) ),
+			'updateKnownFailures' => $this->hasOption( 'updateKnownFailures' ),
+			'traceFlags' => $traceFlags,
+			'dumpFlags' => $dumpFlags,
+			'update-tests' => $this->hasOption( 'update-tests' ),
 		] );
 
 		$ok = $tester->runTestsFromFiles( $files );
 		if ( $recorderLB ) {
-			$recorderLB->closeAll();
+			$recorderLB->closeAll( __METHOD__ );
+		}
+		if ( $tester->unexpectedTestPasses ) {
+			$recorder->warning( "There were some unexpected passing tests. " .
+				"Please rerun with --updateKnownFailures option." );
+			$ok = false;
 		}
 		if ( !$ok ) {
 			exit( 1 );
@@ -196,5 +264,5 @@ class ParserTestsMaintenance extends Maintenance {
 	}
 }
 
-$maintClass = 'ParserTestsMaintenance';
+$maintClass = ParserTestsMaintenance::class;
 require_once RUN_MAINTENANCE_IF_MAIN;

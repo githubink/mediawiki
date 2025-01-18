@@ -1,15 +1,22 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Content\JavaScriptContent;
+use MediaWiki\Content\TextContent;
+use MediaWiki\Content\WikitextContent;
+use MediaWiki\Deferred\LinksUpdate\LinksDeletionUpdate;
+use MediaWiki\Parser\Parser;
+use MediaWiki\Parser\ParserOptions;
+use MediaWiki\Title\Title;
 
 /**
  * @group ContentHandler
  *
  * @group Database
  *        ^--- needed, because we do need the database to test link updates
+ * @covers \MediaWiki\Content\WikitextContent
  */
 class WikitextContentTest extends TextContentTest {
-	public static $sections = "Intro
+	public const SECTIONS = "Intro
 
 == stuff ==
 hello world
@@ -25,96 +32,18 @@ more stuff
 		return new WikitextContent( $text );
 	}
 
-	public static function dataGetParserOutput() {
-		return [
-			[
-				"WikitextContentTest_testGetParserOutput",
-				CONTENT_MODEL_WIKITEXT,
-				"hello ''world''\n",
-				"<div class=\"mw-parser-output\"><p>hello <i>world</i>\n</p>\n\n\n</div>"
-			],
-			// TODO: more...?
-		];
-	}
-
-	public static function dataGetSecondaryDataUpdates() {
-		return [
-			[ "WikitextContentTest_testGetSecondaryDataUpdates_1",
-				CONTENT_MODEL_WIKITEXT, "hello ''world''\n",
-				[
-					LinksUpdate::class => [
-						'mRecursive' => true,
-						'mLinks' => []
-					]
-				]
-			],
-			[ "WikitextContentTest_testGetSecondaryDataUpdates_2",
-				CONTENT_MODEL_WIKITEXT, "hello [[world test 21344]]\n",
-				[
-					LinksUpdate::class => [
-						'mRecursive' => true,
-						'mLinks' => [
-							[ 'World_test_21344' => 0 ]
-						]
-					]
-				]
-			],
-			// TODO: more...?
-		];
-	}
-
-	/**
-	 * @dataProvider dataGetSecondaryDataUpdates
-	 * @group Database
-	 * @covers WikitextContent::getSecondaryDataUpdates
-	 */
-	public function testGetSecondaryDataUpdates( $title, $model, $text, $expectedStuff ) {
-		$ns = $this->getDefaultWikitextNS();
-		$title = Title::newFromText( $title, $ns );
-
-		$content = ContentHandler::makeContent( $text, $title, $model );
-
-		$page = WikiPage::factory( $title );
-		$page->doEditContent( $content, '' );
-
-		$updates = $content->getSecondaryDataUpdates( $title );
-
-		// make updates accessible by class name
-		foreach ( $updates as $update ) {
-			$class = get_class( $update );
-			$updates[$class] = $update;
-		}
-
-		foreach ( $expectedStuff as $class => $fieldValues ) {
-			$this->assertArrayHasKey( $class, $updates, "missing an update of type $class" );
-
-			$update = $updates[$class];
-
-			foreach ( $fieldValues as $field => $value ) {
-				$v = $update->$field; # if the field doesn't exist, just crash and burn
-				$this->assertEquals(
-					$value,
-					$v,
-					"unexpected value for field $field in instance of $class"
-				);
-			}
-		}
-
-		$page->doDeleteArticle( '' );
-	}
-
 	public static function dataGetSection() {
 		return [
-			[ self::$sections,
+			[ self::SECTIONS,
 				"0",
 				"Intro"
 			],
-			[ self::$sections,
+			[ self::SECTIONS,
 				"2",
 				"== test ==
 just a test"
 			],
-			[ self::$sections,
+			[ self::SECTIONS,
 				"8",
 				false
 			],
@@ -123,7 +52,6 @@ just a test"
 
 	/**
 	 * @dataProvider dataGetSection
-	 * @covers WikitextContent::getSection
 	 */
 	public function testGetSection( $text, $sectionId, $expectedText ) {
 		$content = $this->newContent( $text );
@@ -140,45 +68,44 @@ just a test"
 
 	public static function dataReplaceSection() {
 		return [
-			[ self::$sections,
+			[ self::SECTIONS,
 				"0",
 				"No more",
 				null,
-				trim( preg_replace( '/^Intro/sm', 'No more', self::$sections ) )
+				trim( preg_replace( '/^Intro/m', 'No more', self::SECTIONS ) )
 			],
-			[ self::$sections,
+			[ self::SECTIONS,
 				"",
 				"No more",
 				null,
 				"No more"
 			],
-			[ self::$sections,
+			[ self::SECTIONS,
 				"2",
 				"== TEST ==\nmore fun",
 				null,
 				trim( preg_replace(
 					'/^== test ==.*== foo ==/sm', "== TEST ==\nmore fun\n\n== foo ==",
-					self::$sections
+					self::SECTIONS
 				) )
 			],
-			[ self::$sections,
+			[ self::SECTIONS,
 				"8",
 				"No more",
 				null,
-				self::$sections
+				self::SECTIONS
 			],
-			[ self::$sections,
+			[ self::SECTIONS,
 				"new",
 				"No more",
 				"New",
-				trim( self::$sections ) . "\n\n\n== New ==\n\nNo more"
+				trim( self::SECTIONS ) . "\n\n\n== New ==\n\nNo more"
 			],
 		];
 	}
 
 	/**
 	 * @dataProvider dataReplaceSection
-	 * @covers WikitextContent::replaceSection
 	 */
 	public function testReplaceSection( $text, $section, $with, $sectionTitle, $expected ) {
 		$content = $this->newContent( $text );
@@ -188,14 +115,14 @@ just a test"
 		$this->assertEquals( $expected, $c ? $c->getText() : null );
 	}
 
-	/**
-	 * @covers WikitextContent::addSectionHeader
-	 */
 	public function testAddSectionHeader() {
 		$content = $this->newContent( 'hello world' );
 		$content = $content->addSectionHeader( 'test' );
-
 		$this->assertEquals( "== test ==\n\nhello world", $content->getText() );
+
+		$content = $this->newContent( 'hello world' );
+		$content = $content->addSectionHeader( '' );
+		$this->assertEquals( "hello world", $content->getText() );
 	}
 
 	public static function dataPreSaveTransform() {
@@ -209,19 +136,6 @@ just a test"
 			[ // rtrim
 				" Foo \n ",
 				" Foo",
-			],
-		];
-	}
-
-	public static function dataPreloadTransform() {
-		return [
-			[
-				'hello this is ~~~',
-				"hello this is ~~~",
-			],
-			[
-				'hello \'\'this\'\' is <noinclude>foo</noinclude><includeonly>bar</includeonly>',
-				'hello \'\'this\'\' is bar',
 			],
 		];
 	}
@@ -302,11 +216,8 @@ just a test"
 		];
 	}
 
-	/**
-	 * @covers WikitextContent::matchMagicWord
-	 */
 	public function testMatchMagicWord() {
-		$mw = MediaWikiServices::getInstance()->getMagicWordFactory()->get( "staticredirect" );
+		$mw = $this->getServiceContainer()->getMagicWordFactory()->get( "staticredirect" );
 
 		$content = $this->newContent( "#REDIRECT [[FOO]]\n__STATICREDIRECT__" );
 		$this->assertTrue( $content->matchMagicWord( $mw ), "should have matched magic word" );
@@ -318,11 +229,8 @@ just a test"
 		);
 	}
 
-	/**
-	 * @covers WikitextContent::updateRedirect
-	 */
 	public function testUpdateRedirect() {
-		$target = Title::newFromText( "testUpdateRedirect_target" );
+		$target = Title::makeTitle( NS_MAIN, 'TestUpdateRedirect_target' );
 
 		// test with non-redirect page
 		$content = $this->newContent( "hello world." );
@@ -343,18 +251,12 @@ just a test"
 		);
 	}
 
-	/**
-	 * @covers WikitextContent::getModel
-	 */
 	public function testGetModel() {
 		$content = $this->newContent( "hello world." );
 
 		$this->assertEquals( CONTENT_MODEL_WIKITEXT, $content->getModel() );
 	}
 
-	/**
-	 * @covers WikitextContent::getContentHandler
-	 */
 	public function testGetContentHandler() {
 		$content = $this->newContent( "hello world." );
 
@@ -362,18 +264,18 @@ just a test"
 	}
 
 	/**
-	 * @covers ParserOptions::getRedirectTarget
-	 * @covers ParserOptions::setRedirectTarget
+	 * @covers \MediaWiki\Parser\ParserOptions
 	 */
 	public function testRedirectParserOption() {
-		$title = Title::newFromText( 'testRedirectParserOption' );
+		$title = Title::makeTitle( NS_MAIN, 'TestRedirectParserOption' );
+		$contentRenderer = $this->getServiceContainer()->getContentRenderer();
 
 		// Set up hook and its reporting variables
 		$wikitext = null;
 		$redirectTarget = null;
 		$this->mergeMwGlobalArrayValue( 'wgHooks', [
 			'InternalParseBeforeLinks' => [
-				function ( &$parser, &$text, &$stripState ) use ( &$wikitext, &$redirectTarget ) {
+				static function ( Parser $parser, $text, $stripState ) use ( &$wikitext, &$redirectTarget ) {
 					$wikitext = $text;
 					$redirectTarget = $parser->getOptions()->getRedirectTarget();
 				}
@@ -384,13 +286,13 @@ just a test"
 		$wikitext = false;
 		$redirectTarget = false;
 		$content = $this->newContent( 'hello world.' );
-		$options = ParserOptions::newCanonical( 'canonical' );
+		$options = ParserOptions::newFromAnon();
 		$options->setRedirectTarget( $title );
-		$content->getParserOutput( $title, null, $options );
+		$contentRenderer->getParserOutput( $content, $title, null, $options );
 		$this->assertEquals( 'hello world.', $wikitext,
 			'Wikitext passed to hook was not as expected'
 		);
-		$this->assertEquals( null, $redirectTarget, 'Redirect seen in hook was not null' );
+		$this->assertNull( $redirectTarget, 'Redirect seen in hook was not null' );
 		$this->assertEquals( $title, $options->getRedirectTarget(),
 			'ParserOptions\' redirectTarget was changed'
 		);
@@ -401,8 +303,8 @@ just a test"
 		$content = $this->newContent(
 			"#REDIRECT [[TestRedirectParserOption/redir]]\nhello redirect."
 		);
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$content->getParserOutput( $title, null, $options );
+		$options = ParserOptions::newFromAnon();
+		$contentRenderer->getParserOutput( $content, $title, null, $options );
 		$this->assertEquals(
 			'hello redirect.',
 			$wikitext,
@@ -417,8 +319,7 @@ just a test"
 			$redirectTarget->getFullText(),
 			'Redirect seen in hook was not the expected title'
 		);
-		$this->assertEquals(
-			null,
+		$this->assertNull(
 			$options->getRedirectTarget(),
 			'ParserOptions\' redirectTarget was changed'
 		);
@@ -446,20 +347,5 @@ just a test"
 			],
 			// @todo more...?
 		];
-	}
-
-	/**
-	 * @covers WikitextContent::preSaveTransform
-	 * @covers WikitextContent::fillParserOutput
-	 */
-	public function testHadSignature() {
-		$titleObj = Title::newFromText( __CLASS__ );
-
-		$content = new WikitextContent( '~~~~' );
-		$pstContent = $content->preSaveTransform(
-			$titleObj, $this->getTestUser()->getUser(), new ParserOptions()
-		);
-
-		$this->assertTrue( $pstContent->getParserOutput( $titleObj )->getFlag( 'user-signature' ) );
 	}
 }

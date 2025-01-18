@@ -1,6 +1,6 @@
 <?php
 /**
- * This file is the entry point for ResourceLoader.
+ * @see MediaWiki\ResourceLoader\ResourceLoaderEntryPoint
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,30 +22,21 @@
  * @author Trevor Parscal
  */
 
+use MediaWiki\Context\RequestContext;
+use MediaWiki\EntryPointEnvironment;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\ResourceLoader\ResourceLoaderEntryPoint;
 
 // This endpoint is supposed to be independent of request cookies and other
 // details of the session. Enforce this constraint with respect to session use.
 define( 'MW_NO_SESSION', 1 );
 
+define( 'MW_ENTRY_POINT', 'load' );
+
 require __DIR__ . '/includes/WebStart.php';
 
-// URL safety checks
-if ( !$wgRequest->checkUrlExtension() ) {
-	return;
-}
-
-// Disable ChronologyProtector so that we don't wait for unrelated MediaWiki
-// writes when getting database connections for ResourceLoader. (T192611)
-MediaWikiServices::getInstance()->getDBLoadBalancerFactory()->disableChronologyProtection();
-
-$resourceLoader = MediaWikiServices::getInstance()->getResourceLoader();
-$context = new ResourceLoaderContext( $resourceLoader, $wgRequest );
-
-// Respond to ResourceLoader request
-$resourceLoader->respond( $context );
-
-Profiler::instance()->setTemplated( true );
-
-$mediawiki = new MediaWiki();
-$mediawiki->doPostOutputShutdown( 'fast' );
+( new ResourceLoaderEntryPoint(
+	RequestContext::getMain(),
+	new EntryPointEnvironment(),
+	MediaWikiServices::getInstance()
+) )->run();

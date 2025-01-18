@@ -1,5 +1,14 @@
 <?php
 
+use MediaWiki\Config\Config;
+use MediaWiki\Config\ServiceOptions;
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\HookContainer\HookRunner;
+use MediaWiki\Language\Language;
+use MediaWiki\MainConfigNames;
+use MediaWiki\User\Options\UserOptionsLookup;
+use MediaWiki\User\UserIdentity;
+
 /**
  * Configuration handling class for SearchEngine.
  * Provides added service over plain configuration.
@@ -8,6 +17,13 @@
  */
 class SearchEngineConfig {
 
+	/** @internal For use by ServiceWiring.php ONLY */
+	public const CONSTRUCTOR_OPTIONS = [
+		MainConfigNames::NamespacesToBeSearchedDefault,
+		MainConfigNames::SearchTypeAlternatives,
+		MainConfigNames::SearchType,
+	];
+
 	/**
 	 * Config object from which the settings will be derived.
 	 * @var Config
@@ -15,27 +31,49 @@ class SearchEngineConfig {
 	private $config;
 
 	/**
-	 * Current language
-	 * @var Language
+	 * Search Engine Mappings
+	 *
+	 * Key is the canonical name (used in $wgSearchType and $wgSearchTypeAlternatives).
+	 * Value is a specification for ObjectFactory.
+	 *
+	 * @var array
 	 */
-	private $language;
+	private $engineMappings;
 
-	public function __construct( Config $config, Language $lang ) {
-		$this->config = $config;
-		$this->language = $lang;
+	private ServiceOptions $options;
+	private Language $language;
+	private HookRunner $hookRunner;
+	private UserOptionsLookup $userOptionsLookup;
+
+	public function __construct(
+		ServiceOptions $options,
+		Language $language,
+		HookContainer $hookContainer,
+		array $engineMappings,
+		UserOptionsLookup $userOptionsLookup
+	) {
+		$options->assertRequiredOptions( self::CONSTRUCTOR_OPTIONS );
+		$this->options = $options;
+		$this->language = $language;
+		$this->engineMappings = $engineMappings;
+		$this->hookRunner = new HookRunner( $hookContainer );
+		$this->userOptionsLookup = $userOptionsLookup;
 	}
 
 	/**
 	 * Retrieve original config.
+	 * @deprecated since 1.43, use ServiceOptions instead with DI.
 	 * @return Config
 	 */
 	public function getConfig() {
+		wfDeprecated( __METHOD__, '1.43' );
 		return $this->config;
 	}
 
 	/**
-	 * Make a list of searchable namespaces and their canonical names.
-	 * @return array Namespace ID => name
+	 * Make a list of searchable namespaces and their localized names.
+	 * @return string[] Namespace ID => name
+	 * @phan-return array<int,string>
 	 */
 	public function searchableNamespaces() {
 		$arr = [];
@@ -45,7 +83,7 @@ class SearchEngineConfig {
 			}
 		}
 
-		Hooks::run( 'SearchableNamespaces', [ &$arr ] );
+		$this->hookRunner->onSearchableNamespaces( $arr );
 		return $arr;
 	}
 
@@ -53,13 +91,13 @@ class SearchEngineConfig {
 	 * Extract default namespaces to search from the given user's
 	 * settings, returning a list of index numbers.
 	 *
-	 * @param user $user
+	 * @param UserIdentity $user
 	 * @return int[]
 	 */
 	public function userNamespaces( $user ) {
 		$arr = [];
 		foreach ( $this->searchableNamespaces() as $ns => $name ) {
-			if ( $user->getOption( 'searchNs' . $ns ) ) {
+			if ( $this->userOptionsLookup->getOption( $user, 'searchNs' . $ns ) ) {
 				$arr[] = $ns;
 			}
 		}
@@ -73,7 +111,8 @@ class SearchEngineConfig {
 	 * @return int[] Namespace IDs
 	 */
 	public function defaultNamespaces() {
-		return array_keys( $this->config->get( 'NamespacesToBeSearchedDefault' ), true );
+		return array_keys( $this->options->get( MainConfigNames::NamespacesToBeSearchedDefault ),
+			true );
 	}
 
 	/**
@@ -83,8 +122,8 @@ class SearchEngineConfig {
 	 * @return array
 	 */
 	public function getSearchTypes() {
-		$alternatives = $this->config->get( 'SearchTypeAlternatives' ) ?: [];
-		array_unshift( $alternatives, $this->config->get( 'SearchType' ) );
+		$alternatives = $this->options->get( MainConfigNames::SearchTypeAlternatives ) ?: [];
+		array_unshift( $alternatives, $this->options->get( MainConfigNames::SearchType ) );
 
 		return $alternatives;
 	}
@@ -95,7 +134,31 @@ class SearchEngineConfig {
 	 * @return string|null
 	 */
 	public function getSearchType() {
-		return $this->config->get( 'SearchType' );
+		return $this->options->get( MainConfigNames::SearchType );
+	}
+
+	/**
+	 * Returns the mappings between canonical search name and underlying PHP class
+	 *
+	 * Key is the canonical name (used in $wgSearchType and $wgSearchTypeAlternatives).
+	 * Value is a specification for ObjectFactory.
+	 *
+	 * For example to be able to use 'foobarsearch' in $wgSearchType and
+	 * $wgSearchTypeAlternatives but the PHP class for 'foobarsearch'
+	 * is 'MediaWiki\Extension\FoobarSearch\FoobarSearch' set:
+	 *
+	 * @par extension.json Example:
+	 * @code
+	 * "SearchMappings": {
+	 * 	"foobarsearch": { "class": "MediaWiki\\Extension\\FoobarSearch\\FoobarSearch" }
+	 * }
+	 * @endcode
+	 *
+	 * @since 1.35
+	 * @return array
+	 */
+	public function getSearchMappings() {
+		return $this->engineMappings;
 	}
 
 	/**
@@ -108,7 +171,7 @@ class SearchEngineConfig {
 	public function namespacesAsText( $namespaces ) {
 		$formatted = array_map( [ $this->language, 'getFormattedNsText' ], $namespaces );
 		foreach ( $formatted as $key => $ns ) {
-			if ( empty( $ns ) ) {
+			if ( !$ns ) {
 				$formatted[$key] = wfMessage( 'blanknamespace' )->text();
 			}
 		}

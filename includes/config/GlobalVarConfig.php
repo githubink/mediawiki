@@ -20,9 +20,12 @@
  * @file
  */
 
+namespace MediaWiki\Config;
+
 /**
  * Accesses configuration settings from $GLOBALS
  *
+ * @newable
  * @since 1.23
  */
 class GlobalVarConfig implements Config {
@@ -35,12 +38,17 @@ class GlobalVarConfig implements Config {
 
 	/**
 	 * Default builder function
-	 * @return GlobalVarConfig
+	 * @return self
 	 */
 	public static function newInstance() {
-		return new GlobalVarConfig();
+		return new self();
 	}
 
+	/**
+	 * @stable to call
+	 *
+	 * @param string $prefix
+	 */
 	public function __construct( $prefix = 'wg' ) {
 		$this->prefix = $prefix;
 	}
@@ -52,36 +60,21 @@ class GlobalVarConfig implements Config {
 		if ( !$this->has( $name ) ) {
 			throw new ConfigException( __METHOD__ . ": undefined option: '$name'" );
 		}
-		return $this->getWithPrefix( $this->prefix, $name );
+		return $GLOBALS[$this->prefix . $name];
 	}
 
 	/**
 	 * @inheritDoc
 	 */
 	public function has( $name ) {
-		return $this->hasWithPrefix( $this->prefix, $name );
-	}
-
-	/**
-	 * Get a variable with a given prefix, if not the defaults.
-	 *
-	 * @param string $prefix Prefix to use on the variable, if one.
-	 * @param string $name Variable name without prefix
-	 * @return mixed
-	 */
-	protected function getWithPrefix( $prefix, $name ) {
-		return $GLOBALS[$prefix . $name];
-	}
-
-	/**
-	 * Check if a variable with a given prefix is set
-	 *
-	 * @param string $prefix Prefix to use on the variable
-	 * @param string $name Variable name without prefix
-	 * @return bool
-	 */
-	protected function hasWithPrefix( $prefix, $name ) {
-		$var = $prefix . $name;
-		return array_key_exists( $var, $GLOBALS );
+		$var = $this->prefix . $name;
+		// (T317951) Don't call array_key_exists unless we have to, as it's slow
+		// on PHP 8.1+ for $GLOBALS. When the key is set but is explicitly set
+		// to null, we still need to fall back to array_key_exists, but that's
+		// rarer.
+		return isset( $GLOBALS[$var] ) || array_key_exists( $var, $GLOBALS );
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( GlobalVarConfig::class, 'GlobalVarConfig' );

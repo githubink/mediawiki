@@ -1,6 +1,11 @@
 <?php
 
-namespace MediaWiki\Auth;
+namespace MediaWiki\Tests\Auth;
+
+use MediaWiki\Auth\UserDataAuthenticationRequest;
+use MediaWiki\MainConfigNames;
+use MediaWiki\User\User;
+use StatusValue;
 
 /**
  * @group AuthManager
@@ -12,9 +17,9 @@ class UserDataAuthenticationRequestTest extends AuthenticationRequestTestCase {
 		return new UserDataAuthenticationRequest;
 	}
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
-		$this->setMwGlobals( 'wgHiddenPrefs', [] );
+		$this->overrideConfigValue( MainConfigNames::HiddenPrefs, [] );
 	}
 
 	/**
@@ -24,7 +29,14 @@ class UserDataAuthenticationRequestTest extends AuthenticationRequestTestCase {
 	 * @param StatusValue $expect Expected return
 	 */
 	public function testPopulateUser( $email, $realname, $expect ) {
-		$user = new \User();
+		$this->clearHooks( [
+			'UserGetEmail',
+			'UserSetEmailAuthenticationTimestamp',
+			'InvalidateEmailComplete',
+			'UserSetEmail',
+		] );
+
+		$user = new User();
 		$user->setEmail( 'default@example.com' );
 		$user->setRealName( 'Fake Name' );
 
@@ -32,20 +44,20 @@ class UserDataAuthenticationRequestTest extends AuthenticationRequestTestCase {
 		$req->email = $email;
 		$req->realname = $realname;
 		$this->assertEquals( $expect, $req->populateUser( $user ) );
-		if ( $expect->isOk() ) {
+		if ( $expect->isOK() ) {
 			$this->assertSame( $email ?: 'default@example.com', $user->getEmail() );
 			$this->assertSame( $realname ?: 'Fake Name', $user->getRealName() );
 		}
 	}
 
 	public static function providePopulateUser() {
-		$good = \StatusValue::newGood();
+		$good = StatusValue::newGood();
 		return [
 			[ 'email@example.com', 'Real Name', $good ],
 			[ 'email@example.com', '', $good ],
 			[ '', 'Real Name', $good ],
 			[ '', '', $good ],
-			[ 'invalid-email', 'Real Name', \StatusValue::newFatal( 'invalidemailaddress' ) ],
+			[ 'invalid-email', 'Real Name', StatusValue::newFatal( 'invalidemailaddress' ) ],
 		];
 	}
 
@@ -55,12 +67,14 @@ class UserDataAuthenticationRequestTest extends AuthenticationRequestTestCase {
 	public function testLoadFromSubmission(
 		array $args, array $data, $expectState, $hiddenPref = null, $enableEmail = null
 	) {
-		$this->setMwGlobals( 'wgHiddenPrefs', $hiddenPref );
-		$this->setMwGlobals( 'wgEnableEmail', $enableEmail );
+		$this->overrideConfigValues( [
+			MainConfigNames::HiddenPrefs => $hiddenPref,
+			MainConfigNames::EnableEmail => $enableEmail,
+		] );
 		parent::testLoadFromSubmission( $args, $data, $expectState );
 	}
 
-	public function provideLoadFromSubmission() {
+	public static function provideLoadFromSubmission() {
 		$unhidden = [];
 		$hidden = [ 'realname' ];
 

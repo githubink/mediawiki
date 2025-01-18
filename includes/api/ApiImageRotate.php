@@ -1,7 +1,4 @@
 <?php
-
-use MediaWiki\MediaWikiServices;
-
 /**
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,8 +18,38 @@ use MediaWiki\MediaWikiServices;
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use ChangeTags;
+use MediaWiki\FileBackend\FSFile\TempFSFileFactory;
+use MediaWiki\Status\Status;
+use MediaWiki\Title\TitleFactory;
+use RepoGroup;
+use Wikimedia\ParamValidator\ParamValidator;
+
+/**
+ * @ingroup API
+ */
 class ApiImageRotate extends ApiBase {
+	/** @var ApiPageSet|null */
 	private $mPageSet = null;
+
+	private RepoGroup $repoGroup;
+	private TempFSFileFactory $tempFSFileFactory;
+	private TitleFactory $titleFactory;
+
+	public function __construct(
+		ApiMain $mainModule,
+		string $moduleName,
+		RepoGroup $repoGroup,
+		TempFSFileFactory $tempFSFileFactory,
+		TitleFactory $titleFactory
+	) {
+		parent::__construct( $mainModule, $moduleName );
+		$this->repoGroup = $repoGroup;
+		$this->tempFSFileFactory = $tempFSFileFactory;
+		$this->titleFactory = $titleFactory;
+	}
 
 	public function execute() {
 		$this->useTransactionalTimeLimit();
@@ -42,13 +69,14 @@ class ApiImageRotate extends ApiBase {
 
 		// Check if user can add tags
 		if ( $params['tags'] ) {
-			$ableToTag = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $this->getUser() );
+			$ableToTag = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $this->getAuthority() );
 			if ( !$ableToTag->isOK() ) {
 				$this->dieStatus( $ableToTag );
 			}
 		}
 
-		foreach ( $pageSet->getTitles() as $title ) {
+		foreach ( $pageSet->getPages() as $page ) {
+			$title = $this->titleFactory->newFromPageIdentity( $page );
 			$r = [];
 			$r['id'] = $title->getArticleID();
 			ApiQueryBase::addTitleInfo( $r, $title );
@@ -59,9 +87,7 @@ class ApiImageRotate extends ApiBase {
 				}
 			}
 
-			$file = MediaWikiServices::getInstance()->getRepoGroup()->findFile(
-				$title, [ 'latest' => true ]
-			);
+			$file = $this->repoGroup->findFile( $title, [ 'latest' => true ] );
 			if ( !$file ) {
 				$r['result'] = 'Failure';
 				$r['errors'] = $this->getErrorFormatter()->arrayFromStatus(
@@ -81,15 +107,7 @@ class ApiImageRotate extends ApiBase {
 			}
 
 			// Check whether we're allowed to rotate this file
-			$permError = $this->checkTitleUserPermissions( $file->getTitle(), [ 'edit', 'upload' ] );
-			if ( $permError ) {
-				$r['result'] = 'Failure';
-				$r['errors'] = $this->getErrorFormatter()->arrayFromStatus(
-					$this->errorArrayToStatus( $permError )
-				);
-				$result[] = $r;
-				continue;
-			}
+			$this->checkTitleUserPermissions( $file->getTitle(), [ 'edit', 'upload' ] );
 
 			$srcPath = $file->getLocalRefPath();
 			if ( $srcPath === false ) {
@@ -101,17 +119,19 @@ class ApiImageRotate extends ApiBase {
 				continue;
 			}
 			$ext = strtolower( pathinfo( "$srcPath", PATHINFO_EXTENSION ) );
-			$tmpFile = TempFSFile::factory( 'rotate_', $ext, wfTempDir() );
+			$tmpFile = $this->tempFSFileFactory->newTempFSFile( 'rotate_', $ext );
 			$dstPath = $tmpFile->getPath();
+			// @phan-suppress-next-line PhanUndeclaredMethod
 			$err = $handler->rotate( $file, [
 				'srcPath' => $srcPath,
 				'dstPath' => $dstPath,
 				'rotation' => $rotation
 			] );
 			if ( !$err ) {
-				$comment = wfMessage(
+				$comment = $this->msg(
 					'rotate-comment'
 				)->numParams( $rotation )->inContentLanguage()->text();
+				// @phan-suppress-next-line PhanUndeclaredMethod
 				$status = $file->upload(
 					$dstPath,
 					$comment,
@@ -119,7 +139,7 @@ class ApiImageRotate extends ApiBase {
 					0,
 					false,
 					false,
-					$this->getUser(),
+					$this->getAuthority(),
 					$params['tags'] ?: []
 				);
 				if ( $status->isGood() ) {
@@ -149,9 +169,7 @@ class ApiImageRotate extends ApiBase {
 	 * @return ApiPageSet
 	 */
 	private function getPageSet() {
-		if ( $this->mPageSet === null ) {
-			$this->mPageSet = new ApiPageSet( $this, 0, NS_FILE );
-		}
+		$this->mPageSet ??= new ApiPageSet( $this, 0, NS_FILE );
 
 		return $this->mPageSet;
 	}
@@ -167,15 +185,15 @@ class ApiImageRotate extends ApiBase {
 	public function getAllowedParams( $flags = 0 ) {
 		$result = [
 			'rotation' => [
-				ApiBase::PARAM_TYPE => [ '90', '180', '270' ],
-				ApiBase::PARAM_REQUIRED => true
+				ParamValidator::PARAM_TYPE => [ '90', '180', '270' ],
+				ParamValidator::PARAM_REQUIRED => true
 			],
 			'continue' => [
 				ApiBase::PARAM_HELP_MSG => 'api-help-param-continue',
 			],
 			'tags' => [
-				ApiBase::PARAM_TYPE => 'tags',
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => 'tags',
+				ParamValidator::PARAM_ISMULTI => true,
 			],
 		];
 		if ( $flags ) {
@@ -198,4 +216,11 @@ class ApiImageRotate extends ApiBase {
 				=> 'apihelp-imagerotate-example-generator',
 		];
 	}
+
+	public function getHelpUrls() {
+		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Imagerotate';
+	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiImageRotate::class, 'ApiImageRotate' );

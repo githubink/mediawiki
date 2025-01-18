@@ -20,6 +20,16 @@
  * @file
  */
 
+declare( strict_types = 1 );
+
+namespace MediaWiki\Password;
+
+use InvalidArgumentException;
+use MediaWiki\Config\Config;
+use MediaWiki\MainConfigNames;
+use MWCryptRand;
+use Wikimedia\ObjectFactory\ObjectFactory;
+
 /**
  * Factory class for creating and checking Password objects
  *
@@ -37,7 +47,7 @@ final class PasswordFactory {
 	/**
 	 * Mapping of password types to classes
 	 *
-	 * @var array
+	 * @var array[]
 	 * @see PasswordFactory::register
 	 * @see Setup.php
 	 */
@@ -45,8 +55,9 @@ final class PasswordFactory {
 		'' => [ 'type' => '', 'class' => InvalidPassword::class ],
 	];
 
+	private const MIN_RANDOM_PASSWORD_LENGTH = 10;
+
 	/**
-	 * Construct a new password factory.
 	 * Most of the time you'll want to use MediaWikiServices::getInstance()->getPasswordFactory
 	 * instead.
 	 * @param array $config Mapping of password type => config
@@ -54,7 +65,7 @@ final class PasswordFactory {
 	 * @see PasswordFactory::register
 	 * @see PasswordFactory::setDefaultType
 	 */
-	public function __construct( array $config = [], $default = '' ) {
+	public function __construct( array $config = [], string $default = '' ) {
 		foreach ( $config as $type => $options ) {
 			$this->register( $type, $options );
 		}
@@ -72,7 +83,7 @@ final class PasswordFactory {
 	 * @param array $config Array of configuration options. 'class' is required (the Password
 	 *   subclass name), everything else is passed to the constructor of that class.
 	 */
-	public function register( $type, array $config ) {
+	public function register( string $type, array $config ): void {
 		$config['type'] = $type;
 		$this->types[$type] = $config;
 	}
@@ -86,7 +97,7 @@ final class PasswordFactory {
 	 * @param string $type Password hash type
 	 * @throws InvalidArgumentException If the type is not registered
 	 */
-	public function setDefaultType( $type ) {
+	public function setDefaultType( string $type ): void {
 		if ( !isset( $this->types[$type] ) ) {
 			throw new InvalidArgumentException( "Invalid password type $type." );
 		}
@@ -95,39 +106,39 @@ final class PasswordFactory {
 
 	/**
 	 * Get the default password type
-	 *
-	 * @return string
 	 */
-	public function getDefaultType() {
+	public function getDefaultType(): string {
 		return $this->default;
 	}
 
 	/**
 	 * @deprecated since 1.32 Initialize settings using the constructor
+	 *   Emitting deprecation warnings since 1.41.
 	 *
 	 * Initialize the internal static variables using the global variables
 	 *
 	 * @param Config $config Configuration object to load data from
 	 */
-	public function init( Config $config ) {
-		foreach ( $config->get( 'PasswordConfig' ) as $type => $options ) {
+	public function init( Config $config ): void {
+		wfDeprecated( __METHOD__, '1.32' );
+		foreach ( $config->get( MainConfigNames::PasswordConfig ) as $type => $options ) {
 			$this->register( $type, $options );
 		}
 
-		$this->setDefaultType( $config->get( 'PasswordDefault' ) );
+		$this->setDefaultType( $config->get( MainConfigNames::PasswordDefault ) );
 	}
 
 	/**
 	 * Get the list of types of passwords
 	 *
-	 * @return array
+	 * @return array[]
 	 */
-	public function getTypes() {
+	public function getTypes(): array {
 		return $this->types;
 	}
 
 	/**
-	 * Create a new Hash object from an existing string hash
+	 * Create a new Password object from an existing string hash
 	 *
 	 * Parse the type of a hash and create a new hash object based on the parsed type.
 	 * Pass the raw hash to the constructor of the new object. Use InvalidPassword type
@@ -137,42 +148,52 @@ final class PasswordFactory {
 	 * @return Password
 	 * @throws PasswordError If hash is invalid or type is not recognized
 	 */
-	public function newFromCiphertext( $hash ) {
-		if ( $hash === null || $hash === false || $hash === '' ) {
+	public function newFromCiphertext( ?string $hash ): Password {
+		if ( $hash === null || $hash === '' ) {
 			return new InvalidPassword( $this, [ 'type' => '' ], null );
 		} elseif ( $hash[0] !== ':' ) {
 			throw new PasswordError( 'Invalid hash given' );
 		}
 
 		$type = substr( $hash, 1, strpos( $hash, ':', 1 ) - 1 );
-		if ( !isset( $this->types[$type] ) ) {
-			throw new PasswordError( "Unrecognized password hash type $type." );
-		}
-
-		$config = $this->types[$type];
-
-		return new $config['class']( $this, $config, $hash );
+		return $this->newFromTypeAndHash( $type, $hash );
 	}
 
 	/**
-	 * Make a new default password of the given type.
+	 * Create a new Password object of the given type.
 	 *
 	 * @param string $type Existing type
 	 * @return Password
+	 * @throws PasswordError If type is not recognized
+	 */
+	public function newFromType( string $type ): Password {
+		return $this->newFromTypeAndHash( $type, null );
+	}
+
+	/**
+	 * Create a new Password object of the given type, optionally with an existing string hash.
+	 *
+	 * @param string $type Existing type
+	 * @param string|null $hash Existing hash
+	 * @return Password
 	 * @throws PasswordError If hash is invalid or type is not recognized
 	 */
-	public function newFromType( $type ) {
+	private function newFromTypeAndHash( string $type, ?string $hash ): Password {
 		if ( !isset( $this->types[$type] ) ) {
 			throw new PasswordError( "Unrecognized password hash type $type." );
 		}
 
 		$config = $this->types[$type];
 
-		return new $config['class']( $this, $config );
+		// @phan-suppress-next-line PhanTypeInvalidCallableArrayKey
+		return ObjectFactory::getObjectFromSpec( $config, [
+			'extraArgs' => [ $this, $config, $hash ],
+			'assertClass' => Password::class,
+		] );
 	}
 
 	/**
-	 * Create a new Hash object from a plaintext password
+	 * Create a new Password object from a plaintext password
 	 *
 	 * If no existing object is given, make a new default object. If one is given, clone that
 	 * object. Then pass the plaintext to Password::crypt().
@@ -181,14 +202,13 @@ final class PasswordFactory {
 	 * @param Password|null $existing Optional existing hash to get options from
 	 * @return Password
 	 */
-	public function newFromPlaintext( $password, Password $existing = null ) {
+	public function newFromPlaintext( ?string $password, ?Password $existing = null ): Password {
 		if ( $password === null ) {
 			return new InvalidPassword( $this, [ 'type' => '' ], null );
 		}
 
 		if ( $existing === null ) {
-			$config = $this->types[$this->default];
-			$obj = new $config['class']( $this, $config );
+			$obj = $this->newFromType( $this->default );
 		} else {
 			$obj = clone $existing;
 		}
@@ -208,7 +228,7 @@ final class PasswordFactory {
 	 *
 	 * @return bool True if needs update, false otherwise
 	 */
-	public function needsUpdate( Password $password ) {
+	public function needsUpdate( Password $password ): bool {
 		if ( $password->getType() !== $this->default ) {
 			return true;
 		} else {
@@ -222,23 +242,20 @@ final class PasswordFactory {
 	 * @param int $minLength Minimum length of password to generate
 	 * @return string
 	 */
-	public static function generateRandomPasswordString( $minLength = 10 ) {
+	public static function generateRandomPasswordString( int $minLength = 10 ): string {
 		// Decide the final password length based on our min password length,
-		// stopping at a minimum of 10 chars.
-		$length = max( 10, $minLength );
+		// requiring at least a minimum of self::MIN_RANDOM_PASSWORD_LENGTH chars.
+		$length = max( self::MIN_RANDOM_PASSWORD_LENGTH, $minLength );
 		// Multiply by 1.25 to get the number of hex characters we need
-		// Generate random hex chars
 		$hex = MWCryptRand::generateHex( ceil( $length * 1.25 ) );
 		// Convert from base 16 to base 32 to get a proper password like string
-		return substr( Wikimedia\base_convert( $hex, 16, 32, $length ), -$length );
+		return substr( \Wikimedia\base_convert( $hex, 16, 32, $length ), -$length );
 	}
 
 	/**
 	 * Create an InvalidPassword
-	 *
-	 * @return InvalidPassword
 	 */
-	public static function newInvalidPassword() {
+	public static function newInvalidPassword(): InvalidPassword {
 		static $password = null;
 
 		if ( $password === null ) {
@@ -249,3 +266,6 @@ final class PasswordFactory {
 		return $password;
 	}
 }
+
+/** @deprecated since 1.43 use MediaWiki\\Password\\PasswordFactory */
+class_alias( PasswordFactory::class, 'PasswordFactory' );

@@ -1,6 +1,9 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\Status\Status;
+use MediaWiki\Title\Title;
+use Wikimedia\Rdbms\IDBAccessObject;
 
 /**
  * Integration test that checks import success and
@@ -8,16 +11,17 @@ use MediaWiki\MediaWikiServices;
  *
  * @group large
  * @group Database
- * @covers ImportStreamSource
- * @covers ImportReporter
+ * @covers \ImportStreamSource
+ * @covers \ImportReporter
  *
  * @author mwjames
  */
-class ImportLinkCacheIntegrationTest extends MediaWikiTestCase {
+class ImportLinkCacheIntegrationTest extends MediaWikiIntegrationTestCase {
 
+	/** @var Status */
 	private $importStreamSource;
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
 		$file = dirname( __DIR__ ) . '/../data/import/ImportLinkCacheIntegrationTest.xml';
@@ -25,7 +29,7 @@ class ImportLinkCacheIntegrationTest extends MediaWikiTestCase {
 		$this->importStreamSource = ImportStreamSource::newFromFile( $file );
 
 		if ( !$this->importStreamSource->isGood() ) {
-			throw new Exception( "Import source for {$file} failed" );
+			$this->fail( "Import source for {$file} failed" );
 		}
 	}
 
@@ -33,25 +37,19 @@ class ImportLinkCacheIntegrationTest extends MediaWikiTestCase {
 		$this->doImport( $this->importStreamSource );
 
 		// Imported title
-		$loremIpsum = Title::newFromText( 'Lorem ipsum' );
+		$loremIpsum = Title::makeTitle( NS_MAIN, 'Lorem ipsum' );
 
 		$this->assertSame(
 			$loremIpsum->getArticleID(),
-			$loremIpsum->getArticleID( Title::GAID_FOR_UPDATE )
+			$loremIpsum->getArticleID( IDBAccessObject::READ_LATEST )
 		);
 
-		$categoryLoremIpsum = Title::newFromText( 'Category:Lorem ipsum' );
+		$categoryLoremIpsum = Title::makeTitle( NS_CATEGORY, 'Lorem ipsum' );
 
 		$this->assertSame(
 			$categoryLoremIpsum->getArticleID(),
-			$categoryLoremIpsum->getArticleID( Title::GAID_FOR_UPDATE )
+			$categoryLoremIpsum->getArticleID( IDBAccessObject::READ_LATEST )
 		);
-
-		$page = new WikiPage( $loremIpsum );
-		$page->doDeleteArticle( 'import test: delete page' );
-
-		$page = new WikiPage( $categoryLoremIpsum );
-		$page->doDeleteArticle( 'import test: delete page' );
 	}
 
 	/**
@@ -61,45 +59,40 @@ class ImportLinkCacheIntegrationTest extends MediaWikiTestCase {
 		$this->doImport( $this->importStreamSource );
 
 		// ReImported title
-		$loremIpsum = Title::newFromText( 'Lorem ipsum' );
+		$loremIpsum = Title::makeTitle( NS_MAIN, 'Lorem ipsum' );
 
 		$this->assertSame(
 			$loremIpsum->getArticleID(),
-			$loremIpsum->getArticleID( Title::GAID_FOR_UPDATE )
+			$loremIpsum->getArticleID( IDBAccessObject::READ_LATEST )
 		);
 
-		$categoryLoremIpsum = Title::newFromText( 'Category:Lorem ipsum' );
+		$categoryLoremIpsum = Title::makeTitle( NS_CATEGORY, 'Lorem ipsum' );
 
 		$this->assertSame(
 			$categoryLoremIpsum->getArticleID(),
-			$categoryLoremIpsum->getArticleID( Title::GAID_FOR_UPDATE )
+			$categoryLoremIpsum->getArticleID( IDBAccessObject::READ_LATEST )
 		);
 	}
 
 	private function doImport( $importStreamSource ) {
-		$importer = new WikiImporter(
-			$importStreamSource->value,
-			MediaWikiServices::getInstance()->getMainConfig()
-		);
+		$importer = $this->getServiceContainer()
+			->getWikiImporterFactory()
+			->getWikiImporter( $importStreamSource->value, $this->getTestSysop()->getAuthority() );
 		$importer->setDebug( true );
 
+		$context = RequestContext::getMain();
+		$context->setUser( $this->getTestUser()->getUser() );
 		$reporter = new ImportReporter(
 			$importer,
 			false,
 			'',
-			false
+			false,
+			$context
 		);
 
-		$reporter->setContext( new RequestContext() );
 		$reporter->open();
-
 		$importer->doImport();
-
-		$result = $reporter->close();
-
-		$this->assertTrue(
-			$result->isGood()
-		);
+		$this->assertStatusGood( $reporter->close() );
 	}
 
 }

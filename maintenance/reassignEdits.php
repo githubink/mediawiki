@@ -23,9 +23,13 @@
  * @license GPL-2.0-or-later
  */
 
-use Wikimedia\Rdbms\IDatabase;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\User\User;
+use Wikimedia\IPUtils;
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that reassigns edits from a user or IP address
@@ -69,139 +73,111 @@ class ReassignEdits extends Maintenance {
 	/**
 	 * Reassign edits from one user to another
 	 *
-	 * @param User $from User to take edits from
-	 * @param User $to User to assign edits to
-	 * @param bool $rc Update the recent changes table
+	 * @param User &$from User to take edits from
+	 * @param User &$to User to assign edits to
+	 * @param bool $updateRC Update the recent changes table
 	 * @param bool $report Don't change things; just echo numbers
-	 * @return int Number of entries changed, or that would be changed
+	 * @return int The number of entries changed, or that would be changed
 	 */
-	private function doReassignEdits( &$from, &$to, $rc = false, $report = false ) {
-		global $wgActorTableSchemaMigrationStage;
-
-		$dbw = $this->getDB( DB_MASTER );
+	private function doReassignEdits( &$from, &$to, $updateRC = false, $report = false ) {
+		$dbw = $this->getPrimaryDB();
 		$this->beginTransaction( $dbw, __METHOD__ );
+		$actorNormalization = $this->getServiceContainer()->getActorNormalization();
+		$fromActorId = $actorNormalization->findActorId( $from, $dbw );
 
 		# Count things
 		$this->output( "Checking current edits..." );
-		$revQueryInfo = ActorMigration::newMigration()->getWhere( $dbw, 'rev_user', $from );
-		$res = $dbw->select(
-			[ 'revision' ] + $revQueryInfo['tables'],
-			'COUNT(*) AS count',
-			$revQueryInfo['conds'],
-			__METHOD__,
-			[],
-			$revQueryInfo['joins']
-		);
-		$row = $dbw->fetchObject( $res );
-		$cur = $row->count;
-		$this->output( "found {$cur}.\n" );
+
+		$revisionRows = $dbw->newSelectQueryBuilder()
+			->select( '*' )
+			->from( 'revision' )
+			->where( [ 'rev_actor' => $fromActorId ] )
+			->caller( __METHOD__ )
+			->fetchRowCount();
+
+		$this->output( "found {$revisionRows}.\n" );
 
 		$this->output( "Checking deleted edits..." );
-		$arQueryInfo = ActorMigration::newMigration()->getWhere( $dbw, 'ar_user', $from, false );
-		$res = $dbw->select(
-			[ 'archive' ] + $arQueryInfo['tables'],
-			'COUNT(*) AS count',
-			$arQueryInfo['conds'],
-			__METHOD__,
-			[],
-			$arQueryInfo['joins']
-		);
-		$row = $dbw->fetchObject( $res );
-		$del = $row->count;
-		$this->output( "found {$del}.\n" );
+		$archiveRows = $dbw->newSelectQueryBuilder()
+			->select( '*' )
+			->from( 'archive' )
+			->where( [ 'ar_actor' => $fromActorId ] )
+			->caller( __METHOD__ )->fetchRowCount();
+		$this->output( "found {$archiveRows}.\n" );
 
 		# Don't count recent changes if we're not supposed to
-		if ( $rc ) {
+		if ( $updateRC ) {
 			$this->output( "Checking recent changes..." );
-			$rcQueryInfo = ActorMigration::newMigration()->getWhere( $dbw, 'rc_user', $from, false );
-			$res = $dbw->select(
-				[ 'recentchanges' ] + $rcQueryInfo['tables'],
-				'COUNT(*) AS count',
-				$rcQueryInfo['conds'],
-				__METHOD__,
-				[],
-				$rcQueryInfo['joins']
-			);
-			$row = $dbw->fetchObject( $res );
-			$rec = $row->count;
-			$this->output( "found {$rec}.\n" );
+			$recentChangesRows = $dbw->newSelectQueryBuilder()
+				->select( '*' )
+				->from( 'recentchanges' )
+				->where( [ 'rc_actor' => $fromActorId ] )
+				->caller( __METHOD__ )->fetchRowCount();
+			$this->output( "found {$recentChangesRows}.\n" );
 		} else {
-			$rec = 0;
+			$recentChangesRows = 0;
 		}
 
-		$total = $cur + $del + $rec;
+		$total = $revisionRows + $archiveRows + $recentChangesRows;
 		$this->output( "\nTotal entries to change: {$total}\n" );
 
-		if ( !$report ) {
-			if ( $total ) {
+		$toActorId = $actorNormalization->acquireActorId( $to, $dbw );
+		if ( !$report && $total ) {
+			$this->output( "\n" );
+			if ( $revisionRows ) {
 				# Reassign edits
-				$this->output( "\nReassigning current edits..." );
-				if ( $wgActorTableSchemaMigrationStage & SCHEMA_COMPAT_WRITE_OLD ) {
-					$dbw->update(
-						'revision',
-						[
-							'rev_user' => $to->getId(),
-							'rev_user_text' => $to->getName(),
-						],
-						$from->isLoggedIn()
-							? [ 'rev_user' => $from->getId() ] : [ 'rev_user_text' => $from->getName() ],
-						__METHOD__
-					);
-				}
-				if ( $wgActorTableSchemaMigrationStage & SCHEMA_COMPAT_WRITE_NEW ) {
-					$dbw->update(
-						'revision_actor_temp',
-						[ 'revactor_actor' => $to->getActorId( $dbw ) ],
-						[ 'revactor_actor' => $from->getActorId() ],
-						__METHOD__
-					);
-				}
-				$this->output( "done.\nReassigning deleted edits..." );
-				$dbw->update( 'archive',
-					$this->userSpecification( $dbw, $to, 'ar_user', 'ar_user_text', 'ar_actor' ),
-					[ $arQueryInfo['conds'] ], __METHOD__ );
+				$this->output( "Reassigning current edits..." );
+
+				$dbw->newUpdateQueryBuilder()
+					->update( 'revision' )
+					->set( [ 'rev_actor' => $toActorId ] )
+					->where( [ 'rev_actor' => $fromActorId ] )
+					->caller( __METHOD__ )->execute();
+
 				$this->output( "done.\n" );
-				# Update recent changes if required
-				if ( $rc ) {
-					$this->output( "Updating recent changes..." );
-					$dbw->update( 'recentchanges',
-						$this->userSpecification( $dbw, $to, 'rc_user', 'rc_user_text', 'rc_actor' ),
-						[ $rcQueryInfo['conds'] ], __METHOD__ );
-					$this->output( "done.\n" );
-				}
+			}
+
+			if ( $archiveRows ) {
+				$this->output( "Reassigning deleted edits..." );
+
+				$dbw->newUpdateQueryBuilder()
+					->update( 'archive' )
+					->set( [ 'ar_actor' => $toActorId ] )
+					->where( [ 'ar_actor' => $fromActorId ] )
+					->caller( __METHOD__ )->execute();
+
+				$this->output( "done.\n" );
+			}
+			# Update recent changes if required
+			if ( $recentChangesRows ) {
+				$this->output( "Updating recent changes..." );
+
+				$dbw->newUpdateQueryBuilder()
+					->update( 'recentchanges' )
+					->set( [ 'rc_actor' => $toActorId ] )
+					->where( [ 'rc_actor' => $fromActorId ] )
+					->caller( __METHOD__ )->execute();
+
+				$this->output( "done.\n" );
+			}
+
+			# If $from is an IP, delete any relevant rows from the
+			# ip_changes. No update needed, as $to cannot be an IP.
+			if ( !$from->isRegistered() ) {
+				$this->output( "Deleting ip_changes..." );
+
+				$dbw->newDeleteQueryBuilder()
+					->deleteFrom( 'ip_changes' )
+					->where( [ 'ipc_hex' => IPUtils::toHex( $from->getName() ) ] )
+					->caller( __METHOD__ )->execute();
+
+				$this->output( "done.\n" );
 			}
 		}
 
 		$this->commitTransaction( $dbw, __METHOD__ );
 
-		return (int)$total;
-	}
-
-	/**
-	 * Return user specifications for an UPDATE
-	 * i.e. user => id, user_text => text
-	 *
-	 * @param IDatabase $dbw Database handle
-	 * @param User $user User for the spec
-	 * @param string $idfield Field name containing the identifier
-	 * @param string $utfield Field name containing the user text
-	 * @param string $acfield Field name containing the actor ID
-	 * @return array
-	 */
-	private function userSpecification( IDatabase $dbw, &$user, $idfield, $utfield, $acfield ) {
-		global $wgActorTableSchemaMigrationStage;
-
-		$ret = [];
-		if ( $wgActorTableSchemaMigrationStage & SCHEMA_COMPAT_WRITE_OLD ) {
-			$ret += [
-				$idfield => $user->getId(),
-				$utfield => $user->getName(),
-			];
-		}
-		if ( $wgActorTableSchemaMigrationStage & SCHEMA_COMPAT_WRITE_NEW ) {
-			$ret += [ $acfield => $user->getActorId( $dbw ) ];
-		}
-		return $ret;
+		return $total;
 	}
 
 	/**
@@ -211,10 +187,10 @@ class ReassignEdits extends Maintenance {
 	 * @return User
 	 */
 	private function initialiseUser( $username ) {
-		if ( User::isIP( $username ) ) {
-			$user = new User();
-			$user->setId( 0 );
-			$user->setName( $username );
+		$services = $this->getServiceContainer();
+		if ( $services->getUserNameUtils()->isIP( $username ) ) {
+			$user = User::newFromName( $username, false );
+			$user->getActorId();
 		} else {
 			$user = User::newFromName( $username );
 			if ( !$user ) {
@@ -227,5 +203,7 @@ class ReassignEdits extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = ReassignEdits::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

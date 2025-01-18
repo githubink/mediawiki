@@ -1,6 +1,6 @@
 {
 	"prefix": "oo-ui-icon",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"images": {
 		"add": {
 			"file": "../wikimediaui/images/icons/add.svg"
@@ -32,6 +32,9 @@
 		"ellipsis": {
 			"file": "../wikimediaui/images/icons/ellipsis.svg"
 		},
+		"verticalEllipsis": {
+			"file": "../wikimediaui/images/icons/verticalEllipsis.svg"
+		},
 		"feedback": {
 			"file": {
 				"ltr": "../wikimediaui/images/icons/feedback-ltr.svg",
@@ -43,6 +46,9 @@
 				"ltr": "../wikimediaui/images/icons/funnel-ltr.svg",
 				"rtl": "../wikimediaui/images/icons/funnel-rtl.svg"
 			}
+		},
+		"hand": {
+			"file": "../wikimediaui/images/icons/hand.svg"
 		},
 		"heart": {
 			"file": "../wikimediaui/images/icons/heart.svg"
@@ -65,6 +71,9 @@
 				}
 			}
 		},
+		"home": {
+			"file": "../wikimediaui/images/icons/home.svg"
+		},
 		"key": {
 			"file": "../wikimediaui/images/icons/key.svg"
 		},
@@ -74,11 +83,23 @@
 		"lightbulb": {
 			"file": "../wikimediaui/images/icons/lightbulb.svg"
 		},
+		"logIn": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/logIn-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/logIn-rtl.svg"
+			}
+		},
 		"logOut": {
 			"file": {
 				"ltr": "../wikimediaui/images/icons/logOut-ltr.svg",
 				"rtl": "../wikimediaui/images/icons/logOut-rtl.svg"
 			}
+		},
+		"network": {
+			"file": "../wikimediaui/images/icons/network.svg"
+		},
+		"networkOff": {
+			"file": "../wikimediaui/images/icons/networkOff.svg"
 		},
 		"newWindow": {
 			"file": {
@@ -88,6 +109,9 @@
 		},
 		"pageSettings": {
 			"file": "../wikimediaui/images/icons/pageSettings.svg"
+		},
+		"power": {
+			"file": "../wikimediaui/images/icons/power.svg"
 		},
 		"printer": {
 			"file": "../wikimediaui/images/icons/printer.svg"

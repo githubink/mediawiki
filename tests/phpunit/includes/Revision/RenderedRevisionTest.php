@@ -2,8 +2,16 @@
 
 namespace MediaWiki\Tests\Revision;
 
-use Content;
-use Language;
+use InvalidArgumentException;
+use LogicException;
+use MediaWiki\Content\Content;
+use MediaWiki\Content\Renderer\ContentRenderer;
+use MediaWiki\Content\WikitextContent;
+use MediaWiki\Page\PageIdentity;
+use MediaWiki\Page\PageIdentityValue;
+use MediaWiki\Page\PageReference;
+use MediaWiki\Parser\ParserOptions;
+use MediaWiki\Parser\ParserOutput;
 use MediaWiki\Revision\MutableRevisionRecord;
 use MediaWiki\Revision\MutableRevisionSlots;
 use MediaWiki\Revision\RenderedRevision;
@@ -13,30 +21,34 @@ use MediaWiki\Revision\RevisionStore;
 use MediaWiki\Revision\RevisionStoreRecord;
 use MediaWiki\Revision\SlotRecord;
 use MediaWiki\Revision\SuppressedDataException;
-use MediaWikiTestCase;
+use MediaWiki\Tests\Unit\Permissions\MockAuthorityTrait;
+use MediaWiki\Title\TitleValue;
 use MediaWiki\User\UserIdentityValue;
-use ParserOptions;
-use ParserOutput;
+use MediaWikiIntegrationTestCase;
 use PHPUnit\Framework\MockObject\MockObject;
-use Title;
-use User;
 use Wikimedia\TestingAccessWrapper;
-use WikitextContent;
 
 /**
  * @covers \MediaWiki\Revision\RenderedRevision
+ * @group Database
  */
-class RenderedRevisionTest extends MediaWikiTestCase {
+class RenderedRevisionTest extends MediaWikiIntegrationTestCase {
+	use MockAuthorityTrait;
 
 	/** @var callable */
 	private $combinerCallback;
 
-	public function setUp() {
+	/** @var ContentRenderer */
+	private $contentRenderer;
+
+	protected function setUp(): void {
 		parent::setUp();
 
 		$this->combinerCallback = function ( RenderedRevision $rr, array $hints = [] ) {
 			return $this->combineOutput( $rr, $hints );
 		};
+
+		$this->contentRenderer = $this->getServiceContainer()->getContentRenderer();
 	}
 
 	private function combineOutput( RenderedRevision $rrev, array $hints = [] ) {
@@ -71,78 +83,28 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 				$combinedOutput->mergeHtmlMetaDataFrom( $out );
 			}
 
-			$combinedOutput->setText( $html );
+			$combinedOutput->setRawText( $html );
 		}
 
 		return $combinedOutput;
 	}
 
 	/**
-	 * @param int $articleId
-	 * @param int $revisionId
-	 * @return Title
-	 */
-	private function getMockTitle( $articleId, $revisionId ) {
-		/** @var Title|MockObject $mock */
-		$mock = $this->getMockBuilder( Title::class )
-			->disableOriginalConstructor()
-			->getMock();
-		$mock->expects( $this->any() )
-			->method( 'getNamespace' )
-			->will( $this->returnValue( NS_MAIN ) );
-		$mock->expects( $this->any() )
-			->method( 'getText' )
-			->will( $this->returnValue( 'RenderTestPage' ) );
-		$mock->expects( $this->any() )
-			->method( 'getPrefixedText' )
-			->will( $this->returnValue( 'RenderTestPage' ) );
-		$mock->expects( $this->any() )
-			->method( 'getDBkey' )
-			->will( $this->returnValue( 'RenderTestPage' ) );
-		$mock->expects( $this->any() )
-			->method( 'getArticleID' )
-			->will( $this->returnValue( $articleId ) );
-		$mock->expects( $this->any() )
-			->method( 'getLatestRevId' )
-			->will( $this->returnValue( $revisionId ) );
-		$mock->expects( $this->any() )
-			->method( 'getContentModel' )
-			->will( $this->returnValue( CONTENT_MODEL_WIKITEXT ) );
-		$mock->expects( $this->any() )
-			->method( 'getPageLanguage' )
-			->will( $this->returnValue( Language::factory( 'en' ) ) );
-		$mock->expects( $this->any() )
-			->method( 'isContentPage' )
-			->will( $this->returnValue( true ) );
-		$mock->expects( $this->any() )
-			->method( 'equals' )
-			->willReturnCallback( function ( Title $other ) use ( $mock ) {
-				return $mock->getPrefixedText() === $other->getPrefixedText();
-			} );
-		$mock->expects( $this->any() )
-			->method( 'userCan' )
-			->willReturnCallback( function ( $perm, User $user ) use ( $mock ) {
-				return $user->isAllowed( $perm );
-			} );
-
-		return $mock;
-	}
-
-	/**
 	 * @param string $class
-	 * @param Title $title
+	 * @param PageIdentity $page
 	 * @param null|int $id
 	 * @param int $visibility
+	 * @param Content[]|null $content
 	 * @return RevisionRecord
 	 */
 	private function getMockRevision(
 		$class,
-		$title,
+		$page,
 		$id = null,
 		$visibility = 0,
-		array $content = null
+		?array $content = null
 	) {
-		$frank = new UserIdentityValue( 9, 'Frank', 0 );
+		$frank = new UserIdentityValue( 9, 'Frank' );
 
 		if ( !$content ) {
 			$text = "";
@@ -152,24 +114,26 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 			$text .= "* time:{{REVISIONTIMESTAMP}}!\n";
 			$text .= "* [[Link It]]\n";
 
-			$content = [ 'main' => new WikitextContent( $text ) ];
+			$content = [ SlotRecord::MAIN => new WikitextContent( $text ) ];
 		}
 
 		/** @var MockObject|RevisionRecord $mock */
 		$mock = $this->getMockBuilder( $class )
 			->disableOriginalConstructor()
-			->setMethods( [
+			->onlyMethods( [
 				'getId',
 				'getPageId',
 				'getPageAsLinkTarget',
+				'getPage',
 				'getUser',
 				'getVisibility',
 				'getTimestamp',
 			] )->getMock();
 
 		$mock->method( 'getId' )->willReturn( $id );
-		$mock->method( 'getPageId' )->willReturn( $title->getArticleID() );
-		$mock->method( 'getPageAsLinkTarget' )->willReturn( $title );
+		$mock->method( 'getPageId' )->willReturn( $page->getId() );
+		$mock->method( 'getPageAsLinkTarget' )->willReturn( TitleValue::castPageToLinkTarget( $page ) );
+		$mock->method( 'getPage' )->willReturn( $page );
 		$mock->method( 'getUser' )->willReturn( $frank );
 		$mock->method( 'getVisibility' )->willReturn( $visibility );
 		$mock->method( 'getTimestamp' )->willReturn( '20180101000003' );
@@ -185,144 +149,203 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 		return $mock;
 	}
 
-	public function testGetRevisionParserOutput_new() {
-		$title = $this->getMockTitle( 0, 21 );
-		$rev = $this->getMockRevision( RevisionStoreRecord::class, $title );
+	public function testConstructorInvalidArguments() {
+		$rev = $this->getMockRevision(
+			RevisionStoreRecord::class,
+			PageIdentityValue::localIdentity( 0, NS_MAIN, __METHOD__ )
+		);
+		$options = ParserOptions::newFromAnon();
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$this->expectException( InvalidArgumentException::class );
+		$this->expectExceptionMessage(
+			'User must be specified when setting audience to FOR_THIS_USER'
+		);
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback,
+			RevisionRecord::FOR_THIS_USER
+		);
+	}
+
+	public function testGetRevisionParserOutput_new() {
+		$rev = $this->getMockRevision(
+			RevisionStoreRecord::class,
+			PageIdentityValue::localIdentity( 0, NS_MAIN, 'RenderTestPage' )
+		);
+
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
 		$this->assertFalse( $rr->isContentDeleted(), 'isContentDeleted' );
 
 		$this->assertSame( $rev, $rr->getRevision() );
 		$this->assertSame( $options, $rr->getOptions() );
 
-		$html = $rr->getRevisionParserOutput()->getText();
+		$html = $rr->getRevisionParserOutput()->getRawText();
 
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'user:Frank!', $html );
-		$this->assertContains( 'time:20180101000003!', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'user:Frank!', $html );
+		$this->assertStringContainsString( 'time:20180101000003!', $html );
 	}
 
 	public function testGetRevisionParserOutput_previewWithSelfTransclusion() {
-		$title = $this->getMockTitle( 0, 21 );
-		$name = $title->getPrefixedText();
+		$title = PageIdentityValue::localIdentity( 0, NS_MAIN, __METHOD__ );
+		$name = $this->getServiceContainer()->getTitleFormatter()->getPrefixedText( $title );
 
 		$text = "(ONE)<includeonly>(TWO)</includeonly><noinclude>#{{:$name}}#</noinclude>";
 
 		$content = [
-			'main' => new WikitextContent( $text )
+			SlotRecord::MAIN => new WikitextContent( $text )
 		];
 
 		$rev = $this->getMockRevision( RevisionStoreRecord::class, $title, null, 0, $content );
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
-		$html = $rr->getRevisionParserOutput()->getText();
-		$this->assertContains( '(ONE)#(ONE)(TWO)#', $html );
+		$html = $rr->getRevisionParserOutput()->getRawText();
+		$this->assertStringContainsString( '(ONE)#(ONE)(TWO)#', $html );
 	}
 
 	public function testGetRevisionParserOutput_current() {
-		$title = $this->getMockTitle( 7, 21 );
-		$rev = $this->getMockRevision( RevisionStoreRecord::class, $title, 21 );
+		$rev = $this->getMockRevision(
+			RevisionStoreRecord::class,
+			PageIdentityValue::localIdentity( 0, NS_MAIN, 'RenderTestPage' ),
+			21
+		);
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
 		$this->assertFalse( $rr->isContentDeleted(), 'isContentDeleted' );
 
 		$this->assertSame( $rev, $rr->getRevision() );
 		$this->assertSame( $options, $rr->getOptions() );
 
-		$html = $rr->getRevisionParserOutput()->getText();
+		$html = $rr->getRevisionParserOutput()->getRawText();
 
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'rev:21!', $html );
-		$this->assertContains( 'user:Frank!', $html );
-		$this->assertContains( 'time:20180101000003!', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'rev:21!', $html );
+		$this->assertStringContainsString( 'user:Frank!', $html );
+		$this->assertStringContainsString( 'time:20180101000003!', $html );
 
-		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getText() );
+		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getRawText() );
 	}
 
 	public function testGetRevisionParserOutput_old() {
-		$title = $this->getMockTitle( 7, 21 );
-		$rev = $this->getMockRevision( RevisionStoreRecord::class, $title, 11 );
+		$rev = $this->getMockRevision(
+			RevisionStoreRecord::class,
+			PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' ),
+			11
+		);
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
 		$this->assertFalse( $rr->isContentDeleted(), 'isContentDeleted' );
 
 		$this->assertSame( $rev, $rr->getRevision() );
 		$this->assertSame( $options, $rr->getOptions() );
 
-		$html = $rr->getRevisionParserOutput()->getText();
+		$html = $rr->getRevisionParserOutput()->getRawText();
 
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'rev:11!', $html );
-		$this->assertContains( 'user:Frank!', $html );
-		$this->assertContains( 'time:20180101000003!', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'rev:11!', $html );
+		$this->assertStringContainsString( 'user:Frank!', $html );
+		$this->assertStringContainsString( 'time:20180101000003!', $html );
 
-		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getText() );
+		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getRawText() );
 	}
 
 	public function testGetRevisionParserOutput_archive() {
-		$title = $this->getMockTitle( 7, 21 );
-		$rev = $this->getMockRevision( RevisionArchiveRecord::class, $title, 11 );
+		$rev = $this->getMockRevision(
+			RevisionArchiveRecord::class,
+			PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' ),
+			11
+		);
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback,
+			RevisionRecord::RAW
+		);
 
 		$this->assertFalse( $rr->isContentDeleted(), 'isContentDeleted' );
 
 		$this->assertSame( $rev, $rr->getRevision() );
 		$this->assertSame( $options, $rr->getOptions() );
 
-		$html = $rr->getRevisionParserOutput()->getText();
+		$html = $rr->getRevisionParserOutput()->getRawText();
 
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'rev:11!', $html );
-		$this->assertContains( 'user:Frank!', $html );
-		$this->assertContains( 'time:20180101000003!', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'rev:11!', $html );
+		$this->assertStringContainsString( 'user:Frank!', $html );
+		$this->assertStringContainsString( 'time:20180101000003!', $html );
 
-		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getText() );
+		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getRawText() );
 	}
 
 	public function testGetRevisionParserOutput_suppressed() {
-		$title = $this->getMockTitle( 7, 21 );
 		$rev = $this->getMockRevision(
 			RevisionStoreRecord::class,
-			$title,
+			PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' ),
 			11,
 			RevisionRecord::DELETED_TEXT
 		);
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
-		$this->setExpectedException( SuppressedDataException::class );
+		$this->expectException( SuppressedDataException::class );
 		$rr->getRevisionParserOutput();
 	}
 
 	public function testGetRevisionParserOutput_privileged() {
-		$title = $this->getMockTitle( 7, 21 );
 		$rev = $this->getMockRevision(
 			RevisionStoreRecord::class,
-			$title,
+			PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' ),
 			11,
 			RevisionRecord::DELETED_TEXT
 		);
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$sysop = $this->getTestUser( [ 'sysop' ] )->getUser(); // privileged!
+		$options = ParserOptions::newFromAnon();
 		$rr = new RenderedRevision(
-			$title,
 			$rev,
 			$options,
+			$this->contentRenderer,
 			$this->combinerCallback,
 			RevisionRecord::FOR_THIS_USER,
-			$sysop
+			$this->mockRegisteredUltimateAuthority()
 		);
 
 		$this->assertTrue( $rr->isContentDeleted(), 'isContentDeleted' );
@@ -330,31 +353,30 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 		$this->assertSame( $rev, $rr->getRevision() );
 		$this->assertSame( $options, $rr->getOptions() );
 
-		$html = $rr->getRevisionParserOutput()->getText();
+		$html = $rr->getRevisionParserOutput()->getRawText();
 
 		// Suppressed content should be visible for sysops
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'rev:11!', $html );
-		$this->assertContains( 'user:Frank!', $html );
-		$this->assertContains( 'time:20180101000003!', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'rev:11!', $html );
+		$this->assertStringContainsString( 'user:Frank!', $html );
+		$this->assertStringContainsString( 'time:20180101000003!', $html );
 
-		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getText() );
+		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getRawText() );
 	}
 
 	public function testGetRevisionParserOutput_raw() {
-		$title = $this->getMockTitle( 7, 21 );
 		$rev = $this->getMockRevision(
 			RevisionStoreRecord::class,
-			$title,
+			PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' ),
 			11,
 			RevisionRecord::DELETED_TEXT
 		);
 
-		$options = ParserOptions::newCanonical( 'canonical' );
+		$options = ParserOptions::newFromAnon();
 		$rr = new RenderedRevision(
-			$title,
 			$rev,
 			$options,
+			$this->contentRenderer,
 			$this->combinerCallback,
 			RevisionRecord::RAW
 		);
@@ -364,44 +386,53 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 		$this->assertSame( $rev, $rr->getRevision() );
 		$this->assertSame( $options, $rr->getOptions() );
 
-		$html = $rr->getRevisionParserOutput()->getText();
+		$html = $rr->getRevisionParserOutput()->getRawText();
 
 		// Suppressed content should be visible for sysops
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'rev:11!', $html );
-		$this->assertContains( 'user:Frank!', $html );
-		$this->assertContains( 'time:20180101000003!', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'rev:11!', $html );
+		$this->assertStringContainsString( 'user:Frank!', $html );
+		$this->assertStringContainsString( 'time:20180101000003!', $html );
 
-		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getText() );
+		$this->assertSame( $html, $rr->getSlotParserOutput( SlotRecord::MAIN )->getRawText() );
 	}
 
 	public function testGetRevisionParserOutput_multi() {
 		$content = [
-			'main' => new WikitextContent( '[[Kittens]]' ),
+			SlotRecord::MAIN => new WikitextContent( '[[Kittens]]' ),
 			'aux' => new WikitextContent( '[[Goats]]' ),
 		];
 
-		$title = $this->getMockTitle( 7, 21 );
-		$rev = $this->getMockRevision( RevisionStoreRecord::class, $title, 11, 0, $content );
+		$rev = $this->getMockRevision(
+			RevisionStoreRecord::class,
+			PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' ),
+			11,
+			0,
+			$content );
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
 		$combinedOutput = $rr->getRevisionParserOutput();
 		$mainOutput = $rr->getSlotParserOutput( SlotRecord::MAIN );
 		$auxOutput = $rr->getSlotParserOutput( 'aux' );
 
-		$combinedHtml = $combinedOutput->getText();
-		$mainHtml = $mainOutput->getText();
-		$auxHtml = $auxOutput->getText();
+		$combinedHtml = $combinedOutput->getRawText();
+		$mainHtml = $mainOutput->getRawText();
+		$auxHtml = $auxOutput->getRawText();
 
-		$this->assertContains( 'Kittens', $mainHtml );
-		$this->assertContains( 'Goats', $auxHtml );
-		$this->assertNotContains( 'Goats', $mainHtml );
-		$this->assertNotContains( 'Kittens', $auxHtml );
-		$this->assertContains( 'Kittens', $combinedHtml );
-		$this->assertContains( 'Goats', $combinedHtml );
-		$this->assertContains( 'aux', $combinedHtml, 'slot section header' );
+		$this->assertStringContainsString( 'Kittens', $mainHtml );
+		$this->assertStringContainsString( 'Goats', $auxHtml );
+		$this->assertStringNotContainsString( 'Goats', $mainHtml );
+		$this->assertStringNotContainsString( 'Kittens', $auxHtml );
+		$this->assertStringContainsString( 'Kittens', $combinedHtml );
+		$this->assertStringContainsString( 'Goats', $combinedHtml );
+		$this->assertStringContainsString( 'aux', $combinedHtml, 'slot section header' );
 
 		$combinedLinks = $combinedOutput->getLinks();
 		$mainLinks = $mainOutput->getLinks();
@@ -413,9 +444,9 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 	}
 
 	public function testGetRevisionParserOutput_incompleteNoId() {
-		$title = $this->getMockTitle( 7, 21 );
-
-		$rev = new MutableRevisionRecord( $title );
+		$rev = new MutableRevisionRecord(
+			PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' )
+		);
 
 		$text = "";
 		$text .= "* page:{{PAGENAME}}!\n";
@@ -425,23 +456,30 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 
 		$rev->setContent( SlotRecord::MAIN, new WikitextContent( $text ) );
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
 		// MutableRevisionRecord without ID should be used by the parser.
 		// USeful for fake
-		$html = $rr->getRevisionParserOutput()->getText();
+		$html = $rr->getRevisionParserOutput()->getRawText();
 
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'rev:!', $html );
-		$this->assertContains( 'user:!', $html );
-		$this->assertContains( 'time:!', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'rev:!', $html );
+		$this->assertStringContainsString( 'user:!', $html );
+		// Per parser docs, if revision object does not contain a timestamp
+		// then parser uses current time. Hence don't expect time to be
+		// empty or a specific time.
+		$this->assertStringContainsString( 'time:2', $html );
 	}
 
 	public function testGetRevisionParserOutput_incompleteWithId() {
-		$title = $this->getMockTitle( 7, 21 );
-
-		$rev = new MutableRevisionRecord( $title );
+		$page = PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' );
+		$rev = new MutableRevisionRecord( $page );
 		$rev->setId( 21 );
 
 		$text = "";
@@ -454,62 +492,78 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 
 		$actualRevision = $this->getMockRevision(
 			RevisionStoreRecord::class,
-			$title,
+			$page,
 			21,
 			RevisionRecord::DELETED_TEXT
 		);
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
 		// MutableRevisionRecord with ID should not be used by the parser,
 		// revision should be loaded instead!
-		$revisionStore = $this->getMockBuilder( RevisionStore::class )
-			->disableOriginalConstructor()
-			->getMock();
+		$revisionStore = $this->createMock( RevisionStore::class );
 
 		$revisionStore->expects( $this->once() )
 			->method( 'getKnownCurrentRevision' )
-			->with( $title, 0 )
 			->willReturn( $actualRevision );
 
 		$this->setService( 'RevisionStore', $revisionStore );
 
-		$html = $rr->getRevisionParserOutput()->getText();
+		$html = $rr->getRevisionParserOutput()->getRawText();
 
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'rev:21!', $html );
-		$this->assertContains( 'user:Frank!', $html );
-		$this->assertContains( 'time:20180101000003!', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'rev:21!', $html );
+		$this->assertStringContainsString( 'user:Frank!', $html );
+		$this->assertStringContainsString( 'time:20180101000003!', $html );
 	}
 
 	public function testSetRevisionParserOutput() {
-		$title = $this->getMockTitle( 3, 21 );
-		$rev = $this->getMockRevision( RevisionStoreRecord::class, $title );
+		$rev = $this->getMockRevision(
+			RevisionStoreRecord::class,
+			PageIdentityValue::localIdentity( 3, NS_MAIN, 'RenderTestPage' )
+		);
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
 		$output = new ParserOutput( 'Kittens' );
 		$rr->setRevisionParserOutput( $output );
 
 		$this->assertSame( $output, $rr->getRevisionParserOutput() );
-		$this->assertSame( 'Kittens', $rr->getRevisionParserOutput()->getText() );
+		$this->assertSame( 'Kittens', $rr->getRevisionParserOutput()->getRawText() );
 
 		$this->assertSame( $output, $rr->getSlotParserOutput( SlotRecord::MAIN ) );
-		$this->assertSame( 'Kittens', $rr->getSlotParserOutput( SlotRecord::MAIN )->getText() );
+		$this->assertSame( 'Kittens', $rr->getSlotParserOutput( SlotRecord::MAIN )
+			->getRawText() );
 	}
 
 	public function testNoHtml() {
-		/** @var MockObject|Content $mockContent */
-		$mockContent = $this->getMockBuilder( WikitextContent::class )
-			->setMethods( [ 'getParserOutput' ] )
-			->setConstructorArgs( [ 'Whatever' ] )
+		$content = new WikitextContent( 'whatever' );
+
+		/** @var MockObject|ContentRenderer $mockContentRenderer */
+		$mockContentRenderer = $this->getMockBuilder( ContentRenderer::class )
+			->onlyMethods( [ 'getParserOutput' ] )
+			->disableOriginalConstructor()
 			->getMock();
-		$mockContent->method( 'getParserOutput' )
-			->willReturnCallback( function ( Title $title, $revId = null,
-				ParserOptions $options = null, $generateHtml = true
+		$mockContentRenderer->method( 'getParserOutput' )
+			->willReturnCallback( function ( Content $content, PageReference $page, $revId = null,
+				?ParserOptions $options = null, $hints = []
 			) {
+				if ( is_bool( $hints ) ) {
+					$hints = [ 'generate-html' => $hints ];
+				}
+				$generateHtml = $hints['generate-html'] ?? true;
 				if ( !$generateHtml ) {
 					return new ParserOutput( null );
 				} else {
@@ -518,14 +572,19 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 				}
 			} );
 
-		$title = $this->getMockTitle( 7, 21 );
+		$rev = new MutableRevisionRecord(
+			PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' )
+		);
+		$rev->setContent( SlotRecord::MAIN, $content );
+		$rev->setContent( 'aux', $content );
 
-		$rev = new MutableRevisionRecord( $title );
-		$rev->setContent( SlotRecord::MAIN, $mockContent );
-		$rev->setContent( 'aux', $mockContent );
-
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$mockContentRenderer,
+			$this->combinerCallback
+		);
 
 		$output = $rr->getSlotParserOutput( SlotRecord::MAIN, [ 'generate-html' => false ] );
 		$this->assertFalse( $output->hasText(), 'hasText' );
@@ -535,9 +594,8 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 	}
 
 	public function testUpdateRevision() {
-		$title = $this->getMockTitle( 7, 21 );
-
-		$rev = new MutableRevisionRecord( $title );
+		$page = PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' );
+		$rev = new MutableRevisionRecord( $page );
 
 		$text = "";
 		$text .= "* page:{{PAGENAME}}!\n";
@@ -548,19 +606,24 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 		$rev->setContent( SlotRecord::MAIN, new WikitextContent( $text ) );
 		$rev->setContent( 'aux', new WikitextContent( '[[Goats]]' ) );
 
-		$options = ParserOptions::newCanonical( 'canonical' );
-		$rr = new RenderedRevision( $title, $rev, $options, $this->combinerCallback );
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
 
 		$firstOutput = $rr->getRevisionParserOutput();
 		$mainOutput = $rr->getSlotParserOutput( SlotRecord::MAIN );
 		$auxOutput = $rr->getSlotParserOutput( 'aux' );
 
 		// emulate a saved revision
-		$savedRev = new MutableRevisionRecord( $title );
+		$savedRev = new MutableRevisionRecord( $page );
 		$savedRev->setContent( SlotRecord::MAIN, new WikitextContent( $text ) );
 		$savedRev->setContent( 'aux', new WikitextContent( '[[Goats]]' ) );
 		$savedRev->setId( 23 ); // saved, new
-		$savedRev->setUser( new UserIdentityValue( 9, 'Frank', 0 ) );
+		$savedRev->setUser( new UserIdentityValue( 9, 'Frank' ) );
 		$savedRev->setTimestamp( '20180101000003' );
 
 		$rr->updateRevision( $savedRev );
@@ -569,17 +632,43 @@ class RenderedRevisionTest extends MediaWikiTestCase {
 		$this->assertSame( $auxOutput, $rr->getSlotParserOutput( 'aux' ), 'Keep aux' );
 
 		$updatedOutput = $rr->getRevisionParserOutput();
-		$html = $updatedOutput->getText();
+		$html = $updatedOutput->getRawText();
 
 		$this->assertNotSame( $firstOutput, $updatedOutput, 'Reset merged' );
-		$this->assertContains( 'page:RenderTestPage!', $html );
-		$this->assertContains( 'rev:23!', $html );
-		$this->assertContains( 'user:Frank!', $html );
-		$this->assertContains( 'time:20180101000003!', $html );
-		$this->assertContains( 'Goats', $html );
+		$this->assertStringContainsString( 'page:RenderTestPage!', $html );
+		$this->assertStringContainsString( 'rev:23!', $html );
+		$this->assertStringContainsString( 'user:Frank!', $html );
+		$this->assertStringContainsString( 'time:20180101000003!', $html );
+		$this->assertStringContainsString( 'Goats', $html );
 
 		$rr->updateRevision( $savedRev ); // should do nothing
 		$this->assertSame( $updatedOutput, $rr->getRevisionParserOutput(), 'no more reset needed' );
+	}
+
+	public function testUpdateRevision_revIdSet() {
+		$page = PageIdentityValue::localIdentity( 7, NS_MAIN, 'RenderTestPage' );
+		$rev = new MutableRevisionRecord( $page );
+		$rev->setId( 123 );
+		$rev->setContent( SlotRecord::MAIN, new WikitextContent( 'FooBar' ) );
+
+		$options = ParserOptions::newFromAnon();
+		$rr = new RenderedRevision(
+			$rev,
+			$options,
+			$this->contentRenderer,
+			$this->combinerCallback
+		);
+
+		$newRev = new MutableRevisionRecord( $page );
+		$newRev->setId( 321 ); // Different
+		$newRev->setContent( SlotRecord::MAIN, new WikitextContent( 'FooBar' ) );
+
+		$this->expectException( LogicException::class );
+		$this->expectExceptionMessage(
+			'RenderedRevision already has a revision with ID 123, ' .
+			'can\'t update to revision with ID 321'
+		);
+		$rr->updateRevision( $newRev );
 	}
 
 }

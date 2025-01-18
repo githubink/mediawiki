@@ -16,6 +16,7 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  * http://www.gnu.org/copyleft/gpl.html
  *
+ * @copyright © 2016 Wikimedia Foundation and contributors
  * @file
  * @ingroup Session
  */
@@ -29,11 +30,11 @@ use UnexpectedValueException;
  * Subclass of UnexpectedValueException that can be annotated with additional
  * data for debug logging.
  *
- * @copyright © 2016 Wikimedia Foundation and contributors
+ * @newable
  * @since 1.27
  */
 class MetadataMergeException extends UnexpectedValueException {
-	/** @var array $context */
+	/** @var array */
 	protected $context;
 
 	/**
@@ -45,7 +46,7 @@ class MetadataMergeException extends UnexpectedValueException {
 	public function __construct(
 		$message = '',
 		$code = 0,
-		Exception $previous = null,
+		?Exception $previous = null,
 		array $context = []
 	) {
 		parent::__construct( $message, $code, $previous );
@@ -62,7 +63,6 @@ class MetadataMergeException extends UnexpectedValueException {
 
 	/**
 	 * Set context data.
-	 * @param array $context
 	 */
 	public function setContext( array $context ) {
 		$this->context = $context;

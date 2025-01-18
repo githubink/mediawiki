@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Copyright © 2013 Yuri Astrakhan "<Firstname><Lastname>@gmail.com"
  *
@@ -18,21 +19,26 @@
  * http://www.gnu.org/copyleft/gpl.html
  */
 
+namespace MediaWiki\Tests\Api\Query;
+
+use Exception;
+
 /**
  * @group API
  * @group Database
  * @group medium
- * @covers ApiQuery
+ * @covers \MediaWiki\Api\ApiQuery
  */
 class ApiQueryContinue2Test extends ApiQueryContinueTestBase {
+	/** @var Exception|null */
 	protected $exceptionFromAddDBData;
 
 	/**
 	 * Create a set of pages. These must not change, otherwise the tests might give wrong results.
 	 *
-*@see MediaWikiTestCase::addDBDataOnce()
+	 * @see MediaWikiIntegrationTestCase::addDBDataOnce()
 	 */
-	function addDBDataOnce() {
+	public function addDBDataOnce() {
 		try {
 			$this->editPage( 'AQCT73462-A', '**AQCT73462-A**  [[AQCT73462-B]] [[AQCT73462-C]]' );
 			$this->editPage( 'AQCT73462-B', '[[AQCT73462-A]]  **AQCT73462-B** [[AQCT73462-C]]' );
@@ -50,7 +56,7 @@ class ApiQueryContinue2Test extends ApiQueryContinueTestBase {
 	 */
 	public function testA() {
 		$this->mVerbose = false;
-		$mk = function ( $g, $p, $gDir ) {
+		$mk = static function ( $g, $p, $gDir ) {
 			return [
 				'generator' => 'allpages',
 				'gapprefix' => 'AQCT73462-',

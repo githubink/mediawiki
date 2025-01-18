@@ -22,21 +22,24 @@
 
 namespace MediaWiki\Revision;
 
-use CommentStoreComment;
-use Content;
 use InvalidArgumentException;
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Content\Content;
+use MediaWiki\Page\PageIdentity;
+use MediaWiki\Page\PageIdentityValue;
 use MediaWiki\Storage\RevisionSlotsUpdate;
 use MediaWiki\User\UserIdentity;
-use MWException;
-use Title;
-use Wikimedia\Assert\Assert;
+use MediaWiki\Utils\MWTimestamp;
 
 /**
  * Mutable RevisionRecord implementation, for building new revision entries programmatically.
  * Provides setters for all fields.
  *
+ * @newable
+ *
  * @since 1.31
  * @since 1.32 Renamed from MediaWiki\Storage\MutableRevisionRecord
+ * @property MutableRevisionSlots $mSlots
  */
 class MutableRevisionRecord extends RevisionRecord {
 
@@ -50,9 +53,7 @@ class MutableRevisionRecord extends RevisionRecord {
 	 * @return MutableRevisionRecord
 	 */
 	public static function newFromParentRevision( RevisionRecord $parent ) {
-		// TODO: ideally, we wouldn't need a Title here
-		$title = Title::newFromLinkTarget( $parent->getPageAsLinkTarget() );
-		$rev = new MutableRevisionRecord( $title, $parent->getWikiId() );
+		$rev = new MutableRevisionRecord( $parent->getPage(), $parent->getWikiId() );
 
 		foreach ( $parent->getSlotRoles() as $role ) {
 			$slot = $parent->getSlot( $role, self::RAW );
@@ -66,29 +67,61 @@ class MutableRevisionRecord extends RevisionRecord {
 	}
 
 	/**
-	 * @note Avoid calling this constructor directly. Use the appropriate methods
-	 * in RevisionStore instead.
-	 *
-	 * @param Title $title The title of the page this Revision is associated with.
-	 * @param bool|string $dbDomain DB domain of the relevant wiki or false for the current one.
-	 *
-	 * @throws MWException
+	 * Returns a MutableRevisionRecord which is an updated version of $revision with $slots
+	 * added.
+	 * @param RevisionRecord $revision
+	 * @param SlotRecord[] $slots
+	 * @return MutableRevisionRecord
+	 * @since 1.36
 	 */
-	function __construct( Title $title, $dbDomain = false ) {
-		$slots = new MutableRevisionSlots();
+	public static function newUpdatedRevisionRecord(
+		RevisionRecord $revision,
+		array $slots
+	): MutableRevisionRecord {
+		$newRevisionRecord = new MutableRevisionRecord(
+			$revision->getPage(),
+			$revision->getWikiId()
+		);
 
-		parent::__construct( $title, $slots, $dbDomain );
+		$newRevisionRecord->setId( $revision->getId( $revision->getWikiId() ) );
+		$newRevisionRecord->setPageId( $revision->getPageId( $revision->getWikiId() ) );
+		$newRevisionRecord->setParentId( $revision->getParentId( $revision->getWikiId() ) );
+		$newRevisionRecord->setUser( $revision->getUser( RevisionRecord::RAW ) );
+		$newRevisionRecord->setComment( $revision->getComment( RevisionRecord::RAW ) );
 
-		$this->mSlots = $slots; // redundant, but nice for static analysis
+		foreach ( $revision->getSlots()->getSlots() as $slot ) {
+			$newRevisionRecord->setSlot( $slot );
+		}
+
+		foreach ( $slots as $slot ) {
+			$newRevisionRecord->setSlot( $slot );
+		}
+
+		return $newRevisionRecord;
+	}
+
+	/**
+	 * @stable to call.
+	 *
+	 * @param PageIdentity $page The page this RevisionRecord is associated with.
+	 * @param false|string $wikiId Relevant wiki id or self::LOCAL for the current one.
+	 */
+	public function __construct( PageIdentity $page, $wikiId = self::LOCAL ) {
+		$slots = new MutableRevisionSlots( [], function () {
+			$this->resetAggregateValues();
+		} );
+
+		parent::__construct( $page, $slots, $wikiId );
 	}
 
 	/**
 	 * @param int $parentId
+	 * @return self
 	 */
-	public function setParentId( $parentId ) {
-		Assert::parameterType( 'integer', $parentId, '$parentId' );
-
+	public function setParentId( int $parentId ) {
 		$this->mParentId = $parentId;
+
+		return $this;
 	}
 
 	/**
@@ -105,6 +138,7 @@ class MutableRevisionRecord extends RevisionRecord {
 	 *       the next call to getSize() and getSha1(), respectively.
 	 *
 	 * @param SlotRecord $slot
+	 * @return self
 	 */
 	public function setSlot( SlotRecord $slot ) {
 		if ( $slot->hasRevision() && $slot->getRevision() !== $this->getId() ) {
@@ -116,7 +150,8 @@ class MutableRevisionRecord extends RevisionRecord {
 		}
 
 		$this->mSlots->setSlot( $slot );
-		$this->resetAggregateValues();
+
+		return $this;
 	}
 
 	/**
@@ -127,10 +162,12 @@ class MutableRevisionRecord extends RevisionRecord {
 	 * @note This may cause the slot meta-data for the revision to be lazy-loaded.
 	 *
 	 * @param SlotRecord $parentSlot
+	 * @return self
 	 */
 	public function inheritSlot( SlotRecord $parentSlot ) {
 		$this->mSlots->inheritSlot( $parentSlot );
-		$this->resetAggregateValues();
+
+		return $this;
 	}
 
 	/**
@@ -146,10 +183,12 @@ class MutableRevisionRecord extends RevisionRecord {
 	 *
 	 * @param string $role
 	 * @param Content $content
+	 * @return self
 	 */
 	public function setContent( $role, Content $content ) {
 		$this->mSlots->setContent( $role, $content );
-		$this->resetAggregateValues();
+
+		return $this;
 	}
 
 	/**
@@ -163,26 +202,34 @@ class MutableRevisionRecord extends RevisionRecord {
 	 *       the next call to getSize() and getSha1(), respectively.
 	 *
 	 * @param string $role
+	 * @return self
 	 */
 	public function removeSlot( $role ) {
 		$this->mSlots->removeSlot( $role );
-		$this->resetAggregateValues();
+
+		return $this;
 	}
 
 	/**
 	 * Applies the given update to the slots of this revision.
 	 *
 	 * @param RevisionSlotsUpdate $update
+	 * @return self
 	 */
 	public function applyUpdate( RevisionSlotsUpdate $update ) {
 		$update->apply( $this->mSlots );
+
+		return $this;
 	}
 
 	/**
 	 * @param CommentStoreComment $comment
+	 * @return self
 	 */
 	public function setComment( CommentStoreComment $comment ) {
 		$this->mComment = $comment;
+
+		return $this;
 	}
 
 	/**
@@ -193,11 +240,12 @@ class MutableRevisionRecord extends RevisionRecord {
 	 * later. When in doubt, this method should not be called.
 	 *
 	 * @param string $sha1 SHA1 hash as a base36 string.
+	 * @return self
 	 */
-	public function setSha1( $sha1 ) {
-		Assert::parameterType( 'string', $sha1, '$sha1' );
-
+	public function setSha1( string $sha1 ) {
 		$this->mSha1 = $sha1;
+
+		return $this;
 	}
 
 	/**
@@ -208,93 +256,107 @@ class MutableRevisionRecord extends RevisionRecord {
 	 * later. When in doubt, this method should not be called.
 	 *
 	 * @param int $size nominal size in bogo-bytes
+	 * @return self
 	 */
-	public function setSize( $size ) {
-		Assert::parameterType( 'integer', $size, '$size' );
-
+	public function setSize( int $size ) {
 		$this->mSize = $size;
+
+		return $this;
 	}
 
 	/**
 	 * @param int $visibility
+	 * @return self
 	 */
-	public function setVisibility( $visibility ) {
-		Assert::parameterType( 'integer', $visibility, '$visibility' );
-
+	public function setVisibility( int $visibility ) {
 		$this->mDeleted = $visibility;
+
+		return $this;
 	}
 
 	/**
-	 * @param string $timestamp A timestamp understood by wfTimestamp
+	 * @param string $timestamp A timestamp understood by MWTimestamp
+	 * @return self
 	 */
-	public function setTimestamp( $timestamp ) {
-		Assert::parameterType( 'string', $timestamp, '$timestamp' );
+	public function setTimestamp( string $timestamp ) {
+		$this->mTimestamp = MWTimestamp::convert( TS_MW, $timestamp );
 
-		$this->mTimestamp = wfTimestamp( TS_MW, $timestamp );
+		return $this;
 	}
 
 	/**
 	 * @param bool $minorEdit
+	 * @return self
 	 */
-	public function setMinorEdit( $minorEdit ) {
-		Assert::parameterType( 'boolean', $minorEdit, '$minorEdit' );
-
+	public function setMinorEdit( bool $minorEdit ) {
 		$this->mMinorEdit = $minorEdit;
+
+		return $this;
 	}
 
 	/**
 	 * Set the revision ID.
 	 *
-	 * MCR migration note: this replaces Revision::setId()
+	 * MCR migration note: this replaced Revision::setId
 	 *
 	 * @warning Use this with care, especially when preparing a revision for insertion
 	 *          into the database! The revision ID should only be fixed in special cases
 	 *          like preserving the original ID when restoring a revision.
 	 *
 	 * @param int $id
+	 * @return self
 	 */
-	public function setId( $id ) {
-		Assert::parameterType( 'integer', $id, '$id' );
-
+	public function setId( int $id ) {
 		$this->mId = $id;
+
+		return $this;
 	}
 
 	/**
 	 * Sets the user identity associated with the revision
 	 *
 	 * @param UserIdentity $user
+	 * @return self
 	 */
 	public function setUser( UserIdentity $user ) {
 		$this->mUser = $user;
+
+		return $this;
 	}
 
 	/**
 	 * @param int $pageId
+	 * @return self
 	 */
-	public function setPageId( $pageId ) {
-		Assert::parameterType( 'integer', $pageId, '$pageId' );
-
-		if ( $this->mTitle->exists() && $pageId !== $this->mTitle->getArticleID() ) {
+	public function setPageId( int $pageId ) {
+		$pageIdBasedOnPage = $this->getArticleId( $this->mPage );
+		if ( $pageIdBasedOnPage && $pageIdBasedOnPage !== $this->getArticleId( $this->mPage ) ) {
 			throw new InvalidArgumentException(
-				'The given Title does not belong to page ID ' . $this->mPageId
+				'The given page does not belong to page ID ' . $this->mPageId
 			);
 		}
 
 		$this->mPageId = $pageId;
+		$this->mPage = new PageIdentityValue(
+			$pageId,
+			$this->mPage->getNamespace(),
+			$this->mPage->getDBkey(),
+			$this->mPage->getWikiId()
+		);
+
+		return $this;
 	}
 
 	/**
 	 * Returns the nominal size of this revision.
 	 *
-	 * MCR migration note: this replaces Revision::getSize
+	 * MCR migration note: this replaced Revision::getSize
 	 *
 	 * @return int The nominal size, may be computed on the fly if not yet known.
 	 */
 	public function getSize() {
 		// If not known, re-calculate and remember. Will be reset when slots change.
-		if ( $this->mSize === null ) {
-			$this->mSize = $this->mSlots->computeSize();
-		}
+		$this->mSize ??= $this->mSlots->computeSize();
 
 		return $this->mSize;
 	}
@@ -302,15 +364,13 @@ class MutableRevisionRecord extends RevisionRecord {
 	/**
 	 * Returns the base36 sha1 of this revision.
 	 *
-	 * MCR migration note: this replaces Revision::getSha1
+	 * MCR migration note: this replaced Revision::getSha1
 	 *
 	 * @return string The revision hash, may be computed on the fly if not yet known.
 	 */
 	public function getSha1() {
 		// If not known, re-calculate and remember. Will be reset when slots change.
-		if ( $this->mSha1 === null ) {
-			$this->mSha1 = $this->mSlots->computeSha1();
-		}
+		$this->mSha1 ??= $this->mSlots->computeSha1();
 
 		return $this->mSha1;
 	}
@@ -318,16 +378,16 @@ class MutableRevisionRecord extends RevisionRecord {
 	/**
 	 * Returns the slots defined for this revision as a MutableRevisionSlots instance,
 	 * which can be modified to defined the slots for this revision.
-	 *
-	 * @return MutableRevisionSlots
 	 */
-	public function getSlots() {
-		// Overwritten just guarantee the more narrow return type.
+	public function getSlots(): MutableRevisionSlots {
+		// Overwritten just to guarantee the more narrow return type.
+		// @phan-suppress-next-line PhanTypeMismatchReturnSuperType
 		return parent::getSlots();
 	}
 
 	/**
 	 * Invalidate cached aggregate values such as hash and size.
+	 * Used as a callback by MutableRevisionSlots.
 	 */
 	private function resetAggregateValues() {
 		$this->mSize = null;
@@ -335,9 +395,3 @@ class MutableRevisionRecord extends RevisionRecord {
 	}
 
 }
-
-/**
- * Retain the old class name for backwards compatibility.
- * @deprecated since 1.32
- */
-class_alias( MutableRevisionRecord::class, 'MediaWiki\Storage\MutableRevisionRecord' );

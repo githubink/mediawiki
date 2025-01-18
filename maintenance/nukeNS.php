@@ -33,7 +33,12 @@
  * based on nukePage by Rob Church
  */
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
+
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Title\Title;
 
 /**
  * Maintenance script that removes pages with only one revision from the
@@ -54,12 +59,14 @@ class NukeNS extends Maintenance {
 		$ns = $this->getOption( 'ns', NS_MEDIAWIKI );
 		$delete = $this->hasOption( 'delete' );
 		$all = $this->hasOption( 'all' );
-		$dbw = $this->getDB( DB_MASTER );
+		$dbw = $this->getPrimaryDB();
 		$this->beginTransaction( $dbw, __METHOD__ );
 
-		$tbl_pag = $dbw->tableName( 'page' );
-		$tbl_rev = $dbw->tableName( 'revision' );
-		$res = $dbw->query( "SELECT page_title FROM $tbl_pag WHERE page_namespace = $ns" );
+		$res = $dbw->newSelectQueryBuilder()
+			->select( 'page_title' )
+			->from( 'page' )
+			->where( [ 'page_namespace' => $ns ] )
+			->caller( __METHOD__ )->fetchResultSet();
 
 		$n_deleted = 0;
 
@@ -69,12 +76,11 @@ class NukeNS extends Maintenance {
 			$id = $title->getArticleID();
 
 			// Get corresponding revisions
-			$res2 = $dbw->query( "SELECT rev_id FROM $tbl_rev WHERE rev_page = $id" );
-			$revs = [];
-
-			foreach ( $res2 as $row2 ) {
-				$revs[] = $row2->rev_id;
-			}
+			$revs = $dbw->newSelectQueryBuilder()
+				->select( 'rev_id' )
+				->from( 'revision' )
+				->where( [ 'rev_page' => $id ] )
+				->caller( __METHOD__ )->fetchFieldValues();
 			$count = count( $revs );
 
 			// skip anything that looks modified (i.e. multiple revs)
@@ -85,12 +91,16 @@ class NukeNS extends Maintenance {
 				// as much as I hate to cut & paste this, it's a little different, and
 				// I already have the id & revs
 				if ( $delete ) {
-					$dbw->query( "DELETE FROM $tbl_pag WHERE page_id = $id" );
+					$dbw->newDeleteQueryBuilder()
+						->deleteFrom( 'page' )
+						->where( [ 'page_id' => $id ] )
+						->caller( __METHOD__ )->execute();
 					$this->commitTransaction( $dbw, __METHOD__ );
 					// Delete revisions as appropriate
+					/** @var NukePage $child */
 					$child = $this->runChild( NukePage::class, 'nukePage.php' );
+					'@phan-var NukePage $child';
 					$child->deleteRevisions( $revs );
-					$this->purgeRedundantText( true );
 					$n_deleted++;
 				}
 			} else {
@@ -100,16 +110,21 @@ class NukeNS extends Maintenance {
 		$this->commitTransaction( $dbw, __METHOD__ );
 
 		if ( $n_deleted > 0 ) {
+			$this->purgeRedundantText( true );
+
 			# update statistics - better to decrement existing count, or just count
 			# the page table?
-			$pages = $dbw->selectField( 'site_stats', 'ss_total_pages' );
+			$pages = $dbw->newSelectQueryBuilder()
+				->select( 'ss_total_pages' )
+				->from( 'site_stats' )
+				->caller( __METHOD__ )->fetchField();
 			$pages -= $n_deleted;
-			$dbw->update(
-				'site_stats',
-				[ 'ss_total_pages' => $pages ],
-				[ 'ss_row_id' => 1 ],
-				__METHOD__
-			);
+			$dbw->newUpdateQueryBuilder()
+				->update( 'site_stats' )
+				->set( [ 'ss_total_pages' => $pages ] )
+				->where( [ 'ss_row_id' => 1 ] )
+				->caller( __METHOD__ )
+				->execute();
 		}
 
 		if ( !$delete ) {
@@ -118,5 +133,7 @@ class NukeNS extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = NukeNS::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

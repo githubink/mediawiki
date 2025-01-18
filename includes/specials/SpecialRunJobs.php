@@ -1,7 +1,5 @@
 <?php
 /**
- * Implements Special:RunJobs
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,29 +16,48 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup SpecialPage
  */
 
-use MediaWiki\Logger\LoggerFactory;
+namespace MediaWiki\Specials;
+
+use HttpStatus;
+use JobRunner;
+use MediaWiki\Deferred\DeferredUpdates;
+use MediaWiki\Deferred\TransactionRoundDefiningUpdate;
+use MediaWiki\Json\FormatJson;
+use MediaWiki\MainConfigNames;
+use MediaWiki\SpecialPage\UnlistedSpecialPage;
+use Wikimedia\Rdbms\ReadOnlyMode;
 
 /**
  * Special page designed for running background tasks (internal use only)
  *
+ * @internal
  * @ingroup SpecialPage
+ * @ingroup JobQueue
  */
 class SpecialRunJobs extends UnlistedSpecialPage {
-	public function __construct() {
+
+	private JobRunner $jobRunner;
+	private ReadOnlyMode $readOnlyMode;
+
+	public function __construct(
+		JobRunner $jobRunner,
+		ReadOnlyMode $readOnlyMode
+	) {
 		parent::__construct( 'RunJobs' );
+		$this->jobRunner = $jobRunner;
+		$this->readOnlyMode = $readOnlyMode;
 	}
 
 	public function doesWrites() {
 		return true;
 	}
 
-	public function execute( $par = '' ) {
+	public function execute( $par ) {
 		$this->getOutput()->disable();
 
-		if ( wfReadOnly() ) {
+		if ( $this->readOnlyMode->isReadOnly() ) {
 			wfHttpError( 423, 'Locked', 'Wiki is in read-only mode.' );
 			return;
 		}
@@ -52,8 +69,9 @@ class SpecialRunJobs extends UnlistedSpecialPage {
 		}
 
 		// Validate request parameters
-		$optional = [ 'maxjobs' => 0, 'maxtime' => 30, 'type' => false, 'async' => true ];
-		$required = array_flip( [ 'title', 'tasks', 'signature', 'sigexpiry' ] );
+		$optional = [ 'maxjobs' => 0, 'maxtime' => 30, 'type' => false,
+			'async' => true, 'stats' => false ];
+		$required = array_fill_keys( [ 'title', 'tasks', 'signature', 'sigexpiry' ], true );
 		$params = array_intersect_key( $this->getRequest()->getValues(), $required + $optional );
 		$missing = array_diff_key( $required, $params );
 		if ( count( $missing ) ) {
@@ -66,7 +84,8 @@ class SpecialRunJobs extends UnlistedSpecialPage {
 		// Validate request signature
 		$squery = $params;
 		unset( $squery['signature'] );
-		$correctSignature = self::getQuerySignature( $squery, $this->getConfig()->get( 'SecretKey' ) );
+		$correctSignature = self::getQuerySignature( $squery,
+			$this->getConfig()->get( MainConfigNames::SecretKey ) );
 		$providedSignature = $params['signature'];
 		$verified = is_string( $providedSignature )
 			&& hash_equals( $correctSignature, $providedSignature );
@@ -95,14 +114,19 @@ class SpecialRunJobs extends UnlistedSpecialPage {
 				DeferredUpdates::POSTSEND
 			);
 		} else {
-			$this->doRun( $params );
-			print "Done\n";
+			$stats = $this->doRun( $params );
+
+			if ( $params['stats'] ) {
+				$this->getRequest()->response()->header( 'Content-Type: application/json' );
+				print FormatJson::encode( $stats );
+			} else {
+				print "Done\n";
+			}
 		}
 	}
 
 	protected function doRun( array $params ) {
-		$runner = new JobRunner( LoggerFactory::getInstance( 'runJobs' ) );
-		$runner->run( [
+		return $this->jobRunner->run( [
 			'type'     => $params['type'],
 			'maxJobs'  => $params['maxjobs'] ?: 1,
 			'maxTime'  => $params['maxtime'] ?: 30
@@ -119,3 +143,9 @@ class SpecialRunJobs extends UnlistedSpecialPage {
 		return hash_hmac( 'sha1', wfArrayToCgi( $query ), $secretKey );
 	}
 }
+
+/**
+ * Retain the old class name for backwards compatibility.
+ * @deprecated since 1.41
+ */
+class_alias( SpecialRunJobs::class, 'SpecialRunJobs' );

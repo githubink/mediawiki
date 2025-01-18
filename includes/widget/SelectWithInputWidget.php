@@ -4,6 +4,7 @@ namespace MediaWiki\Widget;
 
 use OOUI\DropdownInputWidget;
 use OOUI\TextInputWidget;
+use OOUI\Widget;
 
 /**
  * Select and input widget.
@@ -11,10 +12,13 @@ use OOUI\TextInputWidget;
  * @copyright 2011-2017 MediaWiki Widgets Team and others; see AUTHORS.txt
  * @license MIT
  */
-class SelectWithInputWidget extends \OOUI\Widget {
-
-	protected $textinput = null;
-	protected $dropdowninput = null;
+class SelectWithInputWidget extends Widget {
+	/** @var array */
+	protected $config;
+	/** @var TextInputWidget */
+	protected $textinput;
+	/** @var DropdownInputWidget */
+	protected $dropdowninput;
 
 	/**
 	 * A version of the SelectWithInputWidget, with `or` set to true.
@@ -24,6 +28,7 @@ class SelectWithInputWidget extends \OOUI\Widget {
 	 *   - array $config['dropdowninput'] Configuration for the DropdownInputWidget
 	 *   - bool $config['or'] Configuration for whether the widget is dropdown AND input
 	 *       or dropdown OR input
+	 *   - bool $config['required'] Configuration for whether the widget is a required input.
 	 */
 	public function __construct( array $config = [] ) {
 		// Configuration initialization
@@ -31,7 +36,8 @@ class SelectWithInputWidget extends \OOUI\Widget {
 			[
 				'textinput' => [],
 				'dropdowninput' => [],
-				'or' => false
+				'or' => false,
+				'required' => false,
 			],
 			$config
 		);
@@ -40,6 +46,9 @@ class SelectWithInputWidget extends \OOUI\Widget {
 			$config['textinput']['disabled'] = true;
 			$config['dropdowninput']['disabled'] = true;
 		}
+
+		$config['textinput']['required'] = $config['or'] ? false : $config['required'];
+		$config['dropdowninput']['required'] = $config['required'];
 
 		parent::__construct( $config );
 
@@ -63,6 +72,7 @@ class SelectWithInputWidget extends \OOUI\Widget {
 		$config['dropdowninput'] = $this->config['dropdowninput'];
 		$config['dropdowninput']['dropdown']['$overlay'] = true;
 		$config['or'] = $this->config['or'];
+		$config['required'] = $this->config['required'];
 		return parent::getConfig( $config );
 	}
 }

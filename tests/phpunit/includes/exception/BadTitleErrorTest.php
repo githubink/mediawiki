@@ -1,30 +1,28 @@
 <?php
+
+use MediaWiki\Output\OutputPage;
+
 /**
- * @covers BadTitleError
+ * @covers \BadTitleError
  * @author Addshore
  */
-class BadTitleErrorTest extends MediaWikiTestCase {
+class BadTitleErrorTest extends MediaWikiIntegrationTestCase {
 
 	public function testExceptionSetsStatusCode() {
-		$this->setMwGlobals( 'wgOut', $this->getMockWgOut() );
+		$mockOut = $this->createMock( OutputPage::class );
+		$mockOut->expects( $this->once() )
+			->method( 'setStatusCode' )
+			->with( 404 );
+		$this->setMwGlobals( 'wgOut', $mockOut );
+
 		try {
 			throw new BadTitleError();
 		} catch ( BadTitleError $e ) {
 			ob_start();
 			$e->report();
 			$text = ob_get_clean();
-			$this->assertContains( $e->getText(), $text );
+			$this->assertStringContainsString( $e->getMessage(), $text );
 		}
-	}
-
-	private function getMockWgOut() {
-		$mock = $this->getMockBuilder( OutputPage::class )
-			->disableOriginalConstructor()
-			->getMock();
-		$mock->expects( $this->once() )
-			->method( 'setStatusCode' )
-			->with( 400 );
-		return $mock;
 	}
 
 }

@@ -1,7 +1,5 @@
 <?php
 /**
- * Class to walk into a list of User objects.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -20,29 +18,35 @@
  * @file
  */
 
+namespace MediaWiki\User;
+
+use stdClass;
 use Wikimedia\Rdbms\IResultWrapper;
 
-class UserArrayFromResult extends UserArray implements Countable {
+/**
+ * @internal Call and type against UserArray instead.
+ */
+class UserArrayFromResult extends UserArray {
 	/** @var IResultWrapper */
 	public $res;
 
 	/** @var int */
 	public $key;
 
-	/** @var bool|User */
+	/** @var User|false */
 	public $current;
 
 	/**
 	 * @param IResultWrapper $res
 	 */
-	function __construct( $res ) {
+	public function __construct( $res ) {
 		$this->res = $res;
 		$this->key = 0;
 		$this->setCurrent( $this->res->current() );
 	}
 
 	/**
-	 * @param bool|stdClass $row
+	 * @param stdClass|false $row
 	 * @return void
 	 */
 	protected function setCurrent( $row ) {
@@ -53,40 +57,34 @@ class UserArrayFromResult extends UserArray implements Countable {
 		}
 	}
 
-	/**
-	 * @return int
-	 */
-	public function count() {
+	public function count(): int {
 		return $this->res->numRows();
 	}
 
-	/**
-	 * @return User
-	 */
-	function current() {
+	public function current(): User {
 		return $this->current;
 	}
 
-	function key() {
+	public function key(): int {
 		return $this->key;
 	}
 
-	function next() {
-		$row = $this->res->next();
+	public function next(): void {
+		$row = $this->res->fetchObject();
 		$this->setCurrent( $row );
 		$this->key++;
 	}
 
-	function rewind() {
+	public function rewind(): void {
 		$this->res->rewind();
 		$this->key = 0;
 		$this->setCurrent( $this->res->current() );
 	}
 
-	/**
-	 * @return bool
-	 */
-	function valid() {
+	public function valid(): bool {
 		return $this->current !== false;
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( UserArrayFromResult::class, 'UserArrayFromResult' );

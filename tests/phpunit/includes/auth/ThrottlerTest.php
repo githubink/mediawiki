@@ -1,23 +1,35 @@
 <?php
 
-namespace MediaWiki\Auth;
+namespace MediaWiki\Tests\Auth;
 
-use BagOStuff;
-use HashBagOStuff;
+use InvalidArgumentException;
+use MediaWiki\Auth\Throttler;
+use MediaWiki\MainConfigNames;
+use MediaWikiIntegrationTestCase;
 use Psr\Log\AbstractLogger;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Wikimedia\ObjectCache\BagOStuff;
+use Wikimedia\ObjectCache\HashBagOStuff;
 use Wikimedia\TestingAccessWrapper;
 
 /**
  * @group AuthManager
  * @covers \MediaWiki\Auth\Throttler
  */
-class ThrottlerTest extends \MediaWikiTestCase {
+class ThrottlerTest extends MediaWikiIntegrationTestCase {
+
+	public function setUp(): void {
+		parent::setUp();
+		// Avoid issues where extensions attempt to interact with the DB when handling this hook then causing these
+		// tests to fail.
+		$this->clearHook( 'AuthenticationAttemptThrottled' );
+	}
+
 	public function testConstructor() {
-		$cache = new \HashBagOStuff();
+		$cache = new HashBagOStuff();
 		$logger = $this->getMockBuilder( AbstractLogger::class )
-			->setMethods( [ 'log' ] )
+			->onlyMethods( [ 'log' ] )
 			->getMockForAbstractClass();
 
 		$throttler = new Throttler(
@@ -39,8 +51,10 @@ class ThrottlerTest extends \MediaWikiTestCase {
 		$this->assertInstanceOf( BagOStuff::class, $throttlerPriv->cache );
 		$this->assertInstanceOf( LoggerInterface::class, $throttlerPriv->logger );
 
-		$this->setMwGlobals( [ 'wgPasswordAttemptThrottle' => [ [ 'count' => 321,
-			'seconds' => 654 ] ] ] );
+		$this->overrideConfigValue(
+			MainConfigNames::PasswordAttemptThrottle,
+			[ [ 'count' => 321, 'seconds' => 654 ] ]
+		);
 		$throttler = new Throttler();
 		$throttler->setLogger( new NullLogger() );
 		$throttlerPriv = TestingAccessWrapper::newFromObject( $throttler );
@@ -52,7 +66,7 @@ class ThrottlerTest extends \MediaWikiTestCase {
 		try {
 			new Throttler( [], [ 'foo' => 1, 'bar' => 2, 'baz' => 3 ] );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame( 'unrecognized parameters: foo, bar, baz', $ex->getMessage() );
 		}
 	}
@@ -67,7 +81,7 @@ class ThrottlerTest extends \MediaWikiTestCase {
 		$this->assertSame( $normalized, $throttlerPriv->conditions );
 	}
 
-	public function provideNormalizeThrottleConditions() {
+	public static function provideNormalizeThrottleConditions() {
 		return [
 			[
 				[],
@@ -91,7 +105,7 @@ class ThrottlerTest extends \MediaWikiTestCase {
 	}
 
 	public function testIncrease() {
-		$cache = new \HashBagOStuff();
+		$cache = new HashBagOStuff();
 		$throttler = new Throttler( [
 			[ 'count' => 2, 'seconds' => 10, ],
 			[ 'count' => 4, 'seconds' => 15, 'allIPs' => true ],
@@ -121,7 +135,7 @@ class ThrottlerTest extends \MediaWikiTestCase {
 	}
 
 	public function testZeroCount() {
-		$cache = new \HashBagOStuff();
+		$cache = new HashBagOStuff();
 		$throttler = new Throttler( [ [ 'count' => 0, 'seconds' => 10 ] ], [ 'cache' => $cache ] );
 		$throttler->setLogger( new NullLogger() );
 
@@ -136,7 +150,7 @@ class ThrottlerTest extends \MediaWikiTestCase {
 	}
 
 	public function testNamespacing() {
-		$cache = new \HashBagOStuff();
+		$cache = new HashBagOStuff();
 		$throttler1 = new Throttler( [ [ 'count' => 1, 'seconds' => 10 ] ],
 			[ 'cache' => $cache, 'type' => 'foo' ] );
 		$throttler2 = new Throttler( [ [ 'count' => 1, 'seconds' => 10 ] ],
@@ -164,37 +178,61 @@ class ThrottlerTest extends \MediaWikiTestCase {
 
 	public function testExpiration() {
 		$cache = $this->getMockBuilder( HashBagOStuff::class )
-			->setMethods( [ 'add' ] )->getMock();
+			->onlyMethods( [ 'add', 'incrWithInit' ] )->getMock();
 		$throttler = new Throttler( [ [ 'count' => 3, 'seconds' => 10 ] ], [ 'cache' => $cache ] );
 		$throttler->setLogger( new NullLogger() );
 
-		$cache->expects( $this->once() )->method( 'add' )->with( $this->anything(), 1, 10 );
+		$cache->expects( $this->once() )
+			->method( 'incrWithInit' )
+			->with( $this->anything(), 10, 1 );
 		$throttler->increase( 'SomeUser' );
 	}
 
 	/**
-	 * @expectedException \InvalidArgumentException
 	 */
 	public function testException() {
 		$throttler = new Throttler( [ [ 'count' => 3, 'seconds' => 10 ] ] );
 		$throttler->setLogger( new NullLogger() );
+		$this->expectException( InvalidArgumentException::class );
 		$throttler->increase();
 	}
 
-	public function testLog() {
-		$cache = new \HashBagOStuff();
+	public function testLogAndHook() {
+		// Add a implementation of the AuthenticationAttemptThrottled hook that expects no calls.
+		$this->setTemporaryHook(
+			'AuthenticationAttemptThrottled',
+			function () {
+				$this->fail( 'Did not expect the AuthenticationAttemptThrottled hook to be run.' );
+			}
+		);
+		$cache = new HashBagOStuff();
 		$throttler = new Throttler( [ [ 'count' => 1, 'seconds' => 10 ] ], [ 'cache' => $cache ] );
 
+		// Make the logger expect no calls
 		$logger = $this->getMockBuilder( AbstractLogger::class )
-			->setMethods( [ 'log' ] )
+			->onlyMethods( [ 'log' ] )
 			->getMockForAbstractClass();
 		$logger->expects( $this->never() )->method( 'log' );
 		$throttler->setLogger( $logger );
+		// Call the increase method and expect that the throttling did not occur.
 		$result = $throttler->increase( 'SomeUser', '1.2.3.4' );
 		$this->assertFalse( $result, 'should not throttle' );
 
+		// Replace the implementation of the AuthenticationAttemptThrottled hook which one that tests that it is called
+		// with the correct data.
+		$hookCalled = false;
+		$this->setTemporaryHook(
+			'AuthenticationAttemptThrottled',
+			function ( $type, $username, $ip ) use ( &$hookCalled ) {
+				$hookCalled = true;
+				$this->assertSame( 'custom', $type );
+				$this->assertSame( 'SomeUser', $username );
+				$this->assertSame( '1.2.3.4', $ip );
+			}
+		);
+		// Create a mock logger that expects a call.
 		$logger = $this->getMockBuilder( AbstractLogger::class )
-			->setMethods( [ 'log' ] )
+			->onlyMethods( [ 'log' ] )
 			->getMockForAbstractClass();
 		$logger->expects( $this->once() )->method( 'log' )->with( $this->anything(), $this->anything(), [
 			'throttle' => 'custom',
@@ -206,12 +244,14 @@ class ThrottlerTest extends \MediaWikiTestCase {
 			'method' => 'foo',
 		] );
 		$throttler->setLogger( $logger );
+		// Call the increase method and expect that the throttling occurred.
 		$result = $throttler->increase( 'SomeUser', '1.2.3.4', 'foo' );
 		$this->assertSame( [ 'throttleIndex' => 0, 'count' => 1, 'wait' => 10 ], $result );
+		$this->assertTrue( $hookCalled );
 	}
 
 	public function testClear() {
-		$cache = new \HashBagOStuff();
+		$cache = new HashBagOStuff();
 		$throttler = new Throttler( [ [ 'count' => 1, 'seconds' => 10 ] ], [ 'cache' => $cache ] );
 		$throttler->setLogger( new NullLogger() );
 

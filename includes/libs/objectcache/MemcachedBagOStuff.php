@@ -1,7 +1,5 @@
 <?php
 /**
- * Base class for memcached clients.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,66 +16,90 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Cache
  */
+namespace Wikimedia\ObjectCache;
+
+use Exception;
+use InvalidArgumentException;
+use RuntimeException;
 
 /**
- * Base class for memcached clients.
+ * Store data in a memcached server or memcached cluster.
+ *
+ * This is a base class for MemcachedPhpBagOStuff and MemcachedPeclBagOStuff.
  *
  * @ingroup Cache
  */
-abstract class MemcachedBagOStuff extends BagOStuff {
-	function __construct( array $params ) {
+abstract class MemcachedBagOStuff extends MediumSpecificBagOStuff {
+	/** @var string Routing prefix appended to keys during operations */
+	protected $routingPrefix;
+
+	/**
+	 * @param array $params Additional parameters include:
+	 *   - routingPrefix: a routing prefix of the form "<datacenter>/<cluster>/" used to convey
+	 *      the location/strategy to use for handling keys accessed from this instance. The prefix
+	 *      is prepended to keys during cache operations. The memcached proxy must preserve these
+	 *      prefixes in any responses that include requested keys (e.g. get/gets). The proxy is
+	 *      also assumed to strip the routing prefix from the stored key name, which allows for
+	 *      unprefixed access. This can be used with mcrouter. [optional]
+	 */
+	public function __construct( array $params ) {
+		$params['segmentationSize'] ??= 917_504; // < 1MiB
 		parent::__construct( $params );
 
-		$this->attrMap[self::ATTR_SYNCWRITES] = self::QOS_SYNCWRITES_BE; // unreliable
-		$this->segmentationSize = $params['maxPreferedKeySize'] ?? 917504; // < 1MiB
+		$this->routingPrefix = $params['routingPrefix'] ?? '';
+
+		// ...and does not use special disk-cache plugins
+		$this->attrMap[self::ATTR_DURABILITY] = self::QOS_DURABILITY_SERVICE;
 	}
 
 	/**
-	 * Construct a cache key.
+	 * Format a cache key.
 	 *
 	 * @since 1.27
+	 * @see BagOStuff::makeKeyInternal
+	 *
 	 * @param string $keyspace
-	 * @param array $args
+	 * @param string[]|int[] $components
+	 *
 	 * @return string
 	 */
-	public function makeKeyInternal( $keyspace, $args ) {
+	protected function makeKeyInternal( $keyspace, $components ) {
 		// Memcached keys have a maximum length of 255 characters. From that,
 		// subtract the number of characters we need for the keyspace and for
 		// the separator character needed for each argument. To handle some
 		// custom prefixes used by thing like WANObjectCache, limit to 205.
-		$charsLeft = 205 - strlen( $keyspace ) - count( $args );
+		$charsLeft = 205 - strlen( $keyspace ) - count( $components );
 
-		$args = array_map(
-			function ( $arg ) use ( &$charsLeft ) {
-				$arg = strtr( $arg, ' ', '_' );
+		foreach ( $components as &$component ) {
+			$component = strtr( $component, ' ', '_' );
 
-				// Make sure %, #, and non-ASCII chars are escaped
-				$arg = preg_replace_callback(
-					'/[^\x21-\x22\x24\x26-\x39\x3b-\x7e]+/',
-					function ( $m ) {
-						return rawurlencode( $m[0] );
-					},
-					$arg
-				);
+			// Make sure %, #, and non-ASCII chars are escaped
+			$component = preg_replace_callback(
+				'/[^\x21-\x22\x24\x26-\x39\x3b-\x7e]+/',
+				static function ( $m ) {
+					return rawurlencode( $m[0] );
+				},
+				$component
+			);
 
-				// 33 = 32 characters for the MD5 + 1 for the '#' prefix.
-				if ( $charsLeft > 33 && strlen( $arg ) > $charsLeft ) {
-					$arg = '#' . md5( $arg );
-				}
+			// 33 = 32 characters for the MD5 + 1 for the '#' prefix.
+			if ( $charsLeft > 33 && strlen( $component ) > $charsLeft ) {
+				$component = '#' . md5( $component );
+			}
 
-				$charsLeft -= strlen( $arg );
-				return $arg;
-			},
-			$args
-		);
-
-		if ( $charsLeft < 0 ) {
-			return $keyspace . ':BagOStuff-long-key:##' . md5( implode( ':', $args ) );
+			$charsLeft -= strlen( $component );
 		}
 
-		return $keyspace . ':' . implode( ':', $args );
+		if ( $charsLeft < 0 ) {
+			return $keyspace . ':BagOStuff-long-key:##' . md5( implode( ':', $components ) );
+		}
+
+		return $keyspace . ':' . implode( ':', $components );
+	}
+
+	protected function requireConvertGenericKey(): bool {
+		return true;
 	}
 
 	/**
@@ -85,29 +107,105 @@ abstract class MemcachedBagOStuff extends BagOStuff {
 	 * characters above the ASCII range.)
 	 *
 	 * @param string $key
+	 *
 	 * @return string
 	 * @throws Exception
 	 */
 	public function validateKeyEncoding( $key ) {
 		if ( preg_match( '/[^\x21-\x7e]+/', $key ) ) {
-			throw new Exception( "Key contains invalid characters: $key" );
+			throw new InvalidArgumentException( "Key contains invalid characters: $key" );
 		}
+
 		return $key;
 	}
 
 	/**
-	 * TTLs higher than 30 days will be detected as absolute TTLs
-	 * (UNIX timestamps), and will result in the cache entry being
-	 * discarded immediately because the expiry is in the past.
-	 * Clamp expires >30d at 30d, unless they're >=1e9 in which
-	 * case they are likely to really be absolute (1e9 = 2011-09-09)
-	 * @param int $expiry
+	 * @param string $key
+	 *
+	 * @return string
+	 */
+	protected function validateKeyAndPrependRoute( $key ) {
+		$this->validateKeyEncoding( $key );
+
+		if ( $this->routingPrefix === '' ) {
+			return $key;
+		}
+
+		if ( $key[0] === '/' ) {
+			throw new RuntimeException( "Key '$key' already contains a route." );
+		}
+
+		return $this->routingPrefix . $key;
+	}
+
+	/**
+	 * @param string $key
+	 *
+	 * @return string
+	 */
+	protected function stripRouteFromKey( $key ) {
+		if ( $this->routingPrefix === '' ) {
+			return $key;
+		}
+
+		if ( str_starts_with( $key, $this->routingPrefix ) ) {
+			return substr( $key, strlen( $this->routingPrefix ) );
+		}
+
+		return $key;
+	}
+
+	/**
+	 * @param int|float $exptime
+	 *
 	 * @return int
 	 */
-	function fixExpiry( $expiry ) {
-		if ( $expiry > 2592000 && $expiry < 1000000000 ) {
-			$expiry = 2592000;
+	protected function fixExpiry( $exptime ) {
+		if ( $exptime < 0 ) {
+			// The PECL driver does not seem to like negative relative values
+			$expiresAt = $this->getCurrentTime() + $exptime;
+		} elseif ( $this->isRelativeExpiration( $exptime ) ) {
+			// TTLs higher than 30 days will be detected as absolute TTLs
+			// (UNIX timestamps), and will result in the cache entry being
+			// discarded immediately because the expiry is in the past.
+			// Clamp expires >30d at 30d, unless they're >=1e9 in which
+			// case they are likely to really be absolute (1e9 = 2011-09-09)
+			$expiresAt = min( $exptime, self::TTL_MONTH );
+		} else {
+			$expiresAt = $exptime;
 		}
-		return (int)$expiry;
+
+		return (int)$expiresAt;
 	}
+
+	protected function doIncrWithInit( $key, $exptime, $step, $init, $flags ) {
+		if ( $flags & self::WRITE_BACKGROUND ) {
+			return $this->doIncrWithInitAsync( $key, $exptime, $step, $init );
+		} else {
+			return $this->doIncrWithInitSync( $key, $exptime, $step, $init );
+		}
+	}
+
+	/**
+	 * @param string $key
+	 * @param int $exptime
+	 * @param int $step
+	 * @param int $init
+	 *
+	 * @return bool True on success, false on failure
+	 */
+	abstract protected function doIncrWithInitAsync( $key, $exptime, $step, $init );
+
+	/**
+	 * @param string $key
+	 * @param int $exptime
+	 * @param int $step
+	 * @param int $init
+	 *
+	 * @return int|bool New value or false on failure
+	 */
+	abstract protected function doIncrWithInitSync( $key, $exptime, $step, $init );
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( MemcachedBagOStuff::class, 'MemcachedBagOStuff' );

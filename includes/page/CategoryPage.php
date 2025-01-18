@@ -1,8 +1,5 @@
 <?php
 /**
- * Special handling for category description pages.
- * Modelled after ImagePage.php.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -21,18 +18,19 @@
  * @file
  */
 
+use MediaWiki\Category\CategoryViewer;
+use MediaWiki\Title\Title;
+
 /**
- * Special handling for category description pages, showing pages,
- * subcategories and file that belong to the category
+ * Special handling for category description pages.
+ *
+ * This displays category members: subcategories, pages, and files categorised here.
+ *
+ * @method WikiCategoryPage getPage() Set by overwritten newPage() in this class
  */
 class CategoryPage extends Article {
-	# Subclasses can change this to override the viewer class.
+	/** @var string Subclasses can change this to override the viewer class. */
 	protected $mCategoryViewerClass = CategoryViewer::class;
-
-	/**
-	 * @var WikiCategoryPage
-	 */
-	protected $mPage;
 
 	/**
 	 * @param Title $title
@@ -43,21 +41,16 @@ class CategoryPage extends Article {
 		return new WikiCategoryPage( $title );
 	}
 
-	function view() {
+	public function view() {
 		$request = $this->getContext()->getRequest();
 		$diff = $request->getVal( 'diff' );
-		$diffOnly = $request->getBool( 'diffonly',
-			$this->getContext()->getUser()->getOption( 'diffonly' ) );
 
-		if ( $diff !== null && $diffOnly ) {
+		if ( $diff !== null && $this->isDiffOnlyView() ) {
 			parent::view();
 			return;
 		}
 
-		// Avoid PHP 7.1 warning of passing $this by reference
-		$categoryPage = $this;
-
-		if ( !Hooks::run( 'CategoryPageView', [ &$categoryPage ] ) ) {
+		if ( !$this->getHookRunner()->onCategoryPageView( $this ) ) {
 			return;
 		}
 
@@ -74,20 +67,23 @@ class CategoryPage extends Article {
 
 		# Use adaptive TTLs for CDN so delayed/failed purges are noticed less often
 		$outputPage = $this->getContext()->getOutput();
-		$outputPage->adaptCdnTTL( $this->mPage->getTouched(), IExpiringStore::TTL_MINUTE );
+		$outputPage->adaptCdnTTL(
+			$this->getPage()->getTouched(),
+			60
+		);
 	}
 
-	function openShowCategory() {
+	public function openShowCategory() {
 		# For overloading
 	}
 
-	function closeShowCategory() {
+	public function closeShowCategory() {
 		// Use these as defaults for back compat --catrope
 		$request = $this->getContext()->getRequest();
 		$oldFrom = $request->getVal( 'from' );
 		$oldUntil = $request->getVal( 'until' );
 
-		$reqArray = $request->getValues();
+		$reqArray = $request->getQueryValues();
 
 		$from = $until = [];
 		foreach ( [ 'page', 'subcat', 'file' ] as $type ) {
@@ -107,7 +103,7 @@ class CategoryPage extends Article {
 		unset( $reqArray["to"] );
 
 		$viewer = new $this->mCategoryViewerClass(
-			$this->getContext()->getTitle(),
+			$this->getPage(),
 			$this->getContext(),
 			$from,
 			$until,
@@ -116,13 +112,5 @@ class CategoryPage extends Article {
 		$out = $this->getContext()->getOutput();
 		$out->addHTML( $viewer->getHTML() );
 		$this->addHelpLink( 'Help:Categories' );
-	}
-
-	function getCategoryViewerClass() {
-		return $this->mCategoryViewerClass;
-	}
-
-	function setCategoryViewerClass( $class ) {
-		$this->mCategoryViewerClass = $class;
 	}
 }

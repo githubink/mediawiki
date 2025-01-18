@@ -18,58 +18,85 @@
  * @file
  */
 
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Context\ContextSource;
+use MediaWiki\Context\IContextSource;
+use MediaWiki\HookContainer\ProtectedHookAccessorTrait;
+use MediaWiki\Html\Html;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Page\PageIdentity;
+use MediaWiki\Status\Status;
+use MediaWiki\Title\ForeignTitle;
+use MediaWiki\Xml\Xml;
 
 /**
  * Reporting callback
  * @ingroup SpecialPage
  */
 class ImportReporter extends ContextSource {
-	private $reason = false;
+	use ProtectedHookAccessorTrait;
+
+	/** @var string */
+	private $reason;
+	/** @var string[] */
 	private $logTags = [];
-	private $mOriginalLogCallback = null;
-	private $mOriginalPageOutCallback = null;
+	/** @var callable|null */
+	private $mOriginalLogCallback;
+	/** @var callable|null */
+	private $mOriginalPageOutCallback;
+	/** @var int */
 	private $mLogItemCount = 0;
+	/** @var int */
+	private $mPageCount = 0;
+	/** @var bool */
+	private $mIsUpload;
+	/** @var string */
+	private $mInterwiki;
 
 	/**
 	 * @param WikiImporter $importer
 	 * @param bool $upload
 	 * @param string $interwiki
 	 * @param string|bool $reason
+	 * @param IContextSource|null $context
 	 */
-	function __construct( $importer, $upload, $interwiki, $reason = false ) {
+	public function __construct( $importer, $upload, $interwiki, $reason = "", ?IContextSource $context = null ) {
+		if ( $context ) {
+			$this->setContext( $context );
+		} else {
+			wfDeprecated( __METHOD__ . ' without $context', '1.42' );
+		}
 		$this->mOriginalPageOutCallback =
 			$importer->setPageOutCallback( [ $this, 'reportPage' ] );
 		$this->mOriginalLogCallback =
 			$importer->setLogItemCallback( [ $this, 'reportLogItem' ] );
 		$importer->setNoticeCallback( [ $this, 'reportNotice' ] );
-		$this->mPageCount = 0;
 		$this->mIsUpload = $upload;
 		$this->mInterwiki = $interwiki;
-		$this->reason = $reason;
+		$this->reason = is_string( $reason ) ? $reason : "";
 	}
 
 	/**
 	 * Sets change tags to apply to the import log entry and null revision.
 	 *
-	 * @param array $tags
+	 * @param string[] $tags
 	 * @since 1.29
 	 */
 	public function setChangeTags( array $tags ) {
 		$this->logTags = $tags;
 	}
 
-	function open() {
+	public function open() {
 		$this->getOutput()->addHTML( "<ul>\n" );
 	}
 
-	function reportNotice( $msg, array $params ) {
+	public function reportNotice( $msg, array $params ) {
 		$this->getOutput()->addHTML(
 			Html::element( 'li', [], $this->msg( $msg, $params )->text() )
 		);
 	}
 
-	function reportLogItem( ...$args ) {
+	public function reportLogItem( ...$args ) {
 		$this->mLogItemCount++;
 		if ( is_callable( $this->mOriginalLogCallback ) ) {
 			call_user_func_array( $this->mOriginalLogCallback, $args );
@@ -77,33 +104,34 @@ class ImportReporter extends ContextSource {
 	}
 
 	/**
-	 * @param Title $title
+	 * @param ?PageIdentity $pageIdentity
 	 * @param ForeignTitle $foreignTitle
 	 * @param int $revisionCount
 	 * @param int $successCount
 	 * @param array $pageInfo
 	 * @return void
 	 */
-	public function reportPage( $title, $foreignTitle, $revisionCount,
+	public function reportPage( ?PageIdentity $pageIdentity, $foreignTitle, $revisionCount,
 			$successCount, $pageInfo ) {
 		call_user_func_array( $this->mOriginalPageOutCallback, func_get_args() );
 
-		if ( $title === null ) {
+		if ( $pageIdentity === null ) {
 			# Invalid or non-importable title; a notice is already displayed
 			return;
 		}
 
 		$this->mPageCount++;
-		$linkRenderer = MediaWikiServices::getInstance()->getLinkRenderer();
+		$services = MediaWikiServices::getInstance();
+		$linkRenderer = $services->getLinkRenderer();
 		if ( $successCount > 0 ) {
 			// <bdi> prevents jumbling of the versions count
 			// in RTL wikis in case the page title is LTR
 			$this->getOutput()->addHTML(
-				"<li>" . $linkRenderer->makeLink( $title ) . " " .
-					"<bdi>" .
-					$this->msg( 'import-revision-count' )->numParams( $successCount )->escaped() .
-					"</bdi>" .
-					"</li>\n"
+				"<li>" . $linkRenderer->makeLink( $pageIdentity ) . " " .
+				"<bdi>" .
+				$this->msg( 'import-revision-count' )->numParams( $successCount )->escaped() .
+				"</bdi>" .
+				"</li>\n"
 			);
 
 			$logParams = [ '4:number:count' => $successCount ];
@@ -114,7 +142,8 @@ class ImportReporter extends ContextSource {
 			} else {
 				$pageTitle = $foreignTitle->getFullText();
 				$fullInterwikiPrefix = $this->mInterwiki;
-				Hooks::run( 'ImportLogInterwikiLink', [ &$fullInterwikiPrefix, &$pageTitle ] );
+				$this->getHookRunner()->onImportLogInterwikiLink(
+					$fullInterwikiPrefix, $pageTitle );
 
 				$interwikiTitleStr = $fullInterwikiPrefix . ':' . $pageTitle;
 				$interwiki = '[[:' . $interwikiTitleStr . ']]';
@@ -128,49 +157,54 @@ class ImportReporter extends ContextSource {
 					. $this->reason;
 			}
 
-			$comment = $detail; // quick
-			$dbw = wfGetDB( DB_MASTER );
-			$latest = $title->getLatestRevID();
-			$nullRevision = Revision::newNullRevision(
+			$comment = CommentStoreComment::newUnsavedComment( $detail );
+			$dbw = $services->getConnectionProvider()->getPrimaryDatabase();
+			$revStore = $services->getRevisionStore();
+			$nullRevRecord = $revStore->newNullRevision(
 				$dbw,
-				$title->getArticleID(),
+				$pageIdentity,
 				$comment,
 				true,
 				$this->getUser()
 			);
 
 			$nullRevId = null;
-			if ( !is_null( $nullRevision ) ) {
-				$nullRevId = $nullRevision->insertOn( $dbw );
-				$page = WikiPage::factory( $title );
-				# Update page record
-				$page->updateRevisionOn( $dbw, $nullRevision );
-				Hooks::run(
-					'NewRevisionFromEditComplete',
-					[ $page, $nullRevision, $latest, $this->getUser() ]
+			if ( $nullRevRecord !== null ) {
+				$inserted = $revStore->insertRevisionOn( $nullRevRecord, $dbw );
+				$nullRevId = $inserted->getId();
+				$parentRevId = $inserted->getParentId();
+				$page = $services->getWikiPageFactory()->newFromTitle( $pageIdentity );
+
+				// Update page record
+				$page->updateRevisionOn( $dbw, $inserted );
+
+				$fakeTags = [];
+				$this->getHookRunner()->onRevisionFromEditComplete(
+					$page, $inserted, $parentRevId, $this->getUser(), $fakeTags
 				);
 			}
 
 			// Create the import log entry
 			$logEntry = new ManualLogEntry( 'import', $action );
-			$logEntry->setTarget( $title );
+			$logEntry->setTarget( $pageIdentity );
 			$logEntry->setComment( $this->reason );
 			$logEntry->setPerformer( $this->getUser() );
 			$logEntry->setParameters( $logParams );
 			// Make sure the null revision will be tagged as well
+			// @phan-suppress-next-line PhanTypeMismatchArgumentNullable T303637
 			$logEntry->setAssociatedRevId( $nullRevId );
 			if ( count( $this->logTags ) ) {
-				$logEntry->setTags( $this->logTags );
+				$logEntry->addTags( $this->logTags );
 			}
 			$logid = $logEntry->insert();
 			$logEntry->publish( $logid );
 		} else {
-			$this->getOutput()->addHTML( "<li>" . $linkRenderer->makeKnownLink( $title ) . " " .
+			$this->getOutput()->addHTML( "<li>" . $linkRenderer->makeKnownLink( $pageIdentity ) . " " .
 				$this->msg( 'import-nonewrevisions' )->escaped() . "</li>\n" );
 		}
 	}
 
-	function close() {
+	public function close() {
 		$out = $this->getOutput();
 		if ( $this->mLogItemCount > 0 ) {
 			$msg = $this->msg( 'imported-log-entries' )->numParams( $this->mLogItemCount )->parse();

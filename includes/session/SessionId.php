@@ -23,6 +23,8 @@
 
 namespace MediaWiki\Session;
 
+use Stringable;
+
 /**
  * Value object holding the session ID in a manner that can be globally
  * updated.
@@ -32,14 +34,18 @@ namespace MediaWiki\Session;
  * can't just hold the ID as a string because we need to be able to update the
  * ID when SessionBackend::resetId() is called.
  *
+ * @newable
+ *
  * @ingroup Session
  * @since 1.27
  */
-final class SessionId {
+final class SessionId implements Stringable {
 	/** @var string */
 	private $id;
 
 	/**
+	 * @stable to call
+	 *
 	 * @param string $id
 	 */
 	public function __construct( $id ) {
@@ -47,7 +53,6 @@ final class SessionId {
 	}
 
 	/**
-	 * Get the ID
 	 * @return string
 	 */
 	public function getId() {
@@ -55,8 +60,7 @@ final class SessionId {
 	}
 
 	/**
-	 * Set the ID
-	 * @private For use by \MediaWiki\Session\SessionManager only
+	 * @internal For use by \MediaWiki\Session\SessionManager only
 	 * @param string $id
 	 */
 	public function setId( $id ) {

@@ -1,19 +1,27 @@
 <?php
 
 /**
- * @covers CustomUppercaseCollation
+ * TODO convert to a Unit test
+ *
+ * @covers \CustomUppercaseCollation
  */
-class CustomUppercaseCollationTest extends MediaWikiTestCase {
+class CustomUppercaseCollationTest extends MediaWikiIntegrationTestCase {
 
-	public function setUp() {
-		$this->collation = new CustomUppercaseCollation( [
-			'D',
-			'C',
-			'Cs',
-			'B'
-		], Language::factory( 'en' ) );
+	/** @var CustomUppercaseCollation */
+	private $collation;
 
+	protected function setUp(): void {
 		parent::setUp();
+		$this->collation = new CustomUppercaseCollation(
+			$this->getServiceContainer()->getLanguageFactory(),
+			[
+				'D',
+				'C',
+				'Cs',
+				'B'
+			],
+			'en' // digital transformation language
+		);
 	}
 
 	/**
@@ -26,7 +34,7 @@ class CustomUppercaseCollationTest extends MediaWikiTestCase {
 		$this->assertTrue( strcmp( $sortkey1, $sortkey2 ) < 0, $msg );
 	}
 
-	public function providerOrder() {
+	public static function providerOrder() {
 		return [
 			[ 'X', 'Z', 'Maintain order of unrearranged' ],
 			[ 'D', 'C', 'Actually resorts' ],
@@ -47,7 +55,7 @@ class CustomUppercaseCollationTest extends MediaWikiTestCase {
 		$this->assertSame( $this->collation->getFirstLetter( $string ), $first );
 	}
 
-	public function provideGetFirstLetter() {
+	public static function provideGetFirstLetter() {
 		return [
 			[ 'Do', 'D' ],
 			[ 'do', 'D' ],

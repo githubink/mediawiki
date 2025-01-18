@@ -1,7 +1,5 @@
 <?php
 /**
- * Implements Special:Booksources
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,21 +16,40 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup SpecialPage
  */
 
-use MediaWiki\MediaWikiServices;
+namespace MediaWiki\Specials;
+
+use MediaWiki\Content\TextContent;
+use MediaWiki\Html\Html;
+use MediaWiki\HTMLForm\HTMLForm;
+use MediaWiki\Revision\RevisionLookup;
+use MediaWiki\Revision\SlotRecord;
+use MediaWiki\SpecialPage\SpecialPage;
+use MediaWiki\Title\TitleFactory;
+use UnexpectedValueException;
 
 /**
- * Special page outputs information on sourcing a book with a particular ISBN
- * The parser creates links to this page when dealing with ISBNs in wikitext
+ * Information on citing a book with a particular ISBN.
+ *
+ * The parser can create automatic links to this special page when
+ * it sees an ISBN in wikitext.
  *
  * @author Rob Church <robchur@gmail.com>
  * @ingroup SpecialPage
  */
 class SpecialBookSources extends SpecialPage {
-	public function __construct() {
+
+	private RevisionLookup $revisionLookup;
+	private TitleFactory $titleFactory;
+
+	public function __construct(
+		RevisionLookup $revisionLookup,
+		TitleFactory $titleFactory
+	) {
 		parent::__construct( 'Booksources' );
+		$this->revisionLookup = $revisionLookup;
+		$this->titleFactory = $titleFactory;
 	}
 
 	/**
@@ -76,9 +93,9 @@ class SpecialBookSources extends SpecialPage {
 				if ( $isbn[$i] === 'X' ) {
 					return false;
 				} elseif ( $i % 2 == 0 ) {
-					$sum += $isbn[$i];
+					$sum += (int)$isbn[$i];
 				} else {
-					$sum += 3 * $isbn[$i];
+					$sum += 3 * (int)$isbn[$i];
 				}
 			}
 
@@ -91,7 +108,7 @@ class SpecialBookSources extends SpecialPage {
 				if ( $isbn[$i] === 'X' ) {
 					return false;
 				}
-				$sum += $isbn[$i] * ( $i + 1 );
+				$sum += (int)$isbn[$i] * ( $i + 1 );
 			}
 
 			$check = $sum % 11;
@@ -133,9 +150,8 @@ class SpecialBookSources extends SpecialPage {
 			],
 		];
 
-		$context = new DerivativeContext( $this->getContext() );
-		$context->setTitle( $this->getPageTitle() );
-		HTMLForm::factory( 'ooui', $formDescriptor, $context )
+		HTMLForm::factory( 'ooui', $formDescriptor, $this->getContext() )
+			->setTitle( $this->getPageTitle() )
 			->setWrapperLegendMsg( 'booksources-search-legend' )
 			->setSubmitTextMsg( 'booksources-search' )
 			->setMethod( 'get' )
@@ -148,7 +164,6 @@ class SpecialBookSources extends SpecialPage {
 	 * format and output them
 	 *
 	 * @param string $isbn
-	 * @throws MWException
 	 * @return bool
 	 */
 	private function showList( $isbn ) {
@@ -157,14 +172,15 @@ class SpecialBookSources extends SpecialPage {
 		$isbn = self::cleanIsbn( $isbn );
 		# Hook to allow extensions to insert additional HTML,
 		# e.g. for API-interacting plugins and so on
-		Hooks::run( 'BookInformation', [ $isbn, $out ] );
+		$this->getHookRunner()->onBookInformation( $isbn, $out );
 
 		# Check for a local page such as Project:Book_sources and use that if available
 		$page = $this->msg( 'booksources' )->inContentLanguage()->text();
-		$title = Title::makeTitleSafe( NS_PROJECT, $page ); # Show list in content language
+		// Show list in content language
+		$title = $this->titleFactory->makeTitleSafe( NS_PROJECT, $page );
 		if ( is_object( $title ) && $title->exists() ) {
-			$rev = Revision::newFromTitle( $title, false, Revision::READ_NORMAL );
-			$content = $rev->getContent();
+			$rev = $this->revisionLookup->getRevisionByTitle( $title );
+			$content = $rev->getContent( SlotRecord::MAIN );
 
 			if ( $content instanceof TextContent ) {
 				// XXX: in the future, this could be stored as structured data, defining a list of book sources
@@ -174,14 +190,16 @@ class SpecialBookSources extends SpecialPage {
 
 				return true;
 			} else {
-				throw new MWException( "Unexpected content type for book sources: " . $content->getModel() );
+				throw new UnexpectedValueException(
+					"Unexpected content type for book sources: " . $content->getModel()
+				);
 			}
 		}
 
 		# Fall back to the defaults given in the language file
 		$out->addWikiMsg( 'booksources-text' );
 		$out->addHTML( '<ul>' );
-		$items = MediaWikiServices::getInstance()->getContentLanguage()->getBookstoreList();
+		$items = $this->getContentLanguage()->getBookstoreList();
 		foreach ( $items as $label => $url ) {
 			$out->addHTML( $this->makeListItem( $isbn, $label, $url ) );
 		}
@@ -210,3 +228,6 @@ class SpecialBookSources extends SpecialPage {
 		return 'wiki';
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( SpecialBookSources::class, 'SpecialBookSources' );

@@ -18,10 +18,16 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use MediaWiki\MediaWikiServices;
+use StatusValue;
+use Throwable;
+
 /**
  * Format errors and warnings in the old style, for backwards compatibility.
  * @since 1.25
- * @deprecated Only for backwards compatibility, do not use
+ * @deprecated since 1.25; only for backwards compatibility, do not use
  * @ingroup API
  */
 // phpcs:ignore Squiz.Classes.ValidClassName.NotCamelCaps
@@ -31,7 +37,12 @@ class ApiErrorFormatter_BackCompat extends ApiErrorFormatter {
 	 * @param ApiResult $result Into which data will be added
 	 */
 	public function __construct( ApiResult $result ) {
-		parent::__construct( $result, Language::factory( 'en' ), 'none', false );
+		parent::__construct(
+			$result,
+			MediaWikiServices::getInstance()->getLanguageFactory()->getLanguage( 'en' ),
+			'none',
+			false
+		);
 	}
 
 	public function getFormat() {
@@ -39,18 +50,19 @@ class ApiErrorFormatter_BackCompat extends ApiErrorFormatter {
 	}
 
 	public function arrayFromStatus( StatusValue $status, $type = 'error', $format = null ) {
-		if ( $status->isGood() || !$status->getErrors() ) {
+		if ( $status->isGood() ) {
 			return [];
 		}
 
 		$result = [];
-		foreach ( $status->getErrorsByType( $type ) as $error ) {
-			$msg = ApiMessage::create( $error );
+		foreach ( $status->getMessages( $type ) as $msg ) {
+			$msg = ApiMessage::create( $msg );
 			$error = [
 				'message' => $msg->getKey(),
 				'params' => $msg->getParams(),
 				'code' => $msg->getApiCode(),
-			] + $error;
+				'type' => $type,
+			];
 			ApiResult::setIndexedTagName( $error['params'], 'param' );
 			$result[] = $error;
 		}
@@ -67,14 +79,14 @@ class ApiErrorFormatter_BackCompat extends ApiErrorFormatter {
 	}
 
 	/**
-	 * Format an exception as an array
+	 * Format a throwable as an array
 	 * @since 1.29
-	 * @param Exception|Throwable $exception
+	 * @param Throwable $exception
 	 * @param array $options See parent::formatException(), plus
 	 *  - bc: (bool) Return only the string, not an array
 	 * @return array|string
 	 */
-	public function formatException( $exception, array $options = [] ) {
+	public function formatException( Throwable $exception, array $options = [] ) {
 		$ret = parent::formatException( $exception, $options );
 		return empty( $options['bc'] ) ? $ret : $ret['info'];
 	}
@@ -125,3 +137,6 @@ class ApiErrorFormatter_BackCompat extends ApiErrorFormatter {
 		}
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiErrorFormatter_BackCompat::class, 'ApiErrorFormatter_BackCompat' );

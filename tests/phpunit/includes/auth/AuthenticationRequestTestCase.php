@@ -1,11 +1,23 @@
 <?php
 
-namespace MediaWiki\Auth;
+namespace MediaWiki\Tests\Auth;
+
+use MediaWiki\Auth\AuthenticationRequest;
+use MediaWiki\Message\Message;
+use MediaWikiIntegrationTestCase;
+use ReflectionMethod;
+use const E_USER_DEPRECATED;
 
 /**
  * @group AuthManager
  */
-abstract class AuthenticationRequestTestCase extends \MediaWikiTestCase {
+abstract class AuthenticationRequestTestCase extends MediaWikiIntegrationTestCase {
+
+	/**
+	 * @param array $args
+	 *
+	 * @return AuthenticationRequest
+	 */
 	abstract protected function getInstance( array $args = [] );
 
 	/**
@@ -13,27 +25,27 @@ abstract class AuthenticationRequestTestCase extends \MediaWikiTestCase {
 	 */
 	public function testGetFieldInfo( array $args ) {
 		$info = $this->getInstance( $args )->getFieldInfo();
-		$this->assertType( 'array', $info );
+		$this->assertIsArray( $info );
 
 		foreach ( $info as $field => $data ) {
-			$this->assertType( 'array', $data, "Field $field" );
+			$this->assertIsArray( $data, "Field $field" );
 			$this->assertArrayHasKey( 'type', $data, "Field $field" );
 			$this->assertArrayHasKey( 'label', $data, "Field $field" );
-			$this->assertInstanceOf( \Message::class, $data['label'], "Field $field, label" );
+			$this->assertInstanceOf( Message::class, $data['label'], "Field $field, label" );
 
 			if ( $data['type'] !== 'null' ) {
 				$this->assertArrayHasKey( 'help', $data, "Field $field" );
-				$this->assertInstanceOf( \Message::class, $data['help'], "Field $field, help" );
+				$this->assertInstanceOf( Message::class, $data['help'], "Field $field, help" );
 			}
 
 			if ( isset( $data['optional'] ) ) {
-				$this->assertType( 'bool', $data['optional'], "Field $field, optional" );
+				$this->assertIsBool( $data['optional'], "Field $field, optional" );
 			}
 			if ( isset( $data['image'] ) ) {
-				$this->assertType( 'string', $data['image'], "Field $field, image" );
+				$this->assertIsString( $data['image'], "Field $field, image" );
 			}
 			if ( isset( $data['sensitive'] ) ) {
-				$this->assertType( 'bool', $data['sensitive'], "Field $field, sensitive" );
+				$this->assertIsBool( $data['sensitive'], "Field $field, sensitive" );
 			}
 			if ( $data['type'] === 'password' ) {
 				$this->assertTrue( !empty( $data['sensitive'] ),
@@ -48,9 +60,9 @@ abstract class AuthenticationRequestTestCase extends \MediaWikiTestCase {
 				case 'select':
 				case 'multiselect':
 					$this->assertArrayHasKey( 'options', $data, "Field $field" );
-					$this->assertType( 'array', $data['options'], "Field $field, options" );
+					$this->assertIsArray( $data['options'], "Field $field, options" );
 					foreach ( $data['options'] as $val => $msg ) {
-						$this->assertInstanceOf( \Message::class, $msg, "Field $field, option $val" );
+						$this->assertInstanceOf( Message::class, $msg, "Field $field, option $val" );
 					}
 					break;
 				case 'checkbox':
@@ -73,7 +85,7 @@ abstract class AuthenticationRequestTestCase extends \MediaWikiTestCase {
 	}
 
 	/**
-	 * @dataProvider provideLoadFromSubmission
+	 * @dataProvider provideLoadFromSubmissionStatically
 	 * @param array $args
 	 * @param array $data
 	 * @param array|bool $expectState
@@ -83,12 +95,34 @@ abstract class AuthenticationRequestTestCase extends \MediaWikiTestCase {
 		$ret = $instance->loadFromSubmission( $data );
 		if ( is_array( $expectState ) ) {
 			$this->assertTrue( $ret );
-			$expect = call_user_func( [ get_class( $instance ), '__set_state' ], $expectState );
+			$expect = $instance::__set_state( $expectState );
 			$this->assertEquals( $expect, $instance );
 		} else {
 			$this->assertFalse( $ret );
 		}
 	}
 
-	abstract public function provideLoadFromSubmission();
+	// abstract public static function provideLoadFromSubmission();
+
+	/**
+	 * Tempory override to make provideLoadFromSubmission static.
+	 * See T332865.
+	 */
+	final public static function provideLoadFromSubmissionStatically() {
+		$reflectionMethod = new ReflectionMethod( static::class, 'provideLoadFromSubmission' );
+		if ( $reflectionMethod->isStatic() ) {
+			return $reflectionMethod->invoke( null );
+		}
+
+		trigger_error(
+			'overriding provideLoadFromSubmission as an instance method is deprecated. (' .
+			$reflectionMethod->getFileName() . ':' . $reflectionMethod->getEndLine() . ')',
+			E_USER_DEPRECATED
+		);
+
+		return $reflectionMethod->invoke( new static() );
+	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( AuthenticationRequestTestCase::class, 'MediaWiki\\Auth\\AuthenticationRequestTestCase' );

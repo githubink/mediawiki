@@ -21,6 +21,8 @@
  * @ingroup Media
  */
 
+use Psr\Log\LoggerInterface;
+
 /**
  * Class to construct MediaHandler objects
  *
@@ -30,10 +32,8 @@ class MediaHandlerFactory {
 
 	/**
 	 * Default, MediaWiki core media handlers
-	 *
-	 * @var array
 	 */
-	private static $coreHandlers = [
+	private const CORE_HANDLERS = [
 		'image/jpeg' => JpegHandler::class,
 		'image/png' => PNGHandler::class,
 		'image/gif' => GIFHandler::class,
@@ -47,11 +47,14 @@ class MediaHandlerFactory {
 		'image/vnd.djvu' => DjVuHandler::class, // official
 		'image/x.djvu' => DjVuHandler::class, // compat
 		'image/x-djvu' => DjVuHandler::class, // compat
+		'image/jp2' => Jpeg2000Handler::class,
+		'image/jpx' => Jpeg2000Handler::class,
 	];
 
-	/**
-	 * @var array
-	 */
+	/** @var LoggerInterface */
+	private $logger;
+
+	/** @var array */
 	private $registry;
 
 	/**
@@ -61,8 +64,12 @@ class MediaHandlerFactory {
 	 */
 	private $handlers;
 
-	public function __construct( array $registry ) {
-		$this->registry = $registry + self::$coreHandlers;
+	public function __construct(
+		LoggerInterface $logger,
+		array $registry
+	) {
+		$this->logger = $logger;
+		$this->registry = $registry + self::CORE_HANDLERS;
 	}
 
 	protected function getHandlerClass( $type ) {
@@ -71,7 +78,7 @@ class MediaHandlerFactory {
 
 	/**
 	 * @param string $type mimetype
-	 * @return bool|MediaHandler
+	 * @return MediaHandler|false
 	 */
 	public function getHandler( $type ) {
 		if ( isset( $this->handlers[$type] ) ) {
@@ -83,11 +90,17 @@ class MediaHandlerFactory {
 			/** @var MediaHandler $handler */
 			$handler = new $class;
 			if ( !$handler->isEnabled() ) {
-				wfDebug( __METHOD__ . ": $class is not enabled\n" );
+				$this->logger->debug(
+					'{class} is not enabled.',
+					[ 'class' => $class ]
+				);
 				$handler = false;
 			}
 		} else {
-			wfDebug( __METHOD__ . ": no handler found for $type.\n" );
+			$this->logger->debug(
+				'no handler found for {type}.',
+				[ 'type' => $type ]
+			);
 			$handler = false;
 		}
 

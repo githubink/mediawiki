@@ -1,17 +1,32 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Content\Content;
+use MediaWiki\Content\ContentHandler;
+use MediaWiki\Content\WikitextContent;
+use MediaWiki\Context\DerivativeContext;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Output\OutputPage;
+use MediaWiki\Parser\ParserOutput;
+use MediaWiki\Request\FauxRequest;
 use MediaWiki\Revision\MutableRevisionRecord;
 use MediaWiki\Revision\RevisionRecord;
 use MediaWiki\Revision\SlotRecord;
+use MediaWiki\Status\Status;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+use MediaWiki\Utils\MWTimestamp;
 use PHPUnit\Framework\MockObject\MockObject;
+use Wikimedia\TestingAccessWrapper;
 
 /**
  * @covers \Article::view()
+ * @group Database
  */
-class ArticleViewTest extends MediaWikiTestCase {
+class ArticleViewTest extends MediaWikiIntegrationTestCase {
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
 		$this->setUserLang( 'qqx' );
@@ -28,35 +43,44 @@ class ArticleViewTest extends MediaWikiTestCase {
 	 * @param RevisionRecord[] &$revisions will be filled with the RevisionRecord for $content.
 	 *
 	 * @return WikiPage
-	 * @throws MWException
 	 */
 	private function getPage( $title, array $revisionContents = [], array &$revisions = [] ) {
 		if ( is_string( $title ) ) {
 			$title = Title::makeTitle( $this->getDefaultWikitextNS(), $title );
 		}
 
-		$page = WikiPage::factory( $title );
+		$page = $this->getServiceContainer()->getWikiPageFactory()->newFromTitle( $title );
 
 		$user = $this->getTestUser()->getUser();
+
+		// Make sure all revision have different timestamps all the time,
+		// to make timestamp asserts below deterministic.
+		$time = time() - 86400;
+		MWTimestamp::setFakeTime( $time );
 
 		foreach ( $revisionContents as $key => $cont ) {
 			if ( is_string( $cont ) ) {
 				$cont = new WikitextContent( $cont );
 			}
 
-			$u = $page->newPageUpdater( $user );
-			$u->setContent( SlotRecord::MAIN, $cont );
-			$rev = $u->saveRevision( CommentStoreComment::newUnsavedComment( 'Rev ' . $key ) );
+			$rev = $page->newPageUpdater( $user )
+				->setContent( SlotRecord::MAIN, $cont )
+				->saveRevision( CommentStoreComment::newUnsavedComment( 'Rev ' . $key ) );
 
 			$revisions[ $key ] = $rev;
+			MWTimestamp::setFakeTime( ++$time );
 		}
+		MWTimestamp::setFakeTime( false );
+
+		// Clear content model cache to support tests that mock the revision
+		$this->getServiceContainer()->getMainWANObjectCache()->clearProcessCache();
 
 		return $page;
 	}
 
 	/**
-	 * @covers Article::getOldId()
-	 * @covers Article::getRevIdFetched()
+	 * @covers \Article::getOldId()
+	 * @covers \Article::getRevIdFetched()
 	 */
 	public function testGetOldId() {
 		$revisions = [];
@@ -68,13 +92,13 @@ class ArticleViewTest extends MediaWikiTestCase {
 		// oldid in constructor
 		$article = new Article( $page->getTitle(), $idA );
 		$this->assertSame( $idA, $article->getOldID() );
-		$article->getRevisionFetched();
+		$article->fetchRevisionRecord();
 		$this->assertSame( $idA, $article->getRevIdFetched() );
 
 		// oldid 0 in constructor
 		$article = new Article( $page->getTitle(), 0 );
 		$this->assertSame( 0, $article->getOldID() );
-		$article->getRevisionFetched();
+		$article->fetchRevisionRecord();
 		$this->assertSame( $idB, $article->getRevIdFetched() );
 
 		// oldid in request
@@ -83,7 +107,7 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$context->setRequest( new FauxRequest( [ 'oldid' => $idA ] ) );
 		$article->setContext( $context );
 		$this->assertSame( $idA, $article->getOldID() );
-		$article->getRevisionFetched();
+		$article->fetchRevisionRecord();
 		$this->assertSame( $idA, $article->getRevIdFetched() );
 
 		// no oldid
@@ -92,7 +116,7 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$context->setRequest( new FauxRequest( [] ) );
 		$article->setContext( $context );
 		$this->assertSame( 0, $article->getOldID() );
-		$article->getRevisionFetched();
+		$article->fetchRevisionRecord();
 		$this->assertSame( $idB, $article->getRevIdFetched() );
 	}
 
@@ -104,9 +128,9 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( 'Test B', $this->getHtml( $output ) );
-		$this->assertNotContains( 'id="mw-revision-info"', $this->getHtml( $output ) );
-		$this->assertNotContains( 'id="mw-revision-nav"', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'Test B', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'id="mw-revision-info"', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'id="mw-revision-nav"', $this->getHtml( $output ) );
 	}
 
 	public function testViewCached() {
@@ -117,19 +141,21 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article = new Article( $page->getTitle(), 0 );
 		$article->getContext()->getOutput()->setTitle( $page->getTitle() );
 
-		$cache = MediaWikiServices::getInstance()->getParserCache();
+		$cache = $this->getServiceContainer()->getParserCache();
 		$cache->save( $po, $page, $article->getParserOptions() );
 
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( 'Cached Text', $this->getHtml( $output ) );
-		$this->assertNotContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertNotContains( 'Test B', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'Cached Text', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test A', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test B', $this->getHtml( $output ) );
 	}
 
 	/**
-	 * @covers Article::getRedirectTarget()
+	 * @covers \Article::getPage
+	 * @covers \WikiPage::getRedirectTarget
+	 * @covers \MediaWiki\Page\RedirectLookup::getRedirectTarget
 	 */
 	public function testViewRedirect() {
 		$target = Title::makeTitle( $this->getDefaultWikitextNS(), 'Test_Target' );
@@ -141,17 +167,20 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->getContext()->getOutput()->setTitle( $page->getTitle() );
 		$article->view();
 
+		$redirectStore = $this->getServiceContainer()->getRedirectStore();
+		$titleFormatter = $this->getServiceContainer()->getTitleFormatter();
+
 		$this->assertNotNull(
-			$article->getRedirectTarget()->getPrefixedDBkey()
+			$redirectStore->getRedirectTarget( $article->getPage() )
 		);
 		$this->assertSame(
 			$target->getPrefixedDBkey(),
-			$article->getRedirectTarget()->getPrefixedDBkey()
+			$titleFormatter->getPrefixedDBkey( $redirectStore->getRedirectTarget( $article->getPage() ) )
 		);
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( 'class="redirectText"', $this->getHtml( $output ) );
-		$this->assertContains(
+		$this->assertStringContainsString( 'class="redirectText"', $this->getHtml( $output ) );
+		$this->assertStringContainsString(
 			'>' . htmlspecialchars( $target->getPrefixedText() ) . '<',
 			$this->getHtml( $output )
 		);
@@ -159,17 +188,18 @@ class ArticleViewTest extends MediaWikiTestCase {
 
 	public function testViewNonText() {
 		$dummy = $this->getPage( __METHOD__, [ 'Dummy' ] );
-		$dummyRev = $dummy->getRevision()->getRevisionRecord();
+		$dummyRev = $dummy->getRevisionRecord();
 		$title = $dummy->getTitle();
 
 		/** @var MockObject|ContentHandler $mockHandler */
 		$mockHandler = $this->getMockBuilder( ContentHandler::class )
-			->setMethods(
+			->onlyMethods(
 				[
 					'isParserCacheSupported',
 					'serializeContent',
 					'unserializeContent',
 					'makeEmptyContent',
+					'getParserOutput',
 				]
 			)
 			->setConstructorArgs( [ 'NotText', [ 'application/frobnitz' ] ] )
@@ -177,23 +207,22 @@ class ArticleViewTest extends MediaWikiTestCase {
 
 		$mockHandler->method( 'isParserCacheSupported' )
 			->willReturn( false );
+		$mockHandler->method( 'getParserOutput' )
+			->willReturn( new ParserOutput( 'Structured Output' ) );
 
 		$this->setTemporaryHook(
 			'ContentHandlerForModelID',
-			function ( $id, &$handler ) use ( $mockHandler ) {
+			static function ( $id, &$handler ) use ( $mockHandler ) {
 				$handler = $mockHandler;
 			}
 		);
 
 		/** @var MockObject|Content $content */
-		$content = $this->getMock( Content::class );
-		$content->method( 'getParserOutput' )
-			->willReturn( new ParserOutput( 'Structured Output' ) );
+		$content = $this->createMock( Content::class );
 		$content->method( 'getModel' )
 			->willReturn( 'NotText' );
 		$content->expects( $this->never() )->method( 'getNativeData' );
-		$content->method( 'copy' )
-			->willReturn( $content );
+		$content->method( 'copy' )->willReturnSelf();
 
 		$rev = new MutableRevisionRecord( $title );
 		$rev->setId( $dummyRev->getId() );
@@ -204,26 +233,26 @@ class ArticleViewTest extends MediaWikiTestCase {
 
 		$rev->setContent( SlotRecord::MAIN, $content );
 
-		$rev = new Revision( $rev );
-
 		/** @var MockObject|WikiPage $page */
 		$page = $this->getMockBuilder( WikiPage::class )
-			->setMethods( [ 'getRevision', 'getLatest' ] )
+			->onlyMethods( [ 'getRevisionRecord', 'getLatest', 'getContentHandler' ] )
 			->setConstructorArgs( [ $title ] )
 			->getMock();
 
-		$page->method( 'getRevision' )
+		$page->method( 'getRevisionRecord' )
 			->willReturn( $rev );
 		$page->method( 'getLatest' )
 			->willReturn( $rev->getId() );
+		$page->method( 'getContentHandler' )
+			->willReturn( $mockHandler );
 
 		$article = Article::newFromWikiPage( $page, RequestContext::getMain() );
 		$article->getContext()->getOutput()->setTitle( $page->getTitle() );
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( 'Structured Output', $this->getHtml( $output ) );
-		$this->assertNotContains( 'Dummy', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'Structured Output', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Dummy', $this->getHtml( $output ) );
 	}
 
 	public function testViewOfOldRevision() {
@@ -236,12 +265,51 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertContains( 'id="mw-revision-info"', $output->getSubtitle() );
-		$this->assertContains( 'id="mw-revision-nav"', $output->getSubtitle() );
+		$this->assertStringContainsString( 'Test A', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'id="mw-revision-info"', $output->getSubtitle() );
+		$this->assertStringContainsString( 'id="mw-revision-nav"', $output->getSubtitle() );
 
-		$this->assertNotContains( 'id="revision-info-current"', $output->getSubtitle() );
-		$this->assertNotContains( 'Test B', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'id="revision-info-current"', $output->getSubtitle() );
+		$this->assertStringNotContainsString( 'Test B', $this->getHtml( $output ) );
+		$this->assertSame( $idA, $output->getRevisionId() );
+		$this->assertSame( $revisions[1]->getTimestamp(), $output->getRevisionTimestamp() );
+	}
+
+	public function testViewOfOldRevisionFromCache() {
+		$this->overrideConfigValues( [
+			MainConfigNames::OldRevisionParserCacheExpireTime => 100500,
+			MainConfigNames::MainCacheType => CACHE_HASH,
+		] );
+
+		$revisions = [];
+		$page = $this->getPage( __METHOD__, [ 1 => 'Test A', 2 => 'Test B' ], $revisions );
+		$idA = $revisions[1]->getId();
+		$context = RequestContext::getMain();
+		$context->setTitle( $page->getTitle() );
+
+		// View the revision once (to get it into the cache)
+		$article = new Article( $page->getTitle(), $idA );
+		$article->view();
+
+		// Reset the output page and view the revision again (from ParserCache)
+		$article = new Article( $page->getTitle(), $idA );
+		$context->setOutput( new OutputPage( $context ) );
+		$article->setContext( $context );
+
+		$outputPageBeforeHTMLRevisionId = null;
+		$this->setTemporaryHook( 'OutputPageBeforeHTML',
+			static function ( OutputPage $out ) use ( &$outputPageBeforeHTMLRevisionId ) {
+				$outputPageBeforeHTMLRevisionId = $out->getRevisionId();
+			}
+		);
+
+		$article->view();
+		$output = $article->getContext()->getOutput();
+		$this->assertStringContainsString( 'Test A', $this->getHtml( $output ) );
+		$this->assertSame( 1, substr_count( $output->getSubtitle(), 'cdx-message--warning' ) );
+		$this->assertSame( $idA, $output->getRevisionId() );
+		$this->assertSame( $idA, $outputPageBeforeHTMLRevisionId );
+		$this->assertSame( $revisions[1]->getTimestamp(), $output->getRevisionTimestamp() );
 	}
 
 	public function testViewOfCurrentRevision() {
@@ -254,9 +322,42 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( 'Test B', $this->getHtml( $output ) );
-		$this->assertContains( 'id="mw-revision-info-current"', $output->getSubtitle() );
-		$this->assertContains( 'id="mw-revision-nav"', $output->getSubtitle() );
+		$this->assertStringContainsString( 'Test B', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'id="mw-revision-info-current"', $output->getSubtitle() );
+		$this->assertStringContainsString( 'id="mw-revision-nav"', $output->getSubtitle() );
+	}
+
+	public function testViewOfCurrentRevisionDirty() {
+		$this->overrideConfigValue(
+			MainConfigNames::PoolCounterConf,
+			[
+				'ArticleView' => [
+					'class' => MockPoolCounterFailing::class,
+				]
+			]
+		);
+
+		$revisions = [];
+		$page = $this->getPage( __METHOD__, [ 1 => 'Test A' ], $revisions );
+		$idA = $revisions[1]->getId();
+
+		// Do the next edit without ParserCache produce an outdated cache entry
+		$parserCacheFactory = $this->getServiceContainer()->getParserCacheFactory();
+		$this->overrideConfigValue( MainConfigNames::ParserCacheType, CACHE_NONE );
+		$latestEditStatus = $this->editPage( $page, 'Test B' );
+		// Restore the old cache instance with the now outdated cache entry
+		$this->setService( 'ParserCacheFactory', $parserCacheFactory );
+
+		// Request the article for the latest
+		$article = new Article( $page->getTitle() );
+		$article->getContext()->getOutput()->setTitle( $page->getTitle() );
+		$article->view();
+
+		// Expected the old values to return
+		$output = $article->getContext()->getOutput();
+		$this->assertStringContainsString( 'Test A', $this->getHtml( $output ) );
+		$this->assertSame( $idA, $output->getRevisionId() );
+		$this->assertSame( $revisions[1]->getTimestamp(), $output->getRevisionTimestamp() );
 	}
 
 	public function testViewOfMissingRevision() {
@@ -269,9 +370,9 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( 'missing-revision: ' . $badId, $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'missing-revision: ' . $badId, $this->getHtml( $output ) );
 
-		$this->assertNotContains( 'Test A', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test A', $this->getHtml( $output ) );
 	}
 
 	public function testViewOfDeletedRevision() {
@@ -279,9 +380,7 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$page = $this->getPage( __METHOD__, [ 1 => 'Test A', 2 => 'Test B' ], $revisions );
 		$idA = $revisions[1]->getId();
 
-		$revDelList = new RevDelRevisionList(
-			RequestContext::getMain(), $page->getTitle(), [ $idA ]
-		);
+		$revDelList = $this->getRevDelRevisionList( $page->getTitle(), $idA );
 		$revDelList->setVisibility( [
 			'value' => [ RevisionRecord::DELETED_TEXT => 1 ],
 			'comment' => "Testing",
@@ -292,10 +391,10 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( '(rev-deleted-text-permission)', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'rev-deleted-text-permission', $this->getHtml( $output ) );
 
-		$this->assertNotContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertNotContains( 'Test B', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test A', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test B', $this->getHtml( $output ) );
 	}
 
 	public function testUnhiddenViewOfDeletedRevision() {
@@ -303,27 +402,109 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$page = $this->getPage( __METHOD__, [ 1 => 'Test A', 2 => 'Test B' ], $revisions );
 		$idA = $revisions[1]->getId();
 
-		$revDelList = new RevDelRevisionList(
-			RequestContext::getMain(), $page->getTitle(), [ $idA ]
-		);
+		$revDelList = $this->getRevDelRevisionList( $page->getTitle(), $idA );
 		$revDelList->setVisibility( [
-			'value' => [ RevisionRecord::DELETED_TEXT => 1 ],
+			'value' => [
+				RevisionRecord::DELETED_TEXT => 1,
+				RevisionRecord::DELETED_COMMENT => 1,
+				RevisionRecord::DELETED_USER => 1,
+			],
 			'comment' => "Testing",
 		] );
 
+		$realContext = RequestContext::getMain();
+		$oldUser = $realContext->getUser();
+		$oldLanguage = $realContext->getLanguage();
+
 		$article = new Article( $page->getTitle(), $idA );
-		$context = new DerivativeContext( $article->getContext() );
+		$context = new DerivativeContext( $realContext );
 		$article->setContext( $context );
 		$context->getOutput()->setTitle( $page->getTitle() );
 		$context->getRequest()->setVal( 'unhide', 1 );
 		$context->setUser( $this->getTestUser( [ 'sysop' ] )->getUser() );
+
+		// Need global user set to sysop, global state in Linker::revUserTools/Linker::revComment (T309479)
+		$realContext->setUser( $context->getUser() );
+		// Language is resetted in setUser
+		$this->setUserLang( $oldLanguage );
+
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( '(rev-deleted-text-view)', $this->getHtml( $output ) );
+		$subtitle = $output->getSubtitle();
+		$html = $this->getHtml( $output );
 
-		$this->assertContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertNotContains( 'Test B', $this->getHtml( $output ) );
+		// Test that oldid is select, not the current version
+		$this->assertStringNotContainsString( 'Test B', $html );
+
+		// Warning about rev-del must exists
+		$this->assertStringContainsString( 'rev-deleted-text-view', $html );
+
+		// Test for the hidden values
+		$this->assertStringContainsString( 'Test A', $html );
+		$this->assertStringContainsString( $revisions[1]->getUser()->getName(), $subtitle );
+		$this->assertStringContainsString( '(parentheses: Rev 1)', $subtitle );
+
+		// Should not contain the rev-del messages
+		$this->assertStringNotContainsString( '(rev-deleted-user)', $subtitle );
+		$this->assertStringNotContainsString( '(rev-deleted-comment)', $subtitle );
+
+		$realContext->setUser( $oldUser );
+	}
+
+	public function testHiddenViewOfDeletedRevision() {
+		$revisions = [];
+		$page = $this->getPage( __METHOD__, [ 1 => 'Test A', 2 => 'Test B' ], $revisions );
+		$idA = $revisions[1]->getId();
+
+		$revDelList = $this->getRevDelRevisionList( $page->getTitle(), $idA );
+		$revDelList->setVisibility( [
+			'value' => [
+				RevisionRecord::DELETED_TEXT => 1,
+				RevisionRecord::DELETED_COMMENT => 1,
+				RevisionRecord::DELETED_USER => 1,
+			],
+			'comment' => "Testing",
+		] );
+
+		$realContext = RequestContext::getMain();
+		$oldUser = $realContext->getUser();
+		$oldLanguage = $realContext->getLanguage();
+
+		$article = new Article( $page->getTitle(), $idA );
+		$context = new DerivativeContext( $realContext );
+		$article->setContext( $context );
+		$context->getOutput()->setTitle( $page->getTitle() );
+		// No unhide=1 is set in this test case
+		$context->setUser( $this->getTestUser( [ 'sysop' ] )->getUser() );
+
+		// Need global user set to sysop, global state in Linker::revUserTools/Linker::revComment (T309479)
+		$realContext->setUser( $context->getUser() );
+		// Language is resetted in setUser
+		$this->setUserLang( $oldLanguage );
+
+		$article->view();
+
+		$output = $article->getContext()->getOutput();
+		$subtitle = $output->getSubtitle();
+		$html = $this->getHtml( $output );
+
+		// Test that oldid is select, not the current version
+		$this->assertStringNotContainsString( 'Test B', $html );
+
+		// Warning about rev-del must exists
+		$this->assertStringContainsString( 'rev-deleted-text-unhide', $html );
+
+		// Test for the rev-del messages
+		$this->assertStringContainsString( '(rev-deleted-user)', $subtitle );
+		$this->assertStringContainsString( '(rev-deleted-comment)', $subtitle );
+
+		// Should not contain the hidden values
+		$this->assertStringNotContainsString( 'Test A', $html );
+		$this->assertStringNotContainsString( $revisions[1]->getUser()->getName(), $subtitle );
+		$this->assertStringNotContainsString( '(parentheses: Rev 1)', $subtitle );
+
+		$realContext->setUser( $oldUser );
 	}
 
 	public function testViewMissingPage() {
@@ -334,24 +515,24 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( '(noarticletextanon)', $this->getHtml( $output ) );
+		$this->assertStringContainsString( '(noarticletextanon)', $this->getHtml( $output ) );
 	}
 
 	public function testViewDeletedPage() {
 		$page = $this->getPage( __METHOD__, [ 1 => 'Test A', 2 => 'Test B' ] );
-		$page->doDeleteArticle( 'Test' );
+		$this->deletePage( $page );
 
 		$article = new Article( $page->getTitle() );
 		$article->getContext()->getOutput()->setTitle( $page->getTitle() );
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( 'moveddeleted', $this->getHtml( $output ) );
-		$this->assertContains( 'logentry-delete-delete', $this->getHtml( $output ) );
-		$this->assertContains( '(noarticletextanon)', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'moveddeleted', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'logentry-delete-delete', $this->getHtml( $output ) );
+		$this->assertStringContainsString( '(noarticletextanon)', $this->getHtml( $output ) );
 
-		$this->assertNotContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertNotContains( 'Test B', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test A', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test B', $this->getHtml( $output ) );
 	}
 
 	public function testViewMessagePage() {
@@ -363,11 +544,11 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains(
+		$this->assertStringContainsString(
 			wfMessage( 'mainpage' )->inContentLanguage()->parse(),
 			$this->getHtml( $output )
 		);
-		$this->assertNotContains( '(noarticletextanon)', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( '(noarticletextanon)', $this->getHtml( $output ) );
 	}
 
 	public function testViewMissingUserPage() {
@@ -383,8 +564,11 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( '(noarticletextanon)', $this->getHtml( $output ) );
-		$this->assertNotContains( '(userpage-userdoesnotexist-view)', $this->getHtml( $output ) );
+		$this->assertStringContainsString( '(noarticletextanon)', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString(
+			'(userpage-userdoesnotexist-view)',
+			$this->getHtml( $output )
+		);
 	}
 
 	public function testViewUserPageOfNonexistingUser() {
@@ -399,8 +583,11 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( '(noarticletextanon)', $this->getHtml( $output ) );
-		$this->assertContains( '(userpage-userdoesnotexist-view:', $this->getHtml( $output ) );
+		$this->assertStringContainsString( '(noarticletextanon)', $this->getHtml( $output ) );
+		$this->assertStringContainsString(
+			'(userpage-userdoesnotexist-view:',
+			$this->getHtml( $output )
+		);
 	}
 
 	public function testArticleViewHeaderHook() {
@@ -424,45 +611,9 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertNotContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertContains( 'Hook Text', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test A', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'Hook Text', $this->getHtml( $output ) );
 		$this->assertSame( 'Hook Title', $output->getPageTitle() );
-	}
-
-	public function testArticleContentViewCustomHook() {
-		$page = $this->getPage( __METHOD__, [ 1 => 'Test A' ] );
-
-		$article = new Article( $page->getTitle(), 0 );
-		$article->getContext()->getOutput()->setTitle( $page->getTitle() );
-
-		// use ArticleViewHeader hook to bypass the parser cache
-		$this->setTemporaryHook(
-			'ArticleViewHeader',
-			function ( Article $articlePage, &$outputDone, &$useParserCache ) use ( $article ) {
-				$useParserCache = false;
-			}
-		);
-
-		$this->setTemporaryHook(
-			'ArticleContentViewCustom',
-			function ( Content $content, Title $title, OutputPage $output ) use ( $page ) {
-				$this->assertSame( $page->getTitle(), $title, '$title' );
-				$this->assertSame( 'Test A', $content->getText(), '$content' );
-
-				$output->addHTML( 'Hook Text' );
-				return false;
-			}
-		);
-
-		$this->hideDeprecated(
-			'ArticleContentViewCustom hook (used in hook-ArticleContentViewCustom-closure)'
-		);
-
-		$article->view();
-
-		$output = $article->getContext()->getOutput();
-		$this->assertNotContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertContains( 'Hook Text', $this->getHtml( $output ) );
 	}
 
 	public function testArticleRevisionViewCustomHook() {
@@ -474,7 +625,7 @@ class ArticleViewTest extends MediaWikiTestCase {
 		// use ArticleViewHeader hook to bypass the parser cache
 		$this->setTemporaryHook(
 			'ArticleViewHeader',
-			function ( Article $articlePage, &$outputDone, &$useParserCache ) use ( $article ) {
+			static function ( Article $articlePage, &$outputDone, &$useParserCache ) {
 				$useParserCache = false;
 			}
 		);
@@ -494,44 +645,8 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertNotContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertContains( 'Hook Text', $this->getHtml( $output ) );
-	}
-
-	public function testArticleAfterFetchContentObjectHook() {
-		$page = $this->getPage( __METHOD__, [ 1 => 'Test A' ] );
-
-		$article = new Article( $page->getTitle(), 0 );
-		$article->getContext()->getOutput()->setTitle( $page->getTitle() );
-
-		// use ArticleViewHeader hook to bypass the parser cache
-		$this->setTemporaryHook(
-			'ArticleViewHeader',
-			function ( Article $articlePage, &$outputDone, &$useParserCache ) use ( $article ) {
-				$useParserCache = false;
-			}
-		);
-
-		$this->setTemporaryHook(
-			'ArticleAfterFetchContentObject',
-			function ( Article &$articlePage, Content &$content ) use ( $page, $article ) {
-				$this->assertSame( $article, $articlePage, '$articlePage' );
-				$this->assertSame( 'Test A', $content->getText(), '$content' );
-
-				$content = new WikitextContent( 'Hook Text' );
-			}
-		);
-
-		$this->hideDeprecated(
-			'ArticleAfterFetchContentObject hook'
-			. ' (used in hook-ArticleAfterFetchContentObject-closure)'
-		);
-
-		$article->view();
-
-		$output = $article->getContext()->getOutput();
-		$this->assertNotContains( 'Test A', $this->getHtml( $output ) );
-		$this->assertContains( 'Hook Text', $this->getHtml( $output ) );
+		$this->assertStringNotContainsString( 'Test A', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'Hook Text', $this->getHtml( $output ) );
 	}
 
 	public function testShowMissingArticleHook() {
@@ -552,8 +667,124 @@ class ArticleViewTest extends MediaWikiTestCase {
 		$article->view();
 
 		$output = $article->getContext()->getOutput();
-		$this->assertContains( '(noarticletextanon)', $this->getHtml( $output ) );
-		$this->assertContains( 'Hook Text', $this->getHtml( $output ) );
+		$this->assertStringContainsString( '(noarticletextanon)', $this->getHtml( $output ) );
+		$this->assertStringContainsString( 'Hook Text', $this->getHtml( $output ) );
 	}
 
+	/**
+	 * @covers \Article::showViewError()
+	 */
+	public function testViewLatestError() {
+		$page = $this->getPage( __METHOD__, [ 1 => 'Test A' ] );
+
+		$article = new Article( $page->getTitle(), 0 );
+		$output = $article->getContext()->getOutput();
+		$output->setTitle( $page->getTitle() );
+
+		// use ArticleViewHeader hook to bypass the parser cache
+		$this->setTemporaryHook(
+			'ArticleViewHeader',
+			static function ( Article $articlePage, &$outputDone, &$useParserCache ) {
+				$useParserCache = false;
+			}
+		);
+
+		$article = TestingAccessWrapper::newFromObject( $article );
+		$article->fetchResult = Status::newFatal(
+			'rev-deleted-text-permission',
+			$page->getTitle()->getPrefixedDBkey()
+		);
+
+		$article->view();
+
+		$this->assertStringContainsString(
+			'rev-deleted-text-permission: ArticleViewTest::testViewLatestError',
+			$this->getHtml( $output )
+		);
+	}
+
+	/**
+	 * @covers \Article::showViewError()
+	 */
+	public function testViewOldError() {
+		$revisions = [];
+		$page = $this->getPage( __METHOD__, [ 1 => 'Test A', 2 => 'Test B' ], $revisions );
+		$idA = $revisions[1]->getId();
+
+		$article = new Article( $page->getTitle(), $idA );
+		$output = $article->getContext()->getOutput();
+		$output->setTitle( $page->getTitle() );
+
+		$article = TestingAccessWrapper::newFromObject( $article );
+		$article->fetchResult = Status::newFatal(
+			'rev-deleted-text-permission',
+			$page->getTitle()->getPrefixedDBkey()
+		);
+
+		$article->view();
+
+		$this->assertStringContainsString(
+			'rev-deleted-text-permission: ArticleViewTest::testViewOldError',
+			$this->getHtml( $output )
+		);
+	}
+
+	private function getRevDelRevisionList( $title, $revisionId ) {
+		$services = $this->getServiceContainer();
+		$context = new DerivativeContext( RequestContext::getMain() );
+		$context->setUser(
+			$this->getTestUser( [ 'sysop' ] )->getUser()
+		);
+		return new RevDelRevisionList(
+			$context,
+			$title,
+			[ $revisionId ],
+			$services->getConnectionProvider(),
+			$services->getHookContainer(),
+			$services->getHtmlCacheUpdater(),
+			$services->getRevisionStore()
+		);
+	}
+
+	/**
+	 * Test the "useParsoid" parser option and the ArticleParserOptions
+	 * hook.
+	 */
+	public function testUseParsoid() {
+		// Create an appropriate test page.
+		$title = Title::makeTitle( NS_MAIN, 'UseParsoidTest' );
+		$article = new Article( $title );
+		$page = $this->getExistingTestPage( $title );
+		$page->doUserEditContent(
+			ContentHandler::makeContent(
+				'[[Foo]]',
+				$title,
+				// Force this page to be wikitext
+				CONTENT_MODEL_WIKITEXT
+			),
+			$this->getTestSysop()->getUser(),
+			'TestUseParsoid Summary',
+			EDIT_SUPPRESS_RC
+		);
+		$article->view();
+		$html = $this->getHtml( $article->getContext()->getOutput() );
+		// Confirm that this is NOT parsoid-generated HTML
+		$this->assertStringNotContainsString(
+			'rel="mw:WikiLink"',
+			$html
+		);
+
+		// Now enable Parsoid via the ArticleParserOptions hook
+		$article = new Article( $title );
+		$this->setTemporaryHook( 'ArticleParserOptions', static function ( $article, $popts ) {
+			$popts->setUseParsoid();
+		} );
+		$article->view();
+		$html = $this->getHtml( $article->getContext()->getOutput() );
+		// Look for a marker that this is Parsoid-generated HTML
+		$this->assertStringContainsString(
+			'rel="mw:WikiLink"',
+			$html
+		);
+	}
 }

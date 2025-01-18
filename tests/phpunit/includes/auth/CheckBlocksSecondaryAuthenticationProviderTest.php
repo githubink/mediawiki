@@ -1,8 +1,19 @@
 <?php
 
-namespace MediaWiki\Auth;
+namespace MediaWiki\Tests\Auth;
 
+use MediaWiki\Auth\AuthenticationResponse;
+use MediaWiki\Auth\AuthManager;
+use MediaWiki\Auth\CheckBlocksSecondaryAuthenticationProvider;
 use MediaWiki\Block\DatabaseBlock;
+use MediaWiki\Config\HashConfig;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Tests\Unit\Auth\AuthenticationProviderTestTrait;
+use MediaWiki\User\User;
+use MediaWikiIntegrationTestCase;
+use PHPUnit\Framework\MockObject\MockObject;
 use Wikimedia\TestingAccessWrapper;
 
 /**
@@ -10,30 +21,32 @@ use Wikimedia\TestingAccessWrapper;
  * @group Database
  * @covers \MediaWiki\Auth\CheckBlocksSecondaryAuthenticationProvider
  */
-class CheckBlocksSecondaryAuthenticationProviderTest extends \MediaWikiTestCase {
+class CheckBlocksSecondaryAuthenticationProviderTest extends MediaWikiIntegrationTestCase {
+	use AuthenticationProviderTestTrait;
+
 	public function testConstructor() {
 		$provider = new CheckBlocksSecondaryAuthenticationProvider();
 		$providerPriv = TestingAccessWrapper::newFromObject( $provider );
-		$config = new \HashConfig( [
-			'BlockDisablesLogin' => false
+		$config = new HashConfig( [
+			MainConfigNames::BlockDisablesLogin => false
 		] );
-		$provider->setConfig( $config );
+		$this->initProvider( $provider, $config );
 		$this->assertSame( false, $providerPriv->blockDisablesLogin );
 
 		$provider = new CheckBlocksSecondaryAuthenticationProvider(
 			[ 'blockDisablesLogin' => true ]
 		);
 		$providerPriv = TestingAccessWrapper::newFromObject( $provider );
-		$config = new \HashConfig( [
-			'BlockDisablesLogin' => false
+		$config = new HashConfig( [
+			MainConfigNames::BlockDisablesLogin => false
 		] );
-		$provider->setConfig( $config );
+		$this->initProvider( $provider, $config );
 		$this->assertSame( true, $providerPriv->blockDisablesLogin );
 	}
 
 	public function testBasics() {
 		$provider = new CheckBlocksSecondaryAuthenticationProvider();
-		$user = \User::newFromName( 'UTSysop' );
+		$user = $this->getTestSysop()->getUser();
 
 		$this->assertEquals(
 			AuthenticationResponse::newAbstain(),
@@ -62,131 +75,118 @@ class CheckBlocksSecondaryAuthenticationProviderTest extends \MediaWikiTestCase 
 		];
 	}
 
-	private function getBlockedUser() {
-		$user = \User::newFromName( 'UTBlockee' );
-		if ( $user->getID() == 0 ) {
-			$user->addToDatabase();
-			\TestUser::setPasswordForUser( $user, 'UTBlockeePassword' );
-			$user->saveSettings();
-		}
-		$oldBlock = DatabaseBlock::newFromTarget( 'UTBlockee' );
-		if ( $oldBlock ) {
-			// An old block will prevent our new one from saving.
-			$oldBlock->delete();
-		}
-		$blockOptions = [
-			'address' => 'UTBlockee',
-			'user' => $user->getID(),
-			'by' => $this->getTestSysop()->getUser()->getId(),
+	/**
+	 * @param array $blockOptions Options for DatabaseBlock
+	 * @return User
+	 */
+	private function getBlockedUser( array $blockOptions ): User {
+		$user = $this->getMutableTestUser()->getUser();
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$block = new DatabaseBlock( $blockOptions + [
+			'address' => $user,
+			'by' => $this->getTestSysop()->getUser(),
 			'reason' => __METHOD__,
 			'expiry' => time() + 100500,
-			'createAccount' => true,
-		];
-		$block = new DatabaseBlock( $blockOptions );
-		$block->insert();
+		] );
+		$blockStore->insertBlock( $block );
+		if ( $block->getType() === DatabaseBlock::TYPE_IP ) {
+			// When an ip is blocked, the provided user object needs to know the ip
+			// That allows BlockManager::getUserBlock to load the ip block for this user
+			$request = $this->getMockBuilder( FauxRequest::class )
+				->onlyMethods( [ 'getIP' ] )->getMock();
+			$request->method( 'getIP' )
+				->willReturn( $blockOptions['address'] );
+			// The global request is used by User::getRequest
+			RequestContext::getMain()->setRequest( $request );
+			// The ip from request is only used for the global user
+			RequestContext::getMain()->setUser( $user );
+		}
+
 		return $user;
 	}
 
-	public function testBeginSecondaryAuthentication() {
-		$unblockedUser = \User::newFromName( 'UTSysop' );
-		$blockedUser = $this->getBlockedUser();
-
-		$provider = new CheckBlocksSecondaryAuthenticationProvider(
-			[ 'blockDisablesLogin' => false ]
-		);
-		$this->assertEquals(
-			AuthenticationResponse::newAbstain(),
-			$provider->beginSecondaryAuthentication( $unblockedUser, [] )
-		);
-		$this->assertEquals(
-			AuthenticationResponse::newAbstain(),
-			$provider->beginSecondaryAuthentication( $blockedUser, [] )
-		);
-
-		$provider = new CheckBlocksSecondaryAuthenticationProvider(
-			[ 'blockDisablesLogin' => true ]
-		);
-		$this->assertEquals(
-			AuthenticationResponse::newPass(),
-			$provider->beginSecondaryAuthentication( $unblockedUser, [] )
-		);
-		$ret = $provider->beginSecondaryAuthentication( $blockedUser, [] );
-		$this->assertEquals( AuthenticationResponse::FAIL, $ret->status );
+	/**
+	 * @param array $blockOptions Options for DatabaseBlock
+	 * @return User
+	 */
+	private function getIpBlockedUser( array $blockOptions ) {
+		static $ip = 10;
+		return $this->getBlockedUser( [
+			'address' => '10.10.10.' . $ip++,
+		] + $blockOptions );
 	}
 
-	public function testTestUserForCreation() {
-		$provider = new CheckBlocksSecondaryAuthenticationProvider(
-			[ 'blockDisablesLogin' => false ]
-		);
-		$provider->setLogger( new \Psr\Log\NullLogger() );
-		$provider->setConfig( new \HashConfig() );
-		$provider->setManager( AuthManager::singleton() );
-
-		$unblockedUser = \User::newFromName( 'UTSysop' );
-		$blockedUser = $this->getBlockedUser();
-
-		$user = \User::newFromName( 'RandomUser' );
-
-		$this->assertEquals(
-			\StatusValue::newGood(),
-			$provider->testUserForCreation( $unblockedUser, AuthManager::AUTOCREATE_SOURCE_SESSION )
-		);
-		$this->assertEquals(
-			\StatusValue::newGood(),
-			$provider->testUserForCreation( $unblockedUser, false )
-		);
-
-		$status = $provider->testUserForCreation( $blockedUser, AuthManager::AUTOCREATE_SOURCE_SESSION );
-		$this->assertInstanceOf( \StatusValue::class, $status );
-		$this->assertFalse( $status->isOK() );
-		$this->assertTrue( $status->hasMessage( 'cantcreateaccount-text' ) );
-
-		$status = $provider->testUserForCreation( $blockedUser, false );
-		$this->assertInstanceOf( \StatusValue::class, $status );
-		$this->assertFalse( $status->isOK() );
-		$this->assertTrue( $status->hasMessage( 'cantcreateaccount-text' ) );
-	}
-
-	public function testRangeBlock() {
-		$blockOptions = [
-			'address' => '127.0.0.0/24',
+	/**
+	 * @param array $blockOptions Options for DatabaseBlock
+	 * @return User
+	 */
+	private function getGloballyIpBlockedUser( array $blockOptions ) {
+		static $ip = 100;
+		$user = $this->getMutableTestUser()->getUser();
+		TestingAccessWrapper::newFromObject( $user )->mGlobalBlock = new DatabaseBlock( $blockOptions + [
+			'address' => '10.10.10.' . $ip++,
+			'by' => $this->getTestSysop()->getUser(),
 			'reason' => __METHOD__,
-			'by' => $this->getTestSysop()->getUser()->getId(),
 			'expiry' => time() + 100500,
-			'createAccount' => true,
-		];
-		$block = new DatabaseBlock( $blockOptions );
-		$block->insert();
-		$scopeVariable = new \Wikimedia\ScopedCallback( [ $block, 'delete' ] );
-
-		$user = \User::newFromName( 'UTNormalUser' );
-		if ( $user->getID() == 0 ) {
-			$user->addToDatabase();
-			\TestUser::setPasswordForUser( $user, 'UTNormalUserPassword' );
-			$user->saveSettings();
-		}
-		$this->setMwGlobals( [ 'wgUser' => $user ] );
-		\RequestContext::getMain()->setUser( $user );
-		$newuser = \User::newFromName( 'RandomUser' );
-
-		$provider = new CheckBlocksSecondaryAuthenticationProvider(
-			[ 'blockDisablesLogin' => true ]
-		);
-		$provider->setLogger( new \Psr\Log\NullLogger() );
-		$provider->setConfig( new \HashConfig() );
-		$provider->setManager( AuthManager::singleton() );
-
-		$ret = $provider->beginSecondaryAuthentication( $user, [] );
-		$this->assertEquals( AuthenticationResponse::FAIL, $ret->status );
-
-		$status = $provider->testUserForCreation( $newuser, AuthManager::AUTOCREATE_SOURCE_SESSION );
-		$this->assertInstanceOf( \StatusValue::class, $status );
-		$this->assertFalse( $status->isOK() );
-		$this->assertTrue( $status->hasMessage( 'cantcreateaccount-range-text' ) );
-
-		$status = $provider->testUserForCreation( $newuser, false );
-		$this->assertInstanceOf( \StatusValue::class, $status );
-		$this->assertFalse( $status->isOK() );
-		$this->assertTrue( $status->hasMessage( 'cantcreateaccount-range-text' ) );
+		] );
+		return $user;
 	}
+
+	/**
+	 * @param string $blockType One of 'user', 'ip', 'global-ip', 'none'
+	 * @param array $blockOptions Options for DatabaseBlock
+	 * @return User
+	 */
+	private function getAnyBlockedUser( string $blockType, array $blockOptions = [] ) {
+		if ( $blockType === 'user' ) {
+			$user = $this->getBlockedUser( $blockOptions );
+		} elseif ( $blockType === 'ip' ) {
+			$user = $this->getIpBlockedUser( $blockOptions );
+		} elseif ( $blockType === 'global-ip' ) {
+			$user = $this->getGloballyIpBlockedUser( $blockOptions );
+		} elseif ( $blockType === 'none' ) {
+			$user = $this->getTestUser()->getUser();
+		} else {
+			$this->fail( 'Invalid block type' );
+		}
+		return $user;
+	}
+
+	/**
+	 * @dataProvider provideBeginSecondaryAuthentication
+	 */
+	public function testBeginSecondaryAuthentication(
+		string $blockType,
+		array $blockOptions,
+		bool $blockDisablesLogin,
+		string $expectedResponseStatus
+	) {
+		/** @var AuthManager|MockObject $authManager */
+		$authManager = $this->createNoOpMock( AuthManager::class );
+		$provider = new CheckBlocksSecondaryAuthenticationProvider(
+			[ 'blockDisablesLogin' => $blockDisablesLogin ]
+		);
+		$this->initProvider( $provider, new HashConfig(), null, $authManager );
+
+		$user = $this->getAnyBlockedUser( $blockType, $blockOptions );
+
+		$response = $provider->beginSecondaryAuthentication( $user, [] );
+		$this->assertEquals( $expectedResponseStatus, $response->status );
+	}
+
+	public static function provideBeginSecondaryAuthentication() {
+		// Only fail authentication when $wgBlockDisablesLogin is set, the block is not partial,
+		// and not an IP block. Global blocks could in theory go either way, but GlobalBlocking
+		// extension blocks are always IP blocks so we mock them as such.
+		return [
+			// block type (user/ip/global/none), block options, wgBlockDisablesLogin, expected response status
+			'block does not disable login' => [ 'user', [], false, AuthenticationResponse::ABSTAIN ],
+			'not blocked' => [ 'none', [], true, AuthenticationResponse::PASS ],
+			'partial block' => [ 'user', [ 'sitewide' => false ], true, AuthenticationResponse::PASS ],
+			'ip block' => [ 'ip', [], true, AuthenticationResponse::PASS ],
+			'block' => [ 'user', [], true, AuthenticationResponse::FAIL ],
+			'global block' => [ 'global-ip', [], true, AuthenticationResponse::PASS ],
+		];
+	}
+
 }

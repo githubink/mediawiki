@@ -21,17 +21,32 @@
  * @ingroup SpecialPage
  */
 
+namespace MediaWiki\SpecialPage;
+
+use MediaWiki\Title\Title;
+
 /**
+ * @stable to extend
+ *
  * @ingroup SpecialPage
  */
 abstract class SpecialRedirectToSpecial extends RedirectSpecialPage {
 	/** @var string Name of redirect target */
 	protected $redirName;
 
-	/** @var string Name of subpage of redirect target */
+	/** @var string|false Name of subpage of redirect target */
 	protected $redirSubpage;
 
-	function __construct(
+	/**
+	 * @stable to call
+	 *
+	 * @param string $name
+	 * @param string $redirName
+	 * @param string|false $redirSubpage
+	 * @param array $allowedRedirectParams
+	 * @param array $addedRedirectParams
+	 */
+	public function __construct(
 		$name, $redirName, $redirSubpage = false,
 		$allowedRedirectParams = [], $addedRedirectParams = []
 	) {
@@ -54,3 +69,6 @@ abstract class SpecialRedirectToSpecial extends RedirectSpecialPage {
 		return SpecialPage::getTitleFor( $this->redirName, $this->redirSubpage );
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( SpecialRedirectToSpecial::class, 'SpecialRedirectToSpecial' );

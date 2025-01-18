@@ -1,12 +1,12 @@
 /*!
- * OOUI v0.33.2
+ * OOUI v0.51.4
  * https://www.mediawiki.org/wiki/OOUI
  *
- * Copyright 2011–2019 OOUI Team and other contributors.
+ * Copyright 2011–2024 OOUI Team and other contributors.
  * Released under the MIT license
  * http://oojs.mit-license.org
  *
- * Date: 2019-07-10T12:25:07Z
+ * Date: 2024-12-05T17:34:41Z
  */
 ( function ( OO ) {
 
@@ -20,7 +20,7 @@
  */
 OO.ui.WikimediaUITheme = function OoUiWikimediaUITheme() {
 	// Parent constructor
-	OO.ui.WikimediaUITheme.parent.call( this );
+	OO.ui.WikimediaUITheme.super.call( this );
 };
 
 /* Setup */
@@ -33,8 +33,7 @@ OO.inheritClass( OO.ui.WikimediaUITheme, OO.ui.Theme );
  * @inheritdoc
  */
 OO.ui.WikimediaUITheme.prototype.getElementClasses = function ( element ) {
-	// Parent method
-	var variant, isFramed, isActive, isToolOrGroup,
+	const
 		variants = {
 			invert: false,
 			progressive: false,
@@ -44,18 +43,19 @@ OO.ui.WikimediaUITheme.prototype.getElementClasses = function ( element ) {
 			success: false
 		},
 		// Parent method
-		classes = OO.ui.WikimediaUITheme.parent.prototype.getElementClasses.call( this, element );
+		classes = OO.ui.WikimediaUITheme.super.prototype.getElementClasses.call( this, element );
 
 	if (
 		element instanceof OO.ui.IconWidget &&
+		// eslint-disable-next-line no-jquery/no-class-state
 		element.$element.hasClass( 'oo-ui-checkboxInputWidget-checkIcon' )
 	) {
 		// Icon on CheckboxInputWidget
 		variants.invert = true;
-	} else if ( element.supports( [ 'hasFlag' ] ) ) {
-		isFramed = element.supports( [ 'isFramed' ] ) && element.isFramed();
-		isActive = element.supports( [ 'isActive' ] ) && element.isActive();
-		isToolOrGroup =
+	} else if ( element.supports( 'hasFlag' ) ) {
+		const isFramed = element.supports( 'isFramed' ) && element.isFramed();
+		const isActive = element.supports( 'isActive' ) && element.isActive();
+		const isToolOrGroup =
 			// Check if the class exists, as classes that are not in the 'core' module may
 			// not be loaded.
 			( OO.ui.Tool && element instanceof OO.ui.Tool ) ||
@@ -99,7 +99,7 @@ OO.ui.WikimediaUITheme.prototype.getElementClasses = function ( element ) {
 		}
 	}
 
-	for ( variant in variants ) {
+	for ( const variant in variants ) {
 		classes[ variants[ variant ] ? 'on' : 'off' ].push( 'oo-ui-image-' + variant );
 	}
 

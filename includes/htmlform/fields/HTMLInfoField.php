@@ -1,12 +1,20 @@
 <?php
 
+namespace MediaWiki\HTMLForm\Field;
+
+use Closure;
+use MediaWiki\HTMLForm\HTMLFormField;
+
 /**
  * An information field (text blob), not a proper input.
+ * @stable to extend
  */
 class HTMLInfoField extends HTMLFormField {
 	/**
+	 * @stable to call
+	 *
 	 * @param array $info
-	 *   In adition to the usual HTMLFormField parameters, this can take the following fields:
+	 *   In addition to the usual HTMLFormField parameters, this can take the following fields:
 	 *   - default: the value (text) of the field. Unlike other form field types, HTMLInfoField can
 	 *     take a closure as a default value, which will be evaluated with $info as its only parameter.
 	 *   - raw: if true, the value won't be escaped.
@@ -19,6 +27,10 @@ class HTMLInfoField extends HTMLFormField {
 		parent::__construct( $info );
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getDefault() {
 		$default = parent::getDefault();
 		if ( $default instanceof Closure ) {
@@ -27,20 +39,33 @@ class HTMLInfoField extends HTMLFormField {
 		return $default;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getInputHTML( $value ) {
 		return !empty( $this->mParams['raw'] ) ? $value : htmlspecialchars( $value );
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getInputOOUI( $value ) {
 		if ( !empty( $this->mParams['raw'] ) ) {
-			$value = new OOUI\HtmlSnippet( $value );
+			$value = new \OOUI\HtmlSnippet( $value );
 		}
 
-		return new OOUI\LabelWidget( [
+		return new \OOUI\LabelWidget( [
 			'label' => $value,
+			'id' => $this->mID
 		] );
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getTableRow( $value ) {
 		if ( !empty( $this->mParams['rawrow'] ) ) {
 			return $value;
@@ -50,6 +75,7 @@ class HTMLInfoField extends HTMLFormField {
 	}
 
 	/**
+	 * @stable to override
 	 * @param string $value
 	 * @return string
 	 * @since 1.20
@@ -63,6 +89,7 @@ class HTMLInfoField extends HTMLFormField {
 	}
 
 	/**
+	 * @stable to override
 	 * @param string $value
 	 * @return string
 	 * @since 1.20
@@ -76,15 +103,17 @@ class HTMLInfoField extends HTMLFormField {
 	}
 
 	/**
+	 * @stable to override
 	 * @param mixed $value If not FieldLayout or subclass has been deprecated.
-	 * @return OOUI\FieldLayout
+	 * @return \OOUI\FieldLayout
 	 * @since 1.32
 	 */
 	public function getOOUI( $value ) {
 		if ( !empty( $this->mParams['rawrow'] ) ) {
-			if ( !( $value instanceof OOUI\FieldLayout ) ) {
-				wfDeprecated( __METHOD__ . ": 'default' parameter as a string when using" .
-					"'rawrow' (must be a FieldLayout or subclass)", '1.32' );
+			if ( !( $value instanceof \OOUI\FieldLayout ) ) {
+				wfDeprecatedMsg( __METHOD__ . ": 'default' parameter as a string when using " .
+					"'rawrow' was deprecated in MediaWiki 1.32 (must be a FieldLayout or subclass)",
+					'1.32' );
 			}
 			return $value;
 		}
@@ -92,7 +121,22 @@ class HTMLInfoField extends HTMLFormField {
 		return parent::getOOUI( $value );
 	}
 
+	public function getCodex( $value ) {
+		if ( !empty( $this->mParams['rawrow'] ) ) {
+			return $value;
+		}
+
+		return parent::getCodex( $value );
+	}
+
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	protected function needsLabel() {
 		return false;
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( HTMLInfoField::class, 'HTMLInfoField' );

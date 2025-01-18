@@ -45,8 +45,8 @@ class HttpAcceptNegotiator {
 	 * @param float[] $weights An associative array mapping accepted values to their
 	 *              respective weights.
 	 *
-	 * @param null|string $default The value to return if non of the keys in $weights
-	 *              is supported (null per default).
+	 * @param null|string $default The value to return if none of the keys in $weights
+	 *              is supported (null by default).
 	 *
 	 * @return null|string The best supported key from the $weights parameter.
 	 */
@@ -82,7 +82,7 @@ class HttpAcceptNegotiator {
 	 * @param string[] $preferences A list of acceptable values, in order of preference.
 	 *
 	 * @param null|string $default The value to return if non of the keys in $weights
-	 *              is supported (null per default).
+	 *              is supported (null by default).
 	 *
 	 * @return null|string The best supported key from the $weights parameter.
 	 */
@@ -109,7 +109,7 @@ class HttpAcceptNegotiator {
 	 *   they match if the part before the first `/` is equal.
 	 *
 	 * @param string $accepted An accepted value (may contain wildcards)
-	 * @param string  $supported A supported value.
+	 * @param string $supported A supported value.
 	 *
 	 * @return bool Whether the given supported value matches the given accepted value.
 	 */

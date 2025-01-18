@@ -2,9 +2,9 @@
 
 namespace MediaWiki\Search;
 
-use Category;
-use ParserOutput;
-use Title;
+use MediaWiki\Parser\ParserOutput;
+use MediaWiki\Parser\ParserOutputLinkTypes;
+use MediaWiki\Title\Title;
 
 /**
  * Extracts data from ParserOutput for indexing in the search engine.
@@ -37,8 +37,11 @@ class ParserOutputSearchDataExtractor {
 	public function getCategories( ParserOutput $parserOutput ) {
 		$categories = [];
 
-		foreach ( $parserOutput->getCategoryLinks() as $key ) {
-			$categories[] = Category::newFromName( $key )->getTitle()->getText();
+		foreach (
+			$parserOutput->getLinkList( ParserOutputLinkTypes::CATEGORY )
+			as [ 'link' => $link ]
+		) {
+			$categories[] = $link->getText();
 		}
 
 		return $categories;
@@ -64,11 +67,14 @@ class ParserOutputSearchDataExtractor {
 	public function getOutgoingLinks( ParserOutput $parserOutput ) {
 		$outgoingLinks = [];
 
-		foreach ( $parserOutput->getLinks() as $linkedNamespace => $namespaceLinks ) {
-			foreach ( array_keys( $namespaceLinks ) as $linkedDbKey ) {
-				$outgoingLinks[] =
-					Title::makeTitle( $linkedNamespace, $linkedDbKey )->getPrefixedDBkey();
-			}
+		foreach (
+			$parserOutput->getLinkList( ParserOutputLinkTypes::LOCAL )
+			as [ 'link' => $link ]
+		) {
+			// XXX should use a TitleFormatter
+			// XXX why is this a DBkey when all of the others are text?
+			$outgoingLinks[] =
+				Title::newFromLinkTarget( $link )->getPrefixedDBkey();
 		}
 
 		return $outgoingLinks;
@@ -83,11 +89,13 @@ class ParserOutputSearchDataExtractor {
 	public function getTemplates( ParserOutput $parserOutput ) {
 		$templates = [];
 
-		foreach ( $parserOutput->getTemplates() as $tNS => $templatesInNS ) {
-			foreach ( array_keys( $templatesInNS ) as $tDbKey ) {
-				$templateTitle = Title::makeTitle( $tNS, $tDbKey );
-				$templates[] = $templateTitle->getPrefixedText();
-			}
+		foreach (
+			$parserOutput->getLinkList( ParserOutputLinkTypes::TEMPLATE )
+			as [ 'link' => $link ]
+		) {
+			// XXX should use a TitleFormatter
+			$templates[] =
+				Title::newFromLinkTarget( $link )->getPrefixedText();
 		}
 
 		return $templates;

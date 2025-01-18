@@ -22,15 +22,52 @@
  * @file
  */
 
-use Wikimedia\AtEase\AtEase;
+namespace MediaWiki\Context;
+
+use BadMethodCallException;
+use InvalidArgumentException;
+use LogicException;
+use MediaWiki\Config\Config;
+use MediaWiki\HookContainer\HookRunner;
+use MediaWiki\Language\Language;
 use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\MainConfigNames;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Message\Message;
+use MediaWiki\Output\OutputPage;
+use MediaWiki\Permissions\Authority;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Request\WebRequest;
+use MediaWiki\Session\CsrfTokenSet;
+use MediaWiki\Session\PHPSessionHandler;
+use MediaWiki\Session\SessionManager;
+use MediaWiki\StubObject\StubGlobalUser;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+use MediaWiki\User\UserRigorOptions;
+use RuntimeException;
+use Skin;
+use Timing;
+use Wikimedia\Assert\Assert;
+use Wikimedia\AtEase\AtEase;
+use Wikimedia\Bcp47Code\Bcp47Code;
+use Wikimedia\IPUtils;
+use Wikimedia\Message\MessageParam;
+use Wikimedia\Message\MessageSpecifier;
+use Wikimedia\NonSerializable\NonSerializableTrait;
 use Wikimedia\ScopedCallback;
+use WikiPage;
 
 /**
  * Group all the pieces relevant to the context of a request into one instance
+ * @newable
+ * @note marked as newable in 1.35 for lack of a better alternative,
+ *       but should use a factory in the future and should be narrowed
+ *       down to not expose heavy weight objects.
  */
 class RequestContext implements IContextSource, MutableContext {
+	use NonSerializableTrait;
+
 	/**
 	 * @var WebRequest
 	 */
@@ -42,9 +79,14 @@ class RequestContext implements IContextSource, MutableContext {
 	private $title;
 
 	/**
-	 * @var WikiPage
+	 * @var WikiPage|null
 	 */
 	private $wikipage;
+
+	/**
+	 * @var null|string
+	 */
+	private $action;
 
 	/**
 	 * @var OutputPage
@@ -52,17 +94,22 @@ class RequestContext implements IContextSource, MutableContext {
 	private $output;
 
 	/**
-	 * @var User
+	 * @var User|null
 	 */
 	private $user;
 
 	/**
-	 * @var Language
+	 * @var Authority
+	 */
+	private $authority;
+
+	/**
+	 * @var Language|null
 	 */
 	private $lang;
 
 	/**
-	 * @var Skin
+	 * @var Skin|null
 	 */
 	private $skin;
 
@@ -77,13 +124,25 @@ class RequestContext implements IContextSource, MutableContext {
 	private $config;
 
 	/**
-	 * @var RequestContext
+	 * @var RequestContext|null
 	 */
 	private static $instance = null;
 
 	/**
-	 * @param Config $config
+	 * Boolean flag to guard against recursion in getLanguage
+	 * @var bool
 	 */
+	private $languageRecursion = false;
+
+	/** @var Skin|string|null */
+	private $skinFromHook;
+
+	/** @var bool */
+	private $skinHookCalled = false;
+
+	/** @var string|null */
+	private $skinName;
+
 	public function setConfig( Config $config ) {
 		$this->config = $config;
 	}
@@ -92,18 +151,13 @@ class RequestContext implements IContextSource, MutableContext {
 	 * @return Config
 	 */
 	public function getConfig() {
-		if ( $this->config === null ) {
-			// @todo In the future, we could move this to WebStart.php so
-			// the Config object is ready for when initialization happens
-			$this->config = MediaWikiServices::getInstance()->getMainConfig();
-		}
+		// @todo In the future, we could move this to WebStart.php so
+		// the Config object is ready for when initialization happens
+		$this->config ??= MediaWikiServices::getInstance()->getMainConfig();
 
 		return $this->config;
 	}
 
-	/**
-	 * @param WebRequest $request
-	 */
 	public function setRequest( WebRequest $request ) {
 		$this->request = $request;
 	}
@@ -113,9 +167,10 @@ class RequestContext implements IContextSource, MutableContext {
 	 */
 	public function getRequest() {
 		if ( $this->request === null ) {
-			global $wgCommandLineMode;
 			// create the WebRequest object on the fly
-			if ( $wgCommandLineMode ) {
+			if ( MW_ENTRY_POINT === 'cli' ) {
+				// Don't use real WebRequest in CLI mode, it throws errors when trying to access
+				// things that don't exist, e.g. "Unable to determine IP".
 				$this->request = new FauxRequest( [] );
 			} else {
 				$this->request = new WebRequest();
@@ -126,33 +181,23 @@ class RequestContext implements IContextSource, MutableContext {
 	}
 
 	/**
-	 * @deprecated since 1.27 use a StatsdDataFactory from MediaWikiServices (preferably injected)
-	 *
-	 * @return IBufferingStatsdDataFactory
-	 */
-	public function getStats() {
-		return MediaWikiServices::getInstance()->getStatsdDataFactory();
-	}
-
-	/**
 	 * @return Timing
 	 */
 	public function getTiming() {
-		if ( $this->timing === null ) {
-			$this->timing = new Timing( [
-				'logger' => LoggerFactory::getInstance( 'Timing' )
-			] );
-		}
+		$this->timing ??= new Timing( [
+			'logger' => LoggerFactory::getInstance( 'Timing' )
+		] );
 		return $this->timing;
 	}
 
 	/**
 	 * @param Title|null $title
 	 */
-	public function setTitle( Title $title = null ) {
+	public function setTitle( ?Title $title = null ) {
 		$this->title = $title;
-		// Erase the WikiPage so a new one with the new title gets created.
+		// Clear cache of derived getters
 		$this->wikipage = null;
+		$this->clearActionName();
 	}
 
 	/**
@@ -160,11 +205,13 @@ class RequestContext implements IContextSource, MutableContext {
 	 */
 	public function getTitle() {
 		if ( $this->title === null ) {
+			// phpcs:ignore MediaWiki.Usage.DeprecatedGlobalVariables.Deprecated$wgTitle
 			global $wgTitle; # fallback to $wg till we can improve this
 			$this->title = $wgTitle;
-			wfDebugLog(
-				'GlobalTitleFail',
-				__METHOD__ . ' called by ' . wfGetAllCallers( 5 ) . ' with no title set.'
+			$logger = LoggerFactory::getInstance( 'GlobalTitleFail' );
+			$logger->info(
+				__METHOD__ . ' called with no title set.',
+				[ 'exception' => new RuntimeException ]
 			);
 		}
 
@@ -197,7 +244,7 @@ class RequestContext implements IContextSource, MutableContext {
 		// Only pages with legitimate titles can have WikiPages.
 		// That usually means pages in non-virtual namespaces.
 		$title = $this->getTitle();
-		return $title ? $title->canExist() : false;
+		return $title && $title->canExist();
 	}
 
 	/**
@@ -211,6 +258,8 @@ class RequestContext implements IContextSource, MutableContext {
 		}
 		// Defer this to the end since setTitle sets it to null.
 		$this->wikipage = $wikiPage;
+		// Clear cache of derived getter
+		$this->clearActionName();
 	}
 
 	/**
@@ -220,24 +269,72 @@ class RequestContext implements IContextSource, MutableContext {
 	 * canUseWikiPage() to check whether this method can be called safely.
 	 *
 	 * @since 1.19
-	 * @throws MWException
 	 * @return WikiPage
 	 */
 	public function getWikiPage() {
 		if ( $this->wikipage === null ) {
 			$title = $this->getTitle();
 			if ( $title === null ) {
-				throw new MWException( __METHOD__ . ' called without Title object set' );
+				throw new BadMethodCallException( __METHOD__ . ' called without Title object set' );
 			}
-			$this->wikipage = WikiPage::factory( $title );
+			$this->wikipage = MediaWikiServices::getInstance()->getWikiPageFactory()->newFromTitle( $title );
 		}
 
 		return $this->wikipage;
 	}
 
 	/**
-	 * @param OutputPage $output
+	 * @since 1.38
+	 * @param string $action
 	 */
+	public function setActionName( string $action ): void {
+		$this->action = $action;
+	}
+
+	/**
+	 * Get the action name for the current web request.
+	 *
+	 * This generally returns "view" if the current request or process is
+	 * not for a skinned index.php web request (e.g. load.php, thumb.php,
+	 * job runner, CLI, API).
+	 *
+	 * @warning This must not be called before or during the Setup.php phase,
+	 * and may cause an error or warning if called too early.
+	 *
+	 * @since 1.38
+	 * @return string Action
+	 */
+	public function getActionName(): string {
+		// Optimisation: This is cached to avoid repeated running of the
+		// expensive operations to compute this. The computation involves creation
+		// of Article, WikiPage, and ContentHandler objects (and the various
+		// database queries these classes require to be instantiated), as well
+		// as potentially slow extension hooks in these classes.
+		//
+		// This value is frequently needed in OutputPage and in various
+		// Skin-related methods and classes.
+		$this->action ??= MediaWikiServices::getInstance()
+			->getActionFactory()
+			->getActionName( $this );
+
+		return $this->action;
+	}
+
+	private function clearActionName(): void {
+		if ( $this->action !== null ) {
+			// If we're clearing after something else has actually already computed the action,
+			// emit a warning.
+			//
+			// Doing so is unstable, given the first caller got something that turns out to be
+			// incomplete or incorrect. Even if we end up re-creating an instance of the same
+			// class, we may now be acting on a different title/skin/user etc.
+			//
+			// Re-computing the action is expensive and can be a performance problem (T302623).
+			trigger_error( 'Unexpected clearActionName after getActionName already called' );
+			$this->action = null;
+		}
+	}
+
 	public function setOutput( OutputPage $output ) {
 		$this->output = $output;
 	}
@@ -246,20 +343,19 @@ class RequestContext implements IContextSource, MutableContext {
 	 * @return OutputPage
 	 */
 	public function getOutput() {
-		if ( $this->output === null ) {
-			$this->output = new OutputPage( $this );
-		}
+		$this->output ??= new OutputPage( $this );
 
 		return $this->output;
 	}
 
-	/**
-	 * @param User $user
-	 */
 	public function setUser( User $user ) {
 		$this->user = $user;
-		// Invalidate cached user interface language
+		// Keep authority consistent
+		$this->authority = $user;
+		// Invalidate cached user interface language and skin
 		$this->lang = null;
+		$this->skin = null;
+		$this->skinName = null;
 	}
 
 	/**
@@ -267,26 +363,65 @@ class RequestContext implements IContextSource, MutableContext {
 	 */
 	public function getUser() {
 		if ( $this->user === null ) {
-			$this->user = User::newFromSession( $this->getRequest() );
+			if ( $this->authority !== null ) {
+				// Keep user consistent by using a possible set authority
+				$this->user = MediaWikiServices::getInstance()
+					->getUserFactory()
+					->newFromAuthority( $this->authority );
+			} else {
+				$this->user = User::newFromSession( $this->getRequest() );
+			}
 		}
 
 		return $this->user;
 	}
 
+	public function hasUser(): bool {
+		if ( !defined( 'MW_PHPUNIT_TEST' ) && !defined( 'MW_PARSER_TEST' ) ) {
+			throw new LogicException( __METHOD__ . '() should be called only from tests!' );
+		}
+		return $this->user !== null;
+	}
+
+	public function setAuthority( Authority $authority ) {
+		$this->authority = $authority;
+		// If needed, a User object is constructed from this authority
+		$this->user = null;
+		// Invalidate cached user interface language and skin
+		$this->lang = null;
+		$this->skin = null;
+		$this->skinName = null;
+	}
+
 	/**
-	 * Accepts a language code and ensures it's sane. Outputs a cleaned up language
-	 * code and replaces with $wgLanguageCode if not sane.
-	 * @param string $code Language code
+	 * @since 1.36
+	 * @return Authority
+	 */
+	public function getAuthority(): Authority {
+		return $this->authority ?: $this->getUser();
+	}
+
+	/**
+	 * Accepts a language code and ensures it's sensible. Outputs a cleaned up language
+	 * code and replaces with $wgLanguageCode if not sensible.
+	 * @param ?string $code Language code
 	 * @return string
 	 */
 	public static function sanitizeLangCode( $code ) {
 		global $wgLanguageCode;
 
+		if ( !$code ) {
+			return $wgLanguageCode;
+		}
+
 		// BCP 47 - letter case MUST NOT carry meaning
 		$code = strtolower( $code );
 
 		# Validate $code
-		if ( !$code || !Language::isValidCode( $code ) || $code === 'qqq' ) {
+		if ( !MediaWikiServices::getInstance()->getLanguageNameUtils()
+				->isValidCode( $code )
+			|| $code === 'qqq'
+		) {
 			$code = $wgLanguageCode;
 		}
 
@@ -295,59 +430,71 @@ class RequestContext implements IContextSource, MutableContext {
 
 	/**
 	 * @param Language|string $language Language instance or language code
-	 * @throws MWException
 	 * @since 1.19
 	 */
 	public function setLanguage( $language ) {
+		Assert::parameterType( [ Language::class, 'string' ], $language, '$language' );
 		if ( $language instanceof Language ) {
 			$this->lang = $language;
-		} elseif ( is_string( $language ) ) {
-			$language = self::sanitizeLangCode( $language );
-			$obj = Language::factory( $language );
-			$this->lang = $obj;
 		} else {
-			throw new MWException( __METHOD__ . " was passed an invalid type of data." );
+			$language = self::sanitizeLangCode( $language );
+			$obj = MediaWikiServices::getInstance()->getLanguageFactory()->getLanguage( $language );
+			$this->lang = $obj;
 		}
+		OutputPage::resetOOUI();
 	}
 
 	/**
 	 * Get the Language object.
 	 * Initialization of user or request objects can depend on this.
 	 * @return Language
-	 * @throws Exception
+	 * @throws LogicException
 	 * @since 1.19
 	 */
 	public function getLanguage() {
-		if ( isset( $this->recursion ) ) {
-			trigger_error( "Recursion detected in " . __METHOD__, E_USER_WARNING );
-			$e = new Exception;
-			wfDebugLog( 'recursion-guard', "Recursion detected:\n" . $e->getTraceAsString() );
+		if ( $this->languageRecursion === true ) {
+			throw new LogicException( 'Recursion detected' );
+		}
 
-			$code = $this->getConfig()->get( 'LanguageCode' ) ?: 'en';
-			$this->lang = Language::factory( $code );
-		} elseif ( $this->lang === null ) {
-			$this->recursion = true;
+		if ( $this->lang === null ) {
+			$this->languageRecursion = true;
 
 			try {
 				$request = $this->getRequest();
 				$user = $this->getUser();
+				$services = MediaWikiServices::getInstance();
 
-				$code = $request->getVal( 'uselang', 'user' );
+				// Optimisation: Avoid slow getVal(), this isn't user-generated content.
+				$code = $request->getRawVal( 'uselang' ) ?? 'user';
 				if ( $code === 'user' ) {
-					$code = $user->getOption( 'language' );
+					$userOptionsLookup = $services->getUserOptionsLookup();
+					$code = $userOptionsLookup->getOption( $user, 'language' );
 				}
+
+				// There are certain characters we don't allow in language code strings,
+				// but by and large almost any valid UTF-8 string will makes it past
+				// this check and the LanguageNameUtils::isValidCode method it uses.
+				// This is to support on-wiki interface message overrides for
+				// non-existent language codes. Also known as "Uselang hacks".
+				// See <https://www.mediawiki.org/wiki/Manual:Uselang_hack>
+				// For something like "en-whatever" or "de-whatever" it will end up
+				// with a mostly "en" or "de" interface, but with an extra layer of
+				// possible MessageCache overrides from `MediaWiki:*/<code>` titles.
+				// While non-ASCII works here, it is required that they are in
+				// NFC form given this will not convert to normalised form.
 				$code = self::sanitizeLangCode( $code );
 
-				Hooks::run( 'UserGetLanguageObject', [ $user, &$code, $this ] );
+				( new HookRunner( $services->getHookContainer() ) )->onUserGetLanguageObject( $user, $code, $this );
 
-				if ( $code === $this->getConfig()->get( 'LanguageCode' ) ) {
-					$this->lang = MediaWikiServices::getInstance()->getContentLanguage();
+				if ( $code === $this->getConfig()->get( MainConfigNames::LanguageCode ) ) {
+					$this->lang = $services->getContentLanguage();
 				} else {
-					$obj = Language::factory( $code );
+					$obj = $services->getLanguageFactory()
+						->getLanguage( $code );
 					$this->lang = $obj;
 				}
 			} finally {
-				unset( $this->recursion );
+				$this->languageRecursion = false;
 			}
 		}
 
@@ -355,11 +502,71 @@ class RequestContext implements IContextSource, MutableContext {
 	}
 
 	/**
-	 * @param Skin $skin
+	 * @since 1.42
+	 * @return Bcp47Code
 	 */
+	public function getLanguageCode() {
+		return $this->getLanguage();
+	}
+
 	public function setSkin( Skin $skin ) {
 		$this->skin = clone $skin;
 		$this->skin->setContext( $this );
+		$this->skinName = $skin->getSkinName();
+		OutputPage::resetOOUI();
+	}
+
+	/**
+	 * Get the name of the skin
+	 *
+	 * @since 1.41
+	 * @return string
+	 */
+	public function getSkinName() {
+		if ( $this->skinName === null ) {
+			$this->skinName = $this->fetchSkinName();
+		}
+		return $this->skinName;
+	}
+
+	/**
+	 * Get the name of the skin, without caching
+	 *
+	 * @return string
+	 */
+	private function fetchSkinName() {
+		$skinFromHook = $this->getSkinFromHook();
+		if ( $skinFromHook instanceof Skin ) {
+			// The hook provided a skin object
+			return $skinFromHook->getSkinName();
+		} elseif ( is_string( $skinFromHook ) ) {
+			// The hook provided a skin name
+			$skinName = $skinFromHook;
+		} elseif ( !in_array( 'skin', $this->getConfig()->get( MainConfigNames::HiddenPrefs ) ) ) {
+			// The normal case
+			$userOptionsLookup = MediaWikiServices::getInstance()->getUserOptionsLookup();
+			$userSkin = $userOptionsLookup->getOption( $this->getUser(), 'skin' );
+			// Optimisation: Avoid slow getVal(), this isn't user-generated content.
+			$skinName = $this->getRequest()->getRawVal( 'useskin' ) ?? $userSkin;
+		} else {
+			// User preference disabled
+			$skinName = $this->getConfig()->get( MainConfigNames::DefaultSkin );
+		}
+		return Skin::normalizeKey( $skinName );
+	}
+
+	/**
+	 * Get the skin set by the RequestContextCreateSkin hook, if there is any.
+	 *
+	 * @return Skin|string|null
+	 */
+	private function getSkinFromHook() {
+		if ( !$this->skinHookCalled ) {
+			$this->skinHookCalled = true;
+			( new HookRunner( MediaWikiServices::getInstance()->getHookContainer() ) )
+				->onRequestContextCreateSkin( $this, $this->skinFromHook );
+		}
+		return $this->skinFromHook;
 	}
 
 	/**
@@ -367,44 +574,18 @@ class RequestContext implements IContextSource, MutableContext {
 	 */
 	public function getSkin() {
 		if ( $this->skin === null ) {
-			$skin = null;
-			Hooks::run( 'RequestContextCreateSkin', [ $this, &$skin ] );
-			$factory = MediaWikiServices::getInstance()->getSkinFactory();
-
-			// If the hook worked try to set a skin from it
-			if ( $skin instanceof Skin ) {
-				$this->skin = $skin;
-			} elseif ( is_string( $skin ) ) {
-				// Normalize the key, just in case the hook did something weird.
-				$normalized = Skin::normalizeKey( $skin );
-				$this->skin = $factory->makeSkin( $normalized );
+			$skinFromHook = $this->getSkinFromHook();
+			if ( $skinFromHook instanceof Skin ) {
+				$this->skin = $skinFromHook;
+			} else {
+				$skinName = is_string( $skinFromHook )
+					? Skin::normalizeKey( $skinFromHook )
+					: $this->getSkinName();
+				$factory = MediaWikiServices::getInstance()->getSkinFactory();
+				$this->skin = $factory->makeSkin( $skinName );
 			}
-
-			// If this is still null (the hook didn't run or didn't work)
-			// then go through the normal processing to load a skin
-			if ( $this->skin === null ) {
-				if ( !in_array( 'skin', $this->getConfig()->get( 'HiddenPrefs' ) ) ) {
-					# get the user skin
-					$userSkin = $this->getUser()->getOption( 'skin' );
-					$userSkin = $this->getRequest()->getVal( 'useskin', $userSkin );
-				} else {
-					# if we're not allowing users to override, then use the default
-					$userSkin = $this->getConfig()->get( 'DefaultSkin' );
-				}
-
-				// Normalize the key in case the user is passing gibberish
-				// or has old preferences (T71566).
-				$normalized = Skin::normalizeKey( $userSkin );
-
-				// Skin::normalizeKey will also validate it, so
-				// this won't throw an exception
-				$this->skin = $factory->makeSkin( $normalized );
-			}
-
-			// After all that set a context on whatever skin got created
 			$this->skin->setContext( $this );
 		}
-
 		return $this->skin;
 	}
 
@@ -414,24 +595,20 @@ class RequestContext implements IContextSource, MutableContext {
 	 *
 	 * @param string|string[]|MessageSpecifier $key Message key, or array of keys,
 	 *   or a MessageSpecifier.
-	 * @param mixed $args,...
+	 * @phpcs:ignore Generic.Files.LineLength
+	 * @param MessageParam|MessageSpecifier|string|int|float|list<MessageParam|MessageSpecifier|string|int|float> ...$params
+	 *   See Message::params()
 	 * @return Message
 	 */
-	public function msg( $key ) {
-		$args = func_get_args();
-
-		return wfMessage( ...$args )->setContext( $this );
+	public function msg( $key, ...$params ) {
+		return wfMessage( $key, ...$params )->setContext( $this );
 	}
 
 	/**
 	 * Get the RequestContext object associated with the main request
-	 *
-	 * @return RequestContext
 	 */
-	public static function getMain() {
-		if ( self::$instance === null ) {
-			self::$instance = new self;
-		}
+	public static function getMain(): RequestContext {
+		self::$instance ??= new self;
 
 		return self::$instance;
 	}
@@ -440,13 +617,13 @@ class RequestContext implements IContextSource, MutableContext {
 	 * Get the RequestContext object associated with the main request
 	 * and gives a warning to the log, to find places, where a context maybe is missing.
 	 *
-	 * @param string $func
+	 * @param string $func @phan-mandatory-param
 	 * @return RequestContext
 	 * @since 1.24
 	 */
 	public static function getMainAndWarn( $func = __METHOD__ ) {
 		wfDebug( $func . ' called without context. ' .
-			"Using RequestContext::getMain() for sanity\n" );
+			"Using RequestContext::getMain()" );
 
 		return self::getMain();
 	}
@@ -455,8 +632,8 @@ class RequestContext implements IContextSource, MutableContext {
 	 * Resets singleton returned by getMain(). Should be called only from unit tests.
 	 */
 	public static function resetMain() {
-		if ( !( defined( 'MW_PHPUNIT_TEST' ) || defined( 'MW_PARSER_TEST' ) ) ) {
-			throw new MWException( __METHOD__ . '() should be called only from unit tests!' );
+		if ( !defined( 'MW_PHPUNIT_TEST' ) && !defined( 'MW_PARSER_TEST' ) ) {
+			throw new LogicException( __METHOD__ . '() should be called only from unit tests!' );
 		}
 		self::$instance = null;
 	}
@@ -469,7 +646,7 @@ class RequestContext implements IContextSource, MutableContext {
 	 * @since 1.21
 	 */
 	public function exportSession() {
-		$session = MediaWiki\Session\SessionManager::getGlobalSession();
+		$session = SessionManager::getGlobalSession();
 		return [
 			'ip' => $this->getRequest()->getIP(),
 			'headers' => $this->getRequest()->getAllHeaders(),
@@ -478,8 +655,12 @@ class RequestContext implements IContextSource, MutableContext {
 		];
 	}
 
+	public function getCsrfTokenSet(): CsrfTokenSet {
+		return new CsrfTokenSet( $this->getRequest() );
+	}
+
 	/**
-	 * Import an client IP address, HTTP headers, user ID, and session ID
+	 * Import a client IP address, HTTP headers, user ID, and session ID
 	 *
 	 * This sets the current session, $wgUser, and $wgRequest from $params.
 	 * Once the return value falls out of scope, the old context is restored.
@@ -493,41 +674,40 @@ class RequestContext implements IContextSource, MutableContext {
 	 * to an empty string unless session importing is *truly* needed. This
 	 * feature is somewhat deprecated.
 	 *
-	 * @note suhosin.session.encrypt may interfere with this method.
-	 *
 	 * @param array $params Result of RequestContext::exportSession()
 	 * @return ScopedCallback
-	 * @throws MWException
 	 * @since 1.21
 	 */
 	public static function importScopedSession( array $params ) {
 		if ( strlen( $params['sessionId'] ) &&
-			MediaWiki\Session\SessionManager::getGlobalSession()->isPersistent()
+			SessionManager::getGlobalSession()->isPersistent()
 		) {
-			// Sanity check to avoid sending random cookies for the wrong users.
+			// Check to avoid sending random cookies for the wrong users.
 			// This method should only called by CLI scripts or by HTTP job runners.
-			throw new MWException( "Sessions can only be imported when none is active." );
-		} elseif ( !IP::isValid( $params['ip'] ) ) {
-			throw new MWException( "Invalid client IP address '{$params['ip']}'." );
+			throw new BadMethodCallException( "Sessions can only be imported when none is active." );
+		} elseif ( !IPUtils::isValid( $params['ip'] ) ) {
+			throw new InvalidArgumentException( "Invalid client IP address '{$params['ip']}'." );
 		}
+
+		$userFactory = MediaWikiServices::getInstance()->getUserFactory();
 
 		if ( $params['userId'] ) { // logged-in user
-			$user = User::newFromId( $params['userId'] );
+			$user = $userFactory->newFromId( (int)$params['userId'] );
 			$user->load();
-			if ( !$user->getId() ) {
-				throw new MWException( "No user with ID '{$params['userId']}'." );
+			if ( !$user->isRegistered() ) {
+				throw new InvalidArgumentException( "No user with ID '{$params['userId']}'." );
 			}
 		} else { // anon user
-			$user = User::newFromName( $params['ip'], false );
+			$user = $userFactory->newFromName( $params['ip'], UserRigorOptions::RIGOR_NONE );
 		}
 
-		$importSessionFunc = function ( User $user, array $params ) {
-			global $wgRequest, $wgUser;
+		$importSessionFunc = static function ( User $user, array $params ) {
+			global $wgRequest;
 
 			$context = RequestContext::getMain();
 
 			// Commit and close any current session
-			if ( MediaWiki\Session\PHPSessionHandler::isEnabled() ) {
+			if ( PHPSessionHandler::isEnabled() ) {
 				session_write_close(); // persist
 				session_id( '' ); // detach
 				$_SESSION = []; // clear in-memory array
@@ -536,7 +716,7 @@ class RequestContext implements IContextSource, MutableContext {
 			// Get new session, if applicable
 			$session = null;
 			if ( strlen( $params['sessionId'] ) ) { // don't make a new random ID
-				$manager = MediaWiki\Session\SessionManager::singleton();
+				$manager = SessionManager::singleton();
 				$session = $manager->getSessionById( $params['sessionId'], true )
 					?: $manager->getEmptySession();
 			}
@@ -551,8 +731,8 @@ class RequestContext implements IContextSource, MutableContext {
 			// and caught (leaving the main context in a mixed state), there is no risk
 			// of the User object being attached to the wrong IP, headers, or session.
 			$context->setUser( $user );
-			$wgUser = $context->getUser(); // b/c
-			if ( $session && MediaWiki\Session\PHPSessionHandler::isEnabled() ) {
+			StubGlobalUser::setUser( $context->getUser() ); // b/c
+			if ( $session && PHPSessionHandler::isEnabled() ) {
 				session_id( $session->getId() );
 				AtEase::quietCall( 'session_start' );
 			}
@@ -570,14 +750,15 @@ class RequestContext implements IContextSource, MutableContext {
 		$oUser = self::getMain()->getUser();
 		$oParams = self::getMain()->exportSession();
 		$oRequest = self::getMain()->getRequest();
+		// @phan-suppress-next-line PhanTypeMismatchArgumentNullable exceptions triggered above prevent the null case
 		$importSessionFunc( $user, $params );
 
 		// Set callback to save and close the new session and reload the old one
 		return new ScopedCallback(
-			function () use ( $importSessionFunc, $oUser, $oParams, $oRequest ) {
+			static function () use ( $importSessionFunc, $oUser, $oParams, $oRequest ) {
 				global $wgRequest;
 				$importSessionFunc( $oUser, $oParams );
-				// Restore the exact previous Request object (instead of leaving FauxRequest)
+				// Restore the exact previous Request object (instead of leaving MediaWiki\Request\FauxRequest)
 				RequestContext::getMain()->setRequest( $oRequest );
 				$wgRequest = RequestContext::getMain()->getRequest(); // b/c
 			}
@@ -588,14 +769,14 @@ class RequestContext implements IContextSource, MutableContext {
 	 * Create a new extraneous context. The context is filled with information
 	 * external to the current session.
 	 * - Title is specified by argument
-	 * - Request is a FauxRequest, or a FauxRequest can be specified by argument
+	 * - Request is a MediaWiki\Request\FauxRequest, or a MediaWiki\Request\FauxRequest can be specified by argument
 	 * - User is an anonymous user, for separation IPv4 localhost is used
 	 * - Language will be based on the anonymous user and request, may be content
 	 *   language or a uselang param in the fauxrequest data may change the lang
 	 * - Skin will be based on the anonymous user, should be the wiki's default skin
 	 *
 	 * @param Title $title Title to use for the extraneous request
-	 * @param WebRequest|array $request A WebRequest or data to use for a FauxRequest
+	 * @param WebRequest|array $request A WebRequest or data to use for a MediaWiki\Request\FauxRequest
 	 * @return RequestContext
 	 */
 	public static function newExtraneousContext( Title $title, $request = [] ) {
@@ -606,8 +787,22 @@ class RequestContext implements IContextSource, MutableContext {
 		} else {
 			$context->setRequest( new FauxRequest( $request ) );
 		}
-		$context->user = User::newFromName( '127.0.0.1', false );
+		$context->user = MediaWikiServices::getInstance()->getUserFactory()->newFromName(
+			'127.0.0.1',
+			UserRigorOptions::RIGOR_NONE
+		);
 
 		return $context;
 	}
+
+	/** @return never */
+	public function __clone() {
+		throw new LogicException(
+			__CLASS__ . ' should not be cloned, use DerivativeContext instead.'
+		);
+	}
+
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( RequestContext::class, 'RequestContext' );

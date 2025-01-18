@@ -1,5 +1,12 @@
 <?php
 
+namespace MediaWiki\HTMLForm\Field;
+
+use MediaWiki\HTMLForm\HTMLFormField;
+
+/*
+ * @stable to extend
+ */
 class HTMLEditTools extends HTMLFormField {
 	public function getInputHTML( $value ) {
 		return '';
@@ -48,3 +55,6 @@ class HTMLEditTools extends HTMLFormField {
 		return $msg;
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( HTMLEditTools::class, 'HTMLEditTools' );

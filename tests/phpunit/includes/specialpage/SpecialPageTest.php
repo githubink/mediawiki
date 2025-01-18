@@ -1,20 +1,33 @@
 <?php
 
+namespace MediaWiki\Tests\SpecialPage;
+
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\SpecialPage\SpecialPage;
+use MediaWiki\Tests\User\TempUser\TempUserTestTrait;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+use MediaWikiIntegrationTestCase;
+use UserNotLoggedIn;
+
 /**
- * @covers SpecialPage
+ * @covers \MediaWiki\SpecialPage\SpecialPage
  *
  * @group Database
  *
  * @author Katie Filbert < aude.wiki@gmail.com >
  */
-class SpecialPageTest extends MediaWikiTestCase {
+class SpecialPageTest extends MediaWikiIntegrationTestCase {
 
-	protected function setUp() {
+	use TempUserTestTrait;
+
+	protected function setUp(): void {
 		parent::setUp();
 
-		$this->setContentLang( 'en' );
-		$this->setMwGlobals( [
-			'wgScript' => '/index.php',
+		$this->overrideConfigValues( [
+			MainConfigNames::Script => '/index.php',
+			MainConfigNames::LanguageCode => 'en',
 		] );
 	}
 
@@ -27,31 +40,37 @@ class SpecialPageTest extends MediaWikiTestCase {
 		$this->assertEquals( $expected, $title );
 	}
 
-	public function getTitleForProvider() {
+	public static function getTitleForProvider() {
 		return [
 			[ 'UserLogin', 'Userlogin' ]
 		];
 	}
 
-	/**
-	 * @expectedException PHPUnit_Framework_Error_Notice
-	 */
 	public function testInvalidGetTitleFor() {
-		$title = SpecialPage::getTitleFor( 'cat' );
-		$expected = Title::makeTitle( NS_SPECIAL, 'Cat' );
-		$this->assertEquals( $expected, $title );
+		$this->expectPHPError(
+			E_USER_NOTICE,
+			function () {
+				$title = SpecialPage::getTitleFor( 'cat' );
+				$expected = Title::makeTitle( NS_SPECIAL, 'Cat' );
+				$this->assertEquals( $expected, $title );
+			}
+		);
 	}
 
 	/**
-	 * @expectedException PHPUnit_Framework_Error_Notice
 	 * @dataProvider getTitleForWithWarningProvider
 	 */
 	public function testGetTitleForWithWarning( $expected, $name ) {
-		$title = SpecialPage::getTitleFor( $name );
-		$this->assertEquals( $expected, $title );
+		$this->expectPHPError(
+			E_USER_NOTICE,
+			function () use ( $name, $expected ) {
+				$title = SpecialPage::getTitleFor( $name );
+				$this->assertEquals( $expected, $title );
+			}
+		);
 	}
 
-	public function getTitleForWithWarningProvider() {
+	public static function getTitleForWithWarningProvider() {
 		return [
 			[ Title::makeTitle( NS_SPECIAL, 'UserLogin' ), 'UserLogin' ]
 		];
@@ -60,31 +79,29 @@ class SpecialPageTest extends MediaWikiTestCase {
 	/**
 	 * @dataProvider requireLoginAnonProvider
 	 */
-	public function testRequireLoginAnon( $expected, $reason, $title ) {
+	public function testRequireLoginAnon( $expected, ...$params ) {
 		$specialPage = new SpecialPage( 'Watchlist', 'viewmywatchlist' );
 
 		$user = User::newFromId( 0 );
 		$specialPage->getContext()->setUser( $user );
-		$specialPage->getContext()->setLanguage( Language::factory( 'en' ) );
+		$specialPage->getContext()->setLanguage(
+			$this->getServiceContainer()->getLanguageFactory()->getLanguage( 'en' ) );
 
-		$this->setExpectedException( UserNotLoggedIn::class, $expected );
+		$this->expectException( UserNotLoggedIn::class );
+		$this->expectExceptionMessage( $expected );
 
-		// $specialPage->requireLogin( [ $reason [, $title ] ] )
-		call_user_func_array(
-			[ $specialPage, 'requireLogin' ],
-			array_filter( [ $reason, $title ] )
-		);
+		$specialPage->requireLogin( ...$params );
 	}
 
-	public function requireLoginAnonProvider() {
+	public static function requireLoginAnonProvider() {
 		$lang = 'en';
 
 		$expected1 = wfMessage( 'exception-nologin-text' )->inLanguage( $lang )->text();
 		$expected2 = wfMessage( 'about' )->inLanguage( $lang )->text();
 
 		return [
-			[ $expected1, null, null ],
-			[ $expected2, 'about', null ],
+			[ $expected1 ],
+			[ $expected2, 'about' ],
 			[ $expected2, 'about', 'about' ],
 		];
 	}
@@ -92,12 +109,65 @@ class SpecialPageTest extends MediaWikiTestCase {
 	public function testRequireLoginNotAnon() {
 		$specialPage = new SpecialPage( 'Watchlist', 'viewmywatchlist' );
 
-		$user = User::newFromName( "UTSysop" );
+		$user = $this->getTestSysop()->getUser();
 		$specialPage->getContext()->setUser( $user );
 
 		$specialPage->requireLogin();
 
 		// no exception thrown, logged in use can access special page
+		$this->assertTrue( true );
+	}
+
+	/**
+	 * @dataProvider provideRequireNamedUserAnon
+	 */
+	public function testRequireNamedUserAnon( $expected, ...$params ) {
+		$specialPage = new SpecialPage( 'Watchlist', 'viewmywatchlist' );
+
+		$user = User::newFromId( 0 );
+		$specialPage->getContext()->setUser( $user );
+		$specialPage->getContext()->setLanguage(
+			$this->getServiceContainer()->getLanguageFactory()->getLanguage( 'en' ) );
+
+		$this->expectException( UserNotLoggedIn::class );
+		$this->expectExceptionMessage( $expected );
+
+		$specialPage->requireLogin( ...$params );
+	}
+
+	public static function provideRequireNamedUserAnon() {
+		$lang = 'en';
+
+		$expected1 = wfMessage( 'exception-nologin-text' )->inLanguage( $lang )->text();
+		$expected2 = wfMessage( 'about' )->inLanguage( $lang )->text();
+
+		return [
+			[ $expected1 ],
+			[ $expected2, 'about' ],
+			[ $expected2, 'about', 'about' ],
+		];
+	}
+
+	public function testRequireNamedUserForTempUser() {
+		$this->enableAutoCreateTempUser();
+		$specialPage = new SpecialPage( 'Watchlist', 'viewmywatchlist' );
+
+		$user = $this->getServiceContainer()->getTempUserCreator()->create( null, new FauxRequest() )->getUser();
+		$specialPage->getContext()->setUser( $user );
+
+		$this->expectException( UserNotLoggedIn::class );
+		$specialPage->requireNamedUser();
+	}
+
+	public function testRequireNamedUserForNamedUser() {
+		$specialPage = new SpecialPage( 'Watchlist', 'viewmywatchlist' );
+
+		$user = $this->getTestSysop()->getUser();
+		$specialPage->getContext()->setUser( $user );
+
+		$specialPage->requireNamedUser();
+
+		// no exception thrown, so the test passes.
 		$this->assertTrue( true );
 	}
 }

@@ -1,5 +1,9 @@
 <?php
 
-class ExternalStoreException extends MWException {
+/**
+ * @newable
+ * @ingroup ExternalStorage
+ */
+class ExternalStoreException extends Exception {
 
 }

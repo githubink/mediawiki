@@ -28,20 +28,39 @@
  * @ingroup Maintenance
  *
  * @author Antoine Musso <hashar at free dot fr>
- * @author Brion Vibber
+ * @author Brooke Vibber
  * @author Alexandre Emsenhuber
  * @version first release
  */
 
+use MediaWiki\Maintenance\Maintenance;
 use MediaWiki\Shell\Shell;
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that builds doxygen documentation.
  * @ingroup Maintenance
  */
 class MWDocGen extends Maintenance {
+	/** @var string */
+	private $doxygen;
+	/** @var string */
+	private $mwVersion;
+	/** @var string */
+	private $output;
+	/** @var string */
+	private $input;
+	/** @var string */
+	private $inputFilter;
+	/** @var string */
+	private $template;
+	/** @var string[] */
+	private $excludes;
+	/** @var bool */
+	private $doDot;
 
 	/**
 	 * Prepare Maintenance class
@@ -56,17 +75,17 @@ class MWDocGen extends Maintenance {
 		$this->addOption( 'version',
 			'Pass a MediaWiki version',
 			false, true );
-		$this->addOption( 'generate-man',
-			'Whether to generate man files' );
 		$this->addOption( 'file',
 			"Only process given file or directory. Multiple values " .
-			"accepted with comma separation. Path relative to \$IP.",
+			"accepted with comma separation. Path relative to MW_INSTALL_PATH.",
 			false, true );
 		$this->addOption( 'output',
 			'Path to write doc to',
 			false, true );
-		$this->addOption( 'no-extensions',
-			'Ignore extensions' );
+		$this->addOption( 'extensions',
+			'Process the extensions/ directory as well (ignored if --file is used)' );
+		$this->addOption( 'skins',
+			'Process the skins/ directory as well (ignored if --file is used)' );
 	}
 
 	public function getDbType() {
@@ -74,66 +93,64 @@ class MWDocGen extends Maintenance {
 	}
 
 	protected function init() {
-		global $wgPhpCli, $IP;
+		global $wgPhpCli;
 
 		$this->doxygen = $this->getOption( 'doxygen', 'doxygen' );
 		$this->mwVersion = $this->getOption( 'version', 'master' );
 
-		$this->input = '';
-		$inputs = explode( ',', $this->getOption( 'file', '' ) );
-		foreach ( $inputs as $input ) {
-			# Doxygen inputs are space separted and double quoted
-			$this->input .= " \"$IP/$input\"";
-		}
-
-		$this->output = $this->getOption( 'output', "$IP/docs" );
+		$this->output = $this->getOption( 'output', 'docs' );
 
 		// Do not use wfShellWikiCmd, because mwdoc-filter.php is not
 		// a Maintenance script.
 		$this->inputFilter = Shell::escape( [
 			$wgPhpCli,
-			$IP . '/maintenance/mwdoc-filter.php'
+			MW_INSTALL_PATH . '/maintenance/mwdoc-filter.php'
 		] );
 
-		$this->template = $IP . '/maintenance/Doxyfile';
+		$this->template = MW_INSTALL_PATH . '/maintenance/Doxyfile';
 		$this->excludes = [
-			'vendor',
-			'node_modules',
+			'cache',
 			'images',
-			'static',
 		];
-		$this->excludePatterns = [];
-		if ( $this->hasOption( 'no-extensions' ) ) {
-			$this->excludePatterns[] = 'extensions';
+
+		$file = $this->getOption( 'file' );
+		if ( $file !== null ) {
+			$this->input = '';
+			foreach ( explode( ',', $file ) as $input ) {
+				// Doxygen inputs are space separated and double quoted
+				$this->input .= " \"$input\"";
+			}
+		} else {
+			// If no explicit --file filter is set, we're indexing all of MediaWiki core
+			// in MW_INSTALL_PATH, but not extension and skin submodules (T317451).
+			$this->input = '';
+			if ( !$this->hasOption( 'extensions' ) ) {
+				$this->excludes[] = 'extensions';
+			}
+			if ( !$this->hasOption( 'skins' ) ) {
+				$this->excludes[] = 'skins';
+			}
 		}
 
-		$this->doDot = shell_exec( 'which dot' );
-		$this->doMan = $this->hasOption( 'generate-man' );
+		$this->doDot = (bool)shell_exec( 'which dot' );
 	}
 
 	public function execute() {
-		global $IP;
-
 		$this->init();
 
 		# Build out directories we want to exclude
 		$exclude = '';
 		foreach ( $this->excludes as $item ) {
-			$exclude .= " $IP/$item";
+			$exclude .= " $item";
 		}
-
-		$excludePatterns = implode( ' ', $this->excludePatterns );
 
 		$conf = strtr( file_get_contents( $this->template ),
 			[
 				'{{OUTPUT_DIRECTORY}}' => $this->output,
-				'{{STRIP_FROM_PATH}}' => $IP,
 				'{{CURRENT_VERSION}}' => $this->mwVersion,
 				'{{INPUT}}' => $this->input,
 				'{{EXCLUDE}}' => $exclude,
-				'{{EXCLUDE_PATTERNS}}' => $excludePatterns,
 				'{{HAVE_DOT}}' => $this->doDot ? 'YES' : 'NO',
-				'{{GENERATE_MAN}}' => $this->doMan ? 'YES' : 'NO',
 				'{{INPUT_FILTER}}' => $this->inputFilter,
 			]
 		);
@@ -167,5 +184,7 @@ TEXT
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = MWDocGen::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

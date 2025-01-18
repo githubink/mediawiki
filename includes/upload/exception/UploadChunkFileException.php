@@ -1,7 +1,5 @@
 <?php
 /**
- * Implements UploadChunkFileException
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -21,5 +19,21 @@
  * @ingroup Upload
  */
 
-class UploadChunkFileException extends MWException {
+use Wikimedia\NormalizedException\INormalizedException;
+use Wikimedia\NormalizedException\NormalizedExceptionTrait;
+
+/**
+ * @newable
+ */
+class UploadChunkFileException extends RuntimeException implements INormalizedException {
+	use NormalizedExceptionTrait;
+
+	public function __construct( $message, array $context = [] ) {
+		$this->normalizedMessage = $message;
+		$this->messageContext = $context;
+
+		parent::__construct(
+			$this->getMessageFromNormalizedMessage( $this->normalizedMessage, $this->messageContext )
+		);
+	}
 }

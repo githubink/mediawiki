@@ -1,7 +1,5 @@
 <?php
 /**
- * Implements Special:Userlogout
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,17 +16,35 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup SpecialPage
  */
+
+namespace MediaWiki\Specials;
+
+use ErrorPageError;
+use MediaWiki\HTMLForm\HTMLForm;
+use MediaWiki\Session\SessionManager;
+use MediaWiki\SpecialPage\FormSpecialPage;
+use MediaWiki\SpecialPage\SpecialPage;
+use MediaWiki\Status\Status;
+use MediaWiki\User\TempUser\TempUserConfig;
 
 /**
  * Implements Special:Userlogout
  *
  * @ingroup SpecialPage
+ * @ingroup Auth
  */
 class SpecialUserLogout extends FormSpecialPage {
-	function __construct() {
+	/**
+	 * @var string|null
+	 */
+	private $oldUserName;
+
+	private TempUserConfig $tempUserConfig;
+
+	public function __construct( TempUserConfig $tempUserConfig ) {
 		parent::__construct( 'Userlogout' );
+		$this->tempUserConfig = $tempUserConfig;
 	}
 
 	public function doesWrites() {
@@ -36,7 +52,7 @@ class SpecialUserLogout extends FormSpecialPage {
 	}
 
 	public function isListed() {
-		return false;
+		return $this->getAuthManager()->canAuthenticateNow();
 	}
 
 	protected function getGroupName() {
@@ -52,18 +68,22 @@ class SpecialUserLogout extends FormSpecialPage {
 	}
 
 	public function execute( $par ) {
-		if ( $this->getUser()->isAnon() ) {
+		$user = $this->getUser();
+		if ( $user->isAnon() ) {
 			$this->setHeaders();
 			$this->showSuccess();
 			return;
 		}
+		$this->oldUserName = $user->getName();
 
 		parent::execute( $par );
 	}
 
 	public function alterForm( HTMLForm $form ) {
 		$form->setTokenSalt( 'logoutToken' );
-		$form->addHeaderText( $this->msg( 'userlogout-continue' ) );
+		$form->addHeaderHtml( $this->msg(
+			$this->getUser()->isTemp() ? 'userlogout-temp' : 'userlogout-continue'
+		) );
 
 		$form->addHiddenFields( $this->getRequest()->getValues( 'returnto', 'returntoquery' ) );
 	}
@@ -73,19 +93,17 @@ class SpecialUserLogout extends FormSpecialPage {
 	 * userCanExecute(), and if the data array contains 'Username', etc, then Username
 	 * resets are allowed.
 	 * @param array $data
-	 * @throws MWException
-	 * @throws ThrottledError|PermissionsError
 	 * @return Status
 	 */
 	public function onSubmit( array $data ) {
 		// Make sure it's possible to log out
-		$session = MediaWiki\Session\SessionManager::getGlobalSession();
+		$session = SessionManager::getGlobalSession();
 		if ( !$session->canSetUser() ) {
 			throw new ErrorPageError(
 				'cannotlogoutnow-title',
 				'cannotlogoutnow-text',
 				[
-					$session->getProvider()->describe( RequestContext::getMain()->getLanguage() )
+					$session->getProvider()->describe( $this->getLanguage() )
 				]
 			);
 		}
@@ -99,12 +117,10 @@ class SpecialUserLogout extends FormSpecialPage {
 	public function onSuccess() {
 		$this->showSuccess();
 
-		$user = $this->getUser();
-		$oldName = $user->getName();
 		$out = $this->getOutput();
 		// Hook.
 		$injected_html = '';
-		Hooks::run( 'UserLogoutComplete', [ &$user, &$injected_html, $oldName ] );
+		$this->getHookRunner()->onUserLogoutComplete( $this->getUser(), $injected_html, $this->oldUserName );
 		$out->addHTML( $injected_html );
 	}
 
@@ -113,15 +129,44 @@ class SpecialUserLogout extends FormSpecialPage {
 			$this->getRequest()->getValues( 'returnto', 'returntoquery' ) );
 
 		$out = $this->getOutput();
-		$out->addWikiMsg( 'logouttext', $loginURL );
+
+		$messageKey = 'logouttext';
+		if (
+			( $this->oldUserName !== null && $this->tempUserConfig->isTempName( $this->oldUserName ) ) ||
+			$this->getRequest()->getCheck( 'wasTempUser' )
+		) {
+			// Generates the message key logouttext-for-temporary-account which is used to customise the success
+			// message for a temporary account.
+			$messageKey .= '-for-temporary-account';
+		}
+		$out->addWikiMsg( $messageKey, $loginURL );
 
 		$out->returnToMain();
 	}
 
 	/**
 	 * Let blocked users to log out and come back with their sockpuppets
+	 * @return bool
 	 */
 	public function requiresUnblock() {
 		return false;
 	}
+
+	public function getDescription() {
+		// Set the page title as "templogout" if the user is (or just was) logged in to a temporary account
+		if (
+			$this->getUser()->isTemp() ||
+			( $this->oldUserName !== null && $this->tempUserConfig->isTempName( $this->oldUserName ) ) ||
+			$this->getRequest()->getCheck( 'wasTempUser' )
+		) {
+			return $this->msg( 'templogout' );
+		}
+		return parent::getDescription();
+	}
 }
+
+/**
+ * Retain the old class name for backwards compatibility.
+ * @deprecated since 1.41
+ */
+class_alias( SpecialUserLogout::class, 'SpecialUserLogout' );

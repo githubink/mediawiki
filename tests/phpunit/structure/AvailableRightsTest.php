@@ -1,12 +1,15 @@
 <?php
 
+use MediaWiki\MainConfigNames;
+
 /**
  * Try to make sure that extensions register all rights in $wgAvailableRights
  * or via the 'UserGetAllRights' hook.
  *
  * @author Marius Hoch < hoo@online.de >
+ * @coversNothing
  */
-class AvailableRightsTest extends PHPUnit\Framework\TestCase {
+class AvailableRightsTest extends MediaWikiIntegrationTestCase {
 
 	use MediaWikiCoversValidator;
 
@@ -19,7 +22,7 @@ class AvailableRightsTest extends PHPUnit\Framework\TestCase {
 	private function getAllVisibleRights() {
 		global $wgGroupPermissions, $wgRevokePermissions;
 
-		$rights = User::getAllRights();
+		$rights = $this->getServiceContainer()->getPermissionManager()->getAllPermissions();
 
 		foreach ( $wgGroupPermissions as $permissions ) {
 			$rights = array_merge( $rights, array_keys( $permissions ) );
@@ -38,7 +41,7 @@ class AvailableRightsTest extends PHPUnit\Framework\TestCase {
 	public function testAvailableRights() {
 		$missingRights = array_diff(
 			$this->getAllVisibleRights(),
-			User::getAllRights()
+			$this->getServiceContainer()->getPermissionManager()->getAllPermissions()
 		);
 
 		$this->assertEquals(
@@ -51,8 +54,43 @@ class AvailableRightsTest extends PHPUnit\Framework\TestCase {
 		);
 	}
 
+	public function testAvailableRightsShouldNotBeImplicitRights() {
+		$intersection = array_intersect(
+			$this->getServiceContainer()->getPermissionManager()->getImplicitRights(),
+			$this->getServiceContainer()->getPermissionManager()->getAllPermissions()
+		);
+
+		$this->assertEquals(
+			[],
+			// Re-index to produce nicer output, keys are meaningless.
+			array_values( $intersection ),
+			'Additional user rights can be added to $wgAvailableRights or $wgImplicitRights, ' .
+			'but not both!'
+		);
+	}
+
+	public function testLimitsAreRights() {
+		$knownRights = array_merge(
+			$this->getServiceContainer()->getPermissionManager()->getImplicitRights(),
+			$this->getServiceContainer()->getPermissionManager()->getAllPermissions()
+		);
+
+		$missingRights = array_diff(
+			array_keys( $this->getConfVar( MainConfigNames::RateLimits ) ),
+			$knownRights
+		);
+
+		$this->assertEquals(
+			[],
+			// Re-index to produce nicer output, keys are meaningless.
+			array_values( $missingRights ),
+			'All keys in $wgRateLimits must be listed in $wgAvailableRights or $wgImplicitRights, ' .
+			'unless the keys are defined as rights by MediaWiki core.'
+		);
+	}
+
 	/**
-	 * Test, if for all rights an action- message exist,
+	 * Test, if for all rights an action- message exists,
 	 * which is used on Special:ListGroupRights as help text
 	 * Extensions and core
 	 *
@@ -63,7 +101,7 @@ class AvailableRightsTest extends PHPUnit\Framework\TestCase {
 	}
 
 	/**
-	 * Test, if for all rights a right- message exist,
+	 * Test, if for all rights a right- message exists,
 	 * which is used on Special:ListGroupRights as help text
 	 * Extensions and core
 	 */
@@ -76,13 +114,13 @@ class AvailableRightsTest extends PHPUnit\Framework\TestCase {
 	 */
 	private function checkMessagesExist( $prefix ) {
 		// Getting all user rights, for core: User::$mCoreRights, for extensions: $wgAvailableRights
-		$allRights = User::getAllRights();
-		$allMessageKeys = Language::getMessageKeysFor( 'en' );
+		$services = $this->getServiceContainer();
+		$allRights = $services->getPermissionManager()->getAllPermissions();
+		$allMessageKeys = $services->getLocalisationCache()->getSubitemList( 'en', 'messages' );
 
 		$messagesToCheck = [];
 		foreach ( $allMessageKeys as $message ) {
-			// === 0: must be at beginning of string (position 0)
-			if ( strpos( $message, $prefix ) === 0 ) {
+			if ( str_starts_with( $message, $prefix ) ) {
 				$messagesToCheck[] = substr( $message, strlen( $prefix ) );
 			}
 		}
@@ -96,6 +134,8 @@ class AvailableRightsTest extends PHPUnit\Framework\TestCase {
 			[],
 			$missing,
 			"Each user right (core/extensions) has a corresponding $prefix message."
+				. ' See the instructions at: '
+				. 'https://www.mediawiki.org/wiki/Manual:User_rights#Adding_new_rights'
 		);
 	}
 }

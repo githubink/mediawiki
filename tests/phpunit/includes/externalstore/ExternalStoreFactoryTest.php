@@ -1,30 +1,29 @@
 <?php
 
+use MediaWiki\MainConfigNames;
+use Wikimedia\FileBackend\MemoryFileBackend;
+use Wikimedia\Rdbms\LBFactory;
+use Wikimedia\Rdbms\LoadBalancer;
+
 /**
- * @covers ExternalStoreFactory
- * @covers ExternalStoreAccess
+ * @covers \ExternalStoreFactory
+ * @covers \ExternalStoreAccess
  */
-class ExternalStoreFactoryTest extends MediaWikiTestCase {
+class ExternalStoreFactoryTest extends MediaWikiIntegrationTestCase {
 
-	use MediaWikiCoversValidator;
-
-	/**
-	 * @expectedException ExternalStoreException
-	 */
 	public function testExternalStoreFactory_noStores1() {
 		$factory = new ExternalStoreFactory( [], [], 'test-id' );
+		$this->expectException( ExternalStoreException::class );
 		$factory->getStore( 'ForTesting' );
 	}
 
-	/**
-	 * @expectedException ExternalStoreException
-	 */
 	public function testExternalStoreFactory_noStores2() {
 		$factory = new ExternalStoreFactory( [], [], 'test-id' );
+		$this->expectException( ExternalStoreException::class );
 		$factory->getStore( 'foo' );
 	}
 
-	public function provideStoreNames() {
+	public static function provideStoreNames() {
 		yield 'Same case as construction' => [ 'ForTesting' ];
 		yield 'All lower case' => [ 'fortesting' ];
 		yield 'All upper case' => [ 'FORTESTING' ];
@@ -42,22 +41,31 @@ class ExternalStoreFactoryTest extends MediaWikiTestCase {
 
 	/**
 	 * @dataProvider provideStoreNames
-	 * @expectedException ExternalStoreException
 	 */
 	public function testExternalStoreFactory_someStore_noProtoMatch( $proto ) {
 		$factory = new ExternalStoreFactory( [ 'SomeOtherClassName' ], [], 'test-id' );
+		$this->expectException( ExternalStoreException::class );
 		$factory->getStore( $proto );
 	}
 
 	/**
-	 * @covers ExternalStoreFactory::getProtocols
-	 * @covers ExternalStoreFactory::getWriteBaseUrls
-	 * @covers ExternalStoreFactory::getStore
+	 * @covers \ExternalStoreFactory::getProtocols
+	 * @covers \ExternalStoreFactory::getWriteBaseUrls
+	 * @covers \ExternalStoreFactory::getStore
 	 */
 	public function testStoreFactoryBasic() {
-		$active = [ 'memory' ];
-		$defaults = [ 'memory://cluster1', 'memory://cluster2' ];
+		$active = [ 'memory', 'mwstore' ];
+		$defaults = [ 'memory://cluster1', 'memory://cluster2', 'mwstore://memstore1' ];
 		$esFactory = new ExternalStoreFactory( $active, $defaults, 'db-prefix' );
+		$this->overrideConfigValue( MainConfigNames::FileBackends, [
+			[
+				'name' => 'memstore1',
+				'class' => MemoryFileBackend::class,
+				'domain' => 'its-all-in-your-head',
+				'readOnly' => 'reason is a lie',
+				'lockManager' => 'nullLockManager'
+			]
+		] );
 
 		$this->assertEquals( $active, $esFactory->getProtocols() );
 		$this->assertEquals( $defaults, $esFactory->getWriteBaseUrls() );
@@ -65,16 +73,16 @@ class ExternalStoreFactoryTest extends MediaWikiTestCase {
 		/** @var ExternalStoreMemory $store */
 		$store = $esFactory->getStore( 'memory' );
 		$this->assertInstanceOf( ExternalStoreMemory::class, $store );
-		$this->assertEquals( false, $store->isReadOnly( 'cluster1' ) );
-		$this->assertEquals( false, $store->isReadOnly( 'cluster2' ) );
-		$this->assertEquals( true, $store->isReadOnly( 'clusterOld' ) );
+		$this->assertFalse( $store->isReadOnly( 'cluster1' ), "Location is writable" );
+		$this->assertFalse( $store->isReadOnly( 'cluster2' ), "Location is writable" );
 
-		$lb = $this->getMockBuilder( \Wikimedia\Rdbms\LoadBalancer::class )
-			->disableOriginalConstructor()->getMock();
-		$lb->expects( $this->any() )->method( 'getReadOnlyReason' )->willReturn( 'Locked' );
-		$lbFactory = $this->getMockBuilder( \Wikimedia\Rdbms\LBFactory::class )
-			->disableOriginalConstructor()->getMock();
-		$lbFactory->expects( $this->any() )->method( 'getExternalLB' )->willReturn( $lb );
+		$mwStore = $esFactory->getStore( 'mwstore' );
+		$this->assertTrue( $mwStore->isReadOnly( 'memstore1' ), "Location is read-only" );
+
+		$lb = $this->createMock( LoadBalancer::class );
+		$lb->method( 'getReadOnlyReason' )->willReturn( 'Locked' );
+		$lbFactory = $this->createMock( LBFactory::class );
+		$lbFactory->method( 'getExternalLB' )->willReturn( $lb );
 
 		$this->setService( 'DBLoadBalancerFactory', $lbFactory );
 
@@ -88,8 +96,8 @@ class ExternalStoreFactoryTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers ExternalStoreFactory::getStoreForUrl
-	 * @covers ExternalStoreFactory::getStoreLocationFromUrl
+	 * @covers \ExternalStoreFactory::getStoreForUrl
+	 * @covers \ExternalStoreFactory::getStoreLocationFromUrl
 	 */
 	public function testStoreFactoryReadWrite() {
 		$active = [ 'memory' ]; // active store types
@@ -108,7 +116,7 @@ class ExternalStoreFactoryTest extends MediaWikiTestCase {
 		$v2 = wfRandomString();
 		$v3 = wfRandomString();
 
-		$this->assertEquals( false, $storeLocal->fetchFromURL( 'memory://cluster1/1' ) );
+		$this->assertFalse( $storeLocal->fetchFromURL( 'memory://cluster1/1' ) );
 
 		$url1 = 'memory://cluster1/1';
 		$this->assertEquals(
@@ -130,8 +138,8 @@ class ExternalStoreFactoryTest extends MediaWikiTestCase {
 		// There is only one active store type
 		$this->assertEquals( $v2, $storeLocal->fetchFromURL( $url2 ) );
 		$this->assertEquals( $v3, $storeOther->fetchFromURL( $url3 ) );
-		$this->assertEquals( false, $storeOther->fetchFromURL( $url2 ) );
-		$this->assertEquals( false, $storeLocal->fetchFromURL( $url3 ) );
+		$this->assertFalse( $storeOther->fetchFromURL( $url2 ) );
+		$this->assertFalse( $storeLocal->fetchFromURL( $url3 ) );
 
 		$res = $access->fetchFromURLs( [ $url1, $url2, $url3 ] );
 		$this->assertEquals( [ $url1 => $v1, $url2 => $v2, $url3 => false ], $res, "Local-only" );

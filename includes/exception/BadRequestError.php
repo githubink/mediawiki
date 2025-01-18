@@ -21,14 +21,20 @@
 /**
  * An error page that emits an HTTP 400 Bad Request status code.
  *
+ * @newable
+ * @stable to extend
  * @since 1.28
  * @ingroup Exception
  */
 class BadRequestError extends ErrorPageError {
 
-	public function report() {
+	/**
+	 * @stable to override
+	 * @inheritDoc
+	 */
+	public function report( $action = self::SEND_OUTPUT ) {
 		global $wgOut;
 		$wgOut->setStatusCode( 400 );
-		parent::report();
+		parent::report( $action );
 	}
 }

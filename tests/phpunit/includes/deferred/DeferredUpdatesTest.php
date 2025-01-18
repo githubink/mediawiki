@@ -1,39 +1,38 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Deferred\DeferrableUpdate;
+use MediaWiki\Deferred\DeferredUpdates;
+use MediaWiki\Deferred\MergeableUpdate;
+use MediaWiki\Deferred\MWCallableUpdate;
+use MediaWiki\Deferred\TransactionRoundDefiningUpdate;
 
-class DeferredUpdatesTest extends MediaWikiTestCase {
+/**
+ * @group Database
+ * @covers \MediaWiki\Deferred\DeferredUpdates
+ * @covers \MediaWiki\Deferred\DeferredUpdatesScopeStack
+ * @covers \MediaWiki\Deferred\DeferredUpdatesScope
+ */
+class DeferredUpdatesTest extends MediaWikiIntegrationTestCase {
 
-	/**
-	 * @covers DeferredUpdates::addUpdate
-	 * @covers DeferredUpdates::push
-	 * @covers DeferredUpdates::doUpdates
-	 * @covers DeferredUpdates::handleUpdateQueue
-	 * @covers DeferredUpdates::attemptUpdate
-	 */
 	public function testAddAndRun() {
 		$update = $this->getMockBuilder( DeferrableUpdate::class )
-			->setMethods( [ 'doUpdate' ] )->getMock();
+			->onlyMethods( [ 'doUpdate' ] )->getMock();
 		$update->expects( $this->once() )->method( 'doUpdate' );
 
 		DeferredUpdates::addUpdate( $update );
 		DeferredUpdates::doUpdates();
 	}
 
-	/**
-	 * @covers DeferredUpdates::addUpdate
-	 * @covers DeferredUpdates::push
-	 */
 	public function testAddMergeable() {
-		$this->setMwGlobals( 'wgCommandLineMode', false );
+		$cleanup = DeferredUpdates::preventOpportunisticUpdates();
 
 		$update1 = $this->getMockBuilder( MergeableUpdate::class )
-			->setMethods( [ 'merge', 'doUpdate' ] )->getMock();
+			->onlyMethods( [ 'merge', 'doUpdate' ] )->getMock();
 		$update1->expects( $this->once() )->method( 'merge' );
 		$update1->expects( $this->never() )->method( 'doUpdate' );
 
 		$update2 = $this->getMockBuilder( MergeableUpdate::class )
-			->setMethods( [ 'merge', 'doUpdate' ] )->getMock();
+			->onlyMethods( [ 'merge', 'doUpdate' ] )->getMock();
 		$update2->expects( $this->never() )->method( 'merge' );
 		$update2->expects( $this->never() )->method( 'doUpdate' );
 
@@ -41,62 +40,47 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 		DeferredUpdates::addUpdate( $update2 );
 	}
 
-	/**
-	 * @covers DeferredUpdates::addCallableUpdate
-	 * @covers MWCallableUpdate::getOrigin
-	 */
 	public function testAddCallableUpdate() {
-		$this->setMwGlobals( 'wgCommandLineMode', true );
-
 		$ran = 0;
-		DeferredUpdates::addCallableUpdate( function () use ( &$ran ) {
+		DeferredUpdates::addCallableUpdate( static function () use ( &$ran ) {
 			$ran++;
 		} );
-		DeferredUpdates::doUpdates();
+		// Opportunistic updates should be enabled, so the updates should have already executed
+		$this->assertSame( 0, DeferredUpdates::pendingUpdatesCount() );
 
 		$this->assertSame( 1, $ran, 'Update ran' );
 	}
 
-	/**
-	 * @covers DeferredUpdates::getPendingUpdates
-	 * @covers DeferredUpdates::clearPendingUpdates
-	 */
 	public function testGetPendingUpdates() {
-		// Prevent updates from running
-		$this->setMwGlobals( 'wgCommandLineMode', false );
+		$cleanup = DeferredUpdates::preventOpportunisticUpdates();
 
 		$pre = DeferredUpdates::PRESEND;
 		$post = DeferredUpdates::POSTSEND;
 		$all = DeferredUpdates::ALL;
 
-		$update = $this->getMock( DeferrableUpdate::class );
+		$update = $this->createMock( DeferrableUpdate::class );
 		$update->expects( $this->never() )
 			->method( 'doUpdate' );
 
 		DeferredUpdates::addUpdate( $update, $pre );
 		$this->assertCount( 1, DeferredUpdates::getPendingUpdates( $pre ) );
-		$this->assertCount( 0, DeferredUpdates::getPendingUpdates( $post ) );
+		$this->assertSame( [], DeferredUpdates::getPendingUpdates( $post ) );
 		$this->assertCount( 1, DeferredUpdates::getPendingUpdates( $all ) );
 		$this->assertCount( 1, DeferredUpdates::getPendingUpdates() );
 		DeferredUpdates::clearPendingUpdates();
-		$this->assertCount( 0, DeferredUpdates::getPendingUpdates() );
+		$this->assertSame( [], DeferredUpdates::getPendingUpdates() );
 
 		DeferredUpdates::addUpdate( $update, $post );
-		$this->assertCount( 0, DeferredUpdates::getPendingUpdates( $pre ) );
+		$this->assertSame( [], DeferredUpdates::getPendingUpdates( $pre ) );
 		$this->assertCount( 1, DeferredUpdates::getPendingUpdates( $post ) );
 		$this->assertCount( 1, DeferredUpdates::getPendingUpdates( $all ) );
 		$this->assertCount( 1, DeferredUpdates::getPendingUpdates() );
 		DeferredUpdates::clearPendingUpdates();
-		$this->assertCount( 0, DeferredUpdates::getPendingUpdates() );
+		$this->assertSame( [], DeferredUpdates::getPendingUpdates() );
 	}
 
-	/**
-	 * @covers DeferredUpdates::doUpdates
-	 * @covers DeferredUpdates::handleUpdateQueue
-	 * @covers DeferredUpdates::addUpdate
-	 */
 	public function testDoUpdatesWeb() {
-		$this->setMwGlobals( 'wgCommandLineMode', false );
+		$cleanup = DeferredUpdates::preventOpportunisticUpdates();
 
 		$updates = [
 			'1' => "deferred update 1;\n",
@@ -110,43 +94,43 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 			'3-2-1' => "deferred update 1 within deferred update 2 with deferred update 3;\n",
 		];
 		DeferredUpdates::addCallableUpdate(
-			function () use ( $updates ) {
+			static function () use ( $updates ) {
 				echo $updates['1'];
 			}
 		);
 		DeferredUpdates::addCallableUpdate(
-			function () use ( $updates ) {
+			static function () use ( $updates ) {
 				echo $updates['2'];
 				DeferredUpdates::addCallableUpdate(
-					function () use ( $updates ) {
+					static function () use ( $updates ) {
 						echo $updates['2-1'];
 					}
 				);
 				DeferredUpdates::addCallableUpdate(
-					function () use ( $updates ) {
+					static function () use ( $updates ) {
 						echo $updates['2-2'];
 					}
 				);
 			}
 		);
 		DeferredUpdates::addCallableUpdate(
-			function () use ( $updates ) {
+			static function () use ( $updates ) {
 				echo $updates['3'];
 				DeferredUpdates::addCallableUpdate(
-					function () use ( $updates ) {
+					static function () use ( $updates ) {
 						echo $updates['3-1'];
 						DeferredUpdates::addCallableUpdate(
-							function () use ( $updates ) {
+							static function () use ( $updates ) {
 								echo $updates['3-1-1'];
 							}
 						);
 					}
 				);
 				DeferredUpdates::addCallableUpdate(
-					function () use ( $updates ) {
+					static function () use ( $updates ) {
 						echo $updates['3-2'];
 						DeferredUpdates::addCallableUpdate(
-							function () use ( $updates ) {
+							static function () use ( $updates ) {
 								echo $updates['3-2-1'];
 							}
 						);
@@ -164,13 +148,13 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 		$x = null;
 		$y = null;
 		DeferredUpdates::addCallableUpdate(
-			function () use ( &$x ) {
+			static function () use ( &$x ) {
 				$x = 'Sherity';
 			},
 			DeferredUpdates::PRESEND
 		);
 		DeferredUpdates::addCallableUpdate(
-			function () use ( &$y ) {
+			static function () use ( &$y ) {
 				$y = 'Marychu';
 			},
 			DeferredUpdates::POSTSEND
@@ -179,21 +163,15 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 		$this->assertNull( $x, "Update not run yet" );
 		$this->assertNull( $y, "Update not run yet" );
 
-		DeferredUpdates::doUpdates( 'run', DeferredUpdates::PRESEND );
+		DeferredUpdates::doUpdates( DeferredUpdates::PRESEND );
 		$this->assertEquals( "Sherity", $x, "PRESEND update ran" );
 		$this->assertNull( $y, "POSTSEND update not run yet" );
 
-		DeferredUpdates::doUpdates( 'run', DeferredUpdates::POSTSEND );
+		DeferredUpdates::doUpdates( DeferredUpdates::POSTSEND );
 		$this->assertEquals( "Marychu", $y, "POSTSEND update ran" );
 	}
 
-	/**
-	 * @covers DeferredUpdates::doUpdates
-	 * @covers DeferredUpdates::handleUpdateQueue
-	 * @covers DeferredUpdates::addUpdate
-	 */
 	public function testDoUpdatesCLI() {
-		$this->setMwGlobals( 'wgCommandLineMode', true );
 		$updates = [
 			'1' => "deferred update 1;\n",
 			'2' => "deferred update 2;\n",
@@ -207,47 +185,47 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 		];
 
 		// clear anything
-		$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
-		$lbFactory->commitMasterChanges( __METHOD__ );
+		$lbFactory = $this->getServiceContainer()->getDBLoadBalancerFactory();
+		$lbFactory->commitPrimaryChanges( __METHOD__ );
 
 		DeferredUpdates::addCallableUpdate(
-			function () use ( $updates ) {
+			static function () use ( $updates ) {
 				echo $updates['1'];
 			}
 		);
 		DeferredUpdates::addCallableUpdate(
-			function () use ( $updates ) {
+			static function () use ( $updates ) {
 				echo $updates['2'];
 				DeferredUpdates::addCallableUpdate(
-					function () use ( $updates ) {
+					static function () use ( $updates ) {
 						echo $updates['2-1'];
 					}
 				);
 				DeferredUpdates::addCallableUpdate(
-					function () use ( $updates ) {
+					static function () use ( $updates ) {
 						echo $updates['2-2'];
 					}
 				);
 			}
 		);
 		DeferredUpdates::addCallableUpdate(
-			function () use ( $updates ) {
+			static function () use ( $updates ) {
 				echo $updates['3'];
 				DeferredUpdates::addCallableUpdate(
-					function () use ( $updates ) {
+					static function () use ( $updates ) {
 						echo $updates['3-1'];
 						DeferredUpdates::addCallableUpdate(
-							function () use ( $updates ) {
+							static function () use ( $updates ) {
 								echo $updates['3-1-1'];
 							}
 						);
 					}
 				);
 				DeferredUpdates::addCallableUpdate(
-					function () use ( $updates ) {
+					static function () use ( $updates ) {
 						echo $updates['3-2'];
 						DeferredUpdates::addCallableUpdate(
-							function () use ( $updates ) {
+							static function () use ( $updates ) {
 								echo $updates['3-2-1'];
 							}
 						);
@@ -258,28 +236,22 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 
 		$this->expectOutputString( implode( '', $updates ) );
 
-		DeferredUpdates::doUpdates();
+		// Opportunistic updates should be enabled, so the updates should have already executed
+		$this->assertSame( 0, DeferredUpdates::pendingUpdatesCount() );
 	}
 
-	/**
-	 * @covers DeferredUpdates::doUpdates
-	 * @covers DeferredUpdates::handleUpdateQueue
-	 * @covers DeferredUpdates::addUpdate
-	 */
 	public function testPresendAddOnPostsendRun() {
-		$this->setMwGlobals( 'wgCommandLineMode', true );
-
 		$x = false;
 		$y = false;
 		// clear anything
-		$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
-		$lbFactory->commitMasterChanges( __METHOD__ );
+		$lbFactory = $this->getServiceContainer()->getDBLoadBalancerFactory();
+		$lbFactory->commitPrimaryChanges( __METHOD__ );
 
 		DeferredUpdates::addCallableUpdate(
-			function () use ( &$x, &$y ) {
+			static function () use ( &$x, &$y ) {
 				$x = true;
 				DeferredUpdates::addCallableUpdate(
-					function () use ( &$y ) {
+					static function () use ( &$y ) {
 						$y = true;
 					},
 					DeferredUpdates::PRESEND
@@ -288,19 +260,17 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 			DeferredUpdates::POSTSEND
 		);
 
-		DeferredUpdates::doUpdates();
+		// Opportunistic updates should be enabled, so the updates should have already executed
+		$this->assertSame( 0, DeferredUpdates::pendingUpdatesCount() );
 
 		$this->assertTrue( $x, "Outer POSTSEND update ran" );
 		$this->assertTrue( $y, "Nested PRESEND update ran" );
 	}
 
-	/**
-	 * @covers DeferredUpdates::attemptUpdate
-	 */
 	public function testRunUpdateTransactionScope() {
-		$this->setMwGlobals( 'wgCommandLineMode', false );
+		$cleanup = DeferredUpdates::preventOpportunisticUpdates();
 
-		$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
+		$lbFactory = $this->getServiceContainer()->getDBLoadBalancerFactory();
 		$this->assertFalse( $lbFactory->hasTransactionRound(), 'Initial state' );
 
 		$ran = 0;
@@ -315,13 +285,12 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers DeferredUpdates::attemptUpdate
-	 * @covers TransactionRoundDefiningUpdate::getOrigin
+	 * @covers \MediaWiki\Deferred\TransactionRoundDefiningUpdate
 	 */
 	public function testRunOuterScopeUpdate() {
-		$this->setMwGlobals( 'wgCommandLineMode', false );
+		$cleanup = DeferredUpdates::preventOpportunisticUpdates();
 
-		$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
+		$lbFactory = $this->getServiceContainer()->getDBLoadBalancerFactory();
 		$this->assertFalse( $lbFactory->hasTransactionRound(), 'Initial state' );
 
 		$ran = 0;
@@ -336,41 +305,134 @@ class DeferredUpdatesTest extends MediaWikiTestCase {
 		$this->assertSame( 1, $ran, 'Update ran' );
 	}
 
-	/**
-	 * @covers DeferredUpdates::tryOpportunisticExecute
-	 */
 	public function testTryOpportunisticExecute() {
 		$calls = [];
-		$callback1 = function () use ( &$calls ) {
+		$callback1 = static function () use ( &$calls ) {
 			$calls[] = 1;
 		};
-		$callback2 = function () use ( &$calls ) {
+		$callback2 = static function () use ( &$calls ) {
 			$calls[] = 2;
 		};
 
-		$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
-		$lbFactory->beginMasterChanges( __METHOD__ );
+		$lbFactory = $this->getServiceContainer()->getDBLoadBalancerFactory();
+		$lbFactory->beginPrimaryChanges( __METHOD__ );
 
 		DeferredUpdates::addCallableUpdate( $callback1 );
 		$this->assertEquals( [], $calls );
 
-		DeferredUpdates::tryOpportunisticExecute( 'run' );
+		DeferredUpdates::tryOpportunisticExecute();
 		$this->assertEquals( [], $calls );
 
-		$dbw = wfGetDB( DB_MASTER );
+		$dbw = $this->getDb();
 		$dbw->onTransactionCommitOrIdle( function () use ( &$calls, $callback2 ) {
 			DeferredUpdates::addCallableUpdate( $callback2 );
 			$this->assertEquals( [], $calls );
 			$calls[] = 'oti';
 		} );
-		$this->assertEquals( 1, $dbw->trxLevel() );
+		$this->assertSame( 1, $dbw->trxLevel() );
 		$this->assertEquals( [], $calls );
 
-		$lbFactory->commitMasterChanges( __METHOD__ );
+		$lbFactory->commitPrimaryChanges( __METHOD__ );
 
 		$this->assertEquals( [ 'oti' ], $calls );
 
-		DeferredUpdates::tryOpportunisticExecute( 'run' );
+		DeferredUpdates::tryOpportunisticExecute();
 		$this->assertEquals( [ 'oti', 1, 2 ], $calls );
+	}
+
+	/**
+	 * @covers \MediaWiki\Deferred\MWCallableUpdate
+	 */
+	public function testCallbackUpdateRounds() {
+		$lbFactory = $this->getServiceContainer()->getDBLoadBalancerFactory();
+
+		$fname = __METHOD__;
+		$called = false;
+		// This confirms that DeferredUpdates sets the transaction owner in LBFactory
+		// based on MWCallableUpdate::getOrigin, thus allowing the callback to control
+		// over the transaction and e.g. perform a commit.
+		DeferredUpdates::attemptUpdate(
+			new MWCallableUpdate(
+				static function () use ( $lbFactory, $fname, &$called ) {
+					$lbFactory->commitPrimaryChanges( $fname );
+					$called = true;
+				},
+				$fname
+			)
+		);
+
+		$this->assertTrue( $called, "Callback ran" );
+	}
+
+	public function testNestedExecution() {
+		$cleanup = DeferredUpdates::preventOpportunisticUpdates();
+
+		$res = null;
+		$resSub = null;
+		$resSubSub = null;
+		$resA = null;
+
+		DeferredUpdates::clearPendingUpdates();
+
+		$this->assertSame( 0, DeferredUpdates::pendingUpdatesCount() );
+		$this->assertSame( 0, DeferredUpdates::getRecursiveExecutionStackDepth() );
+
+		// T249069: TransactionRoundDefiningUpdate => JobRunner => DeferredUpdates::doUpdates()
+		DeferredUpdates::addUpdate( new TransactionRoundDefiningUpdate(
+			function () use ( &$res, &$resSub, &$resSubSub, &$resA ) {
+				$res = 1;
+
+				$this->assertSame( 0, DeferredUpdates::pendingUpdatesCount() );
+				$this->assertSame( 1, DeferredUpdates::getRecursiveExecutionStackDepth() );
+
+				// Add update to subqueue of in-progress top-queue job
+				DeferredUpdates::addCallableUpdate( function () use ( &$resSub, &$resSubSub ) {
+					$resSub = 'a';
+
+					$this->assertSame( 0, DeferredUpdates::pendingUpdatesCount() );
+					$this->assertSame( 2, DeferredUpdates::getRecursiveExecutionStackDepth() );
+
+					// Add update to subqueue of in-progress top-queue job (not recursive)
+					DeferredUpdates::addCallableUpdate( static function () use ( &$resSubSub ) {
+						$resSubSub = 'b';
+					} );
+
+					$this->assertSame( 1, DeferredUpdates::pendingUpdatesCount() );
+				} );
+
+				$this->assertSame( 1, DeferredUpdates::pendingUpdatesCount() );
+				$this->assertSame( 1, DeferredUpdates::getRecursiveExecutionStackDepth() );
+
+				if ( $resSub === null && $resA === null && $resSubSub === null ) {
+					$res = 418;
+				}
+
+				DeferredUpdates::doUpdates();
+			}
+		) );
+
+		$this->assertSame( 1, DeferredUpdates::pendingUpdatesCount() );
+		$this->assertSame( 0, DeferredUpdates::getRecursiveExecutionStackDepth() );
+
+		DeferredUpdates::addCallableUpdate( static function () use ( &$resA ) {
+			$resA = 93;
+		} );
+
+		$this->assertSame( 2, DeferredUpdates::pendingUpdatesCount() );
+		$this->assertSame( 0, DeferredUpdates::getRecursiveExecutionStackDepth() );
+
+		$this->assertNull( $resA );
+		$this->assertNull( $res );
+		$this->assertNull( $resSub );
+		$this->assertNull( $resSubSub );
+
+		DeferredUpdates::doUpdates();
+
+		$this->assertSame( 0, DeferredUpdates::pendingUpdatesCount() );
+		$this->assertSame( 0, DeferredUpdates::getRecursiveExecutionStackDepth() );
+		$this->assertSame( 418, $res );
+		$this->assertSame( 'a', $resSub );
+		$this->assertSame( 'b', $resSubSub );
+		$this->assertSame( 93, $resA );
 	}
 }

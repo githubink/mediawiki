@@ -1,6 +1,9 @@
 <?php
+
+use MediaWiki\Title\Title;
+
 /**
- * A SearchResultSet wrapper for SearchNearMatcher
+ * A ISearchResultSet wrapper for TitleMatcher
  */
 class SearchNearMatchResultSet extends SearchResultSet {
 	/**

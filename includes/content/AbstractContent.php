@@ -26,8 +26,19 @@
  * @author Daniel Kinzler
  */
 
+namespace MediaWiki\Content;
+
+use LogicException;
+use MediaWiki\HookContainer\HookRunner;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Parser\MagicWord;
+use MediaWiki\Title\Title;
+use MWException;
+
 /**
  * Base implementation for content objects.
+ *
+ * @stable to extend
  *
  * @ingroup Content
  */
@@ -38,11 +49,13 @@ abstract class AbstractContent implements Content {
 	 *
 	 * @since 1.21
 	 *
-	 * @var string $model_id
+	 * @var string
 	 */
 	protected $model_id;
 
 	/**
+	 * @stable to call
+	 *
 	 * @param string|null $modelId
 	 *
 	 * @since 1.21
@@ -86,7 +99,11 @@ abstract class AbstractContent implements Content {
 	 * @return ContentHandler
 	 */
 	public function getContentHandler() {
-		return ContentHandler::getForContent( $this );
+		return $this->getContentHandlerFactory()->getContentHandler( $this->getModel() );
+	}
+
+	protected function getContentHandlerFactory(): IContentHandlerFactory {
+		return MediaWikiServices::getInstance()->getContentHandlerFactory();
 	}
 
 	/**
@@ -143,6 +160,7 @@ abstract class AbstractContent implements Content {
 	}
 
 	/**
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @param string|null $format
@@ -156,6 +174,30 @@ abstract class AbstractContent implements Content {
 	}
 
 	/**
+	 * Returns native representation of the data. Interpretation depends on
+	 * the data model used, as given by getDataModel().
+	 *
+	 * @stable to override
+	 * @since 1.21
+	 *
+	 * @deprecated since 1.33. Use getText() for TextContent instances.
+	 *             For other content models, use specialized getters.
+	 *             Emitting deprecation warnings since 1.41.
+	 *
+	 * @return mixed The native representation of the content. Could be a
+	 *    string, a nested array structure, an object, a binary blob...
+	 *    anything, really.
+	 * @throws LogicException
+	 *
+	 * @note Caller must be aware of content model!
+	 */
+	public function getNativeData() {
+		wfDeprecated( __METHOD__, '1.33' );
+		throw new LogicException( __METHOD__ . ': not implemented' );
+	}
+
+	/**
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @return bool
@@ -169,6 +211,7 @@ abstract class AbstractContent implements Content {
 	/**
 	 * Subclasses may override this to implement (light weight) validation.
 	 *
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @return bool Always true.
@@ -184,13 +227,14 @@ abstract class AbstractContent implements Content {
 	 * Two Content objects MUST not be considered equal if they do not share the same content model.
 	 * Two Content objects that are equal SHOULD have the same serialization.
 	 *
-	 * This default implementation relies on equalsInternal() to determin whether the
+	 * This default implementation relies on equalsInternal() to determine whether the
 	 * Content objects are logically equivalent. Subclasses that need to implement a custom
 	 * equality check should consider overriding equalsInternal(). Subclasses that override
 	 * equals() itself MUST make sure that the implementation returns false for $that === null,
 	 * and true for $that === this. It MUST also return false if $that does not have the same
 	 * content model.
 	 *
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @param Content|null $that
@@ -199,8 +243,8 @@ abstract class AbstractContent implements Content {
 	 *
 	 * @see Content::equals
 	 */
-	public function equals( Content $that = null ) {
-		if ( is_null( $that ) ) {
+	public function equals( ?Content $that = null ) {
+		if ( $that === null ) {
 			return false;
 		}
 
@@ -212,7 +256,7 @@ abstract class AbstractContent implements Content {
 			return false;
 		}
 
-		// For type safety. Needed for odd cases like MessageContent using CONTENT_MODEL_WIKITEXT
+		// For type safety. Needed for odd cases like non-TextContents using CONTENT_MODEL_WIKITEXT
 		if ( get_class( $that ) !== get_class( $this ) ) {
 			return false;
 		}
@@ -235,6 +279,8 @@ abstract class AbstractContent implements Content {
 	 *
 	 * @note Do not call this method directly, call equals() instead.
 	 *
+	 * @stable to override
+	 *
 	 * @param Content $that
 	 * @return bool
 	 */
@@ -243,84 +289,9 @@ abstract class AbstractContent implements Content {
 	}
 
 	/**
-	 * Returns a list of DataUpdate objects for recording information about this
-	 * Content in some secondary data store.
-	 *
-	 * This default implementation returns a LinksUpdate object and calls the
-	 * SecondaryDataUpdates hook.
-	 *
-	 * Subclasses may override this to determine the secondary data updates more
-	 * efficiently, preferably without the need to generate a parser output object.
-	 * They should however make sure to call SecondaryDataUpdates to give extensions
-	 * a chance to inject additional updates.
-	 *
-	 * @since 1.21
-	 *
-	 * @param Title $title
-	 * @param Content|null $old
-	 * @param bool $recursive
-	 * @param ParserOutput|null $parserOutput
-	 *
-	 * @return DataUpdate[]
-	 *
-	 * @see Content::getSecondaryDataUpdates()
-	 */
-	public function getSecondaryDataUpdates( Title $title, Content $old = null,
-		$recursive = true, ParserOutput $parserOutput = null
-	) {
-		if ( $parserOutput === null ) {
-			$parserOutput = $this->getParserOutput( $title, null, null, false );
-		}
-
-		$updates = [
-			new LinksUpdate( $title, $parserOutput, $recursive )
-		];
-
-		Hooks::run( 'SecondaryDataUpdates', [ $title, $old, $recursive, $parserOutput, &$updates ] );
-
-		return $updates;
-	}
-
-	/**
-	 * @since 1.21
-	 *
-	 * @return Title[]|null
-	 *
-	 * @see Content::getRedirectChain
-	 */
-	public function getRedirectChain() {
-		global $wgMaxRedirects;
-		$title = $this->getRedirectTarget();
-		if ( is_null( $title ) ) {
-			return null;
-		}
-		// recursive check to follow double redirects
-		$recurse = $wgMaxRedirects;
-		$titles = [ $title ];
-		while ( --$recurse > 0 ) {
-			if ( $title->isRedirect() ) {
-				$page = WikiPage::factory( $title );
-				$newtitle = $page->getRedirectTarget();
-			} else {
-				break;
-			}
-			// Redirects to some special pages are not permitted
-			if ( $newtitle instanceof Title && $newtitle->isValidRedirectTarget() ) {
-				// The new title passes the checks, so make that our current
-				// title so that further recursion can be checked
-				$title = $newtitle;
-				$titles[] = $newtitle;
-			} else {
-				break;
-			}
-		}
-
-		return $titles;
-	}
-
-	/**
 	 * Subclasses that implement redirects should override this.
 	 *
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @return Title|null
@@ -329,21 +300,6 @@ abstract class AbstractContent implements Content {
 	 */
 	public function getRedirectTarget() {
 		return null;
-	}
-
-	/**
-	 * @note Migrated here from Title::newFromRedirectRecurse.
-	 *
-	 * @since 1.21
-	 *
-	 * @return Title|null
-	 *
-	 * @see Content::getUltimateRedirectTarget
-	 */
-	public function getUltimateRedirectTarget() {
-		$titles = $this->getRedirectChain();
-
-		return $titles ? array_pop( $titles ) : null;
 	}
 
 	/**
@@ -361,6 +317,7 @@ abstract class AbstractContent implements Content {
 	 * This default implementation always returns $this.
 	 * Subclasses that implement redirects should override this.
 	 *
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @param Title $target
@@ -374,6 +331,7 @@ abstract class AbstractContent implements Content {
 	}
 
 	/**
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @param string|int $sectionId
@@ -386,9 +344,10 @@ abstract class AbstractContent implements Content {
 	}
 
 	/**
+	 * @stable to override
 	 * @since 1.21
 	 *
-	 * @param string|int|null|bool $sectionId
+	 * @param string|int|null|false $sectionId
 	 * @param Content $with
 	 * @param string $sectionTitle
 	 * @return null
@@ -400,20 +359,7 @@ abstract class AbstractContent implements Content {
 	}
 
 	/**
-	 * @since 1.21
-	 *
-	 * @param Title $title
-	 * @param User $user
-	 * @param ParserOptions $popts
-	 * @return Content $this
-	 *
-	 * @see Content::preSaveTransform
-	 */
-	public function preSaveTransform( Title $title, User $user, ParserOptions $popts ) {
-		return $this;
-	}
-
-	/**
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @param string $header
@@ -426,58 +372,10 @@ abstract class AbstractContent implements Content {
 	}
 
 	/**
-	 * @since 1.21
-	 *
-	 * @param Title $title
-	 * @param ParserOptions $popts
-	 * @param array $params
-	 * @return Content $this
-	 *
-	 * @see Content::preloadTransform
-	 */
-	public function preloadTransform( Title $title, ParserOptions $popts, $params = [] ) {
-		return $this;
-	}
-
-	/**
-	 * @since 1.21
-	 *
-	 * @param WikiPage $page
-	 * @param int $flags
-	 * @param int $parentRevId
-	 * @param User $user
-	 * @return Status
-	 *
-	 * @see Content::prepareSave
-	 */
-	public function prepareSave( WikiPage $page, $flags, $parentRevId, User $user ) {
-		if ( $this->isValid() ) {
-			return Status::newGood();
-		} else {
-			return Status::newFatal( "invalid-content-data" );
-		}
-	}
-
-	/**
-	 * @since 1.21
-	 *
-	 * @param WikiPage $page
-	 * @param ParserOutput|null $parserOutput
-	 *
-	 * @return DeferrableUpdate[]
-	 *
-	 * @see Content::getDeletionUpdates
-	 */
-	public function getDeletionUpdates( WikiPage $page, ParserOutput $parserOutput = null ) {
-		return [
-			new LinksDeletionUpdate( $page ),
-		];
-	}
-
-	/**
 	 * This default implementation always returns false. Subclasses may override
 	 * this to supply matching logic.
 	 *
+	 * @stable to override
 	 * @since 1.21
 	 *
 	 * @param MagicWord $word
@@ -494,10 +392,12 @@ abstract class AbstractContent implements Content {
 	 * This base implementation calls the hook ConvertContent to enable custom conversions.
 	 * Subclasses may override this to implement conversion for "their" content model.
 	 *
+	 * @stable to override
+	 *
 	 * @param string $toModel
 	 * @param string $lossy
 	 *
-	 * @return Content|bool
+	 * @return Content|false
 	 *
 	 * @see Content::convert()
 	 */
@@ -510,82 +410,13 @@ abstract class AbstractContent implements Content {
 		$lossy = ( $lossy === 'lossy' ); // string flag, convert to boolean for convenience
 		$result = false;
 
-		Hooks::run( 'ConvertContent', [ $this, $toModel, $lossy, &$result ] );
+		( new HookRunner( MediaWikiServices::getInstance()->getHookContainer() ) )
+			->onConvertContent( $this, $toModel, $lossy, $result );
 
 		return $result;
 	}
 
-	/**
-	 * Returns a ParserOutput object containing information derived from this content.
-	 * Most importantly, unless $generateHtml was false, the return value contains an
-	 * HTML representation of the content.
-	 *
-	 * Subclasses that want to control the parser output may override this, but it is
-	 * preferred to override fillParserOutput() instead.
-	 *
-	 * Subclasses that override getParserOutput() itself should take care to call the
-	 * ContentGetParserOutput hook.
-	 *
-	 * @since 1.24
-	 *
-	 * @param Title $title Context title for parsing
-	 * @param int|null $revId Revision ID (for {{REVISIONID}})
-	 * @param ParserOptions|null $options
-	 * @param bool $generateHtml Whether or not to generate HTML
-	 *
-	 * @return ParserOutput Containing information derived from this content.
-	 */
-	public function getParserOutput( Title $title, $revId = null,
-		ParserOptions $options = null, $generateHtml = true
-	) {
-		if ( $options === null ) {
-			$options = ParserOptions::newCanonical( 'canonical' );
-		}
-
-		$po = new ParserOutput();
-		$options->registerWatcher( [ $po, 'recordOption' ] );
-
-		if ( Hooks::run( 'ContentGetParserOutput',
-			[ $this, $title, $revId, $options, $generateHtml, &$po ] )
-		) {
-			// Save and restore the old value, just in case something is reusing
-			// the ParserOptions object in some weird way.
-			$oldRedir = $options->getRedirectTarget();
-			$options->setRedirectTarget( $this->getRedirectTarget() );
-			$this->fillParserOutput( $title, $revId, $options, $generateHtml, $po );
-			$options->setRedirectTarget( $oldRedir );
-		}
-
-		Hooks::run( 'ContentAlterParserOutput', [ $this, $title, $po ] );
-		$options->registerWatcher( null );
-
-		return $po;
-	}
-
-	/**
-	 * Fills the provided ParserOutput with information derived from the content.
-	 * Unless $generateHtml was false, this includes an HTML representation of the content.
-	 *
-	 * This is called by getParserOutput() after consulting the ContentGetParserOutput hook.
-	 * Subclasses are expected to override this method (or getParserOutput(), if need be).
-	 * Subclasses of TextContent should generally override getHtml() instead.
-	 *
-	 * This placeholder implementation always throws an exception.
-	 *
-	 * @since 1.24
-	 *
-	 * @param Title $title Context title for parsing
-	 * @param int|null $revId Revision ID (for {{REVISIONID}})
-	 * @param ParserOptions $options
-	 * @param bool $generateHtml Whether or not to generate HTML
-	 * @param ParserOutput &$output The output object to fill (reference).
-	 *
-	 * @throws MWException
-	 */
-	protected function fillParserOutput( Title $title, $revId,
-		ParserOptions $options, $generateHtml, ParserOutput &$output
-	) {
-		// Don't make abstract, so subclasses that override getParserOutput() directly don't fail.
-		throw new MWException( 'Subclasses of AbstractContent must override fillParserOutput!' );
-	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( AbstractContent::class, 'AbstractContent' );

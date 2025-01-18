@@ -21,7 +21,13 @@
  * @ingroup Maintenance
  */
 
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 class Undelete extends Maintenance {
 	public function __construct() {
@@ -33,9 +39,7 @@ class Undelete extends Maintenance {
 	}
 
 	public function execute() {
-		global $wgUser;
-
-		$user = $this->getOption( 'user', false );
+		$username = $this->getOption( 'user', false );
 		$reason = $this->getOption( 'reason', '' );
 		$pageName = $this->getArg( 0 );
 
@@ -43,20 +47,32 @@ class Undelete extends Maintenance {
 		if ( !$title ) {
 			$this->fatalError( "Invalid title" );
 		}
-		if ( $user === false ) {
-			$wgUser = User::newSystemUser( 'Command line script', [ 'steal' => true ] );
+		if ( $username === false ) {
+			$user = User::newSystemUser( 'Command line script', [ 'steal' => true ] );
 		} else {
-			$wgUser = User::newFromName( $user );
+			$user = User::newFromName( $username );
 		}
-		if ( !$wgUser ) {
+		if ( !$user ) {
 			$this->fatalError( "Invalid username" );
 		}
-		$archive = new PageArchive( $title, RequestContext::getMain()->getConfig() );
-		$this->output( "Undeleting " . $title->getPrefixedDBkey() . '...' );
-		$archive->undelete( [], $reason );
+
+		$page = $this->getServiceContainer()->getWikiPageFactory()->newFromTitle( $title );
+		$this->output( "Undeleting " . $title->getPrefixedDBkey() . "...\n" );
+
+		$this->beginTransactionRound( __METHOD__ );
+		$status = $this->getServiceContainer()->getUndeletePageFactory()
+			->newUndeletePage( $page, $user )
+			->undeleteUnsafe( $reason );
+		$this->commitTransactionRound( __METHOD__ );
+
+		if ( !$status->isGood() ) {
+			$this->fatalError( $status );
+		}
 		$this->output( "done\n" );
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = Undelete::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

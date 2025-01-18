@@ -22,8 +22,10 @@
 
 namespace MediaWiki\Block;
 
-use IContextSource;
-use Title;
+use InvalidArgumentException;
+use MediaWiki\Message\Message;
+use MediaWiki\Title\Title;
+use MediaWiki\User\UserIdentity;
 
 /**
  * Multiple Block class.
@@ -38,10 +40,35 @@ class CompositeBlock extends AbstractBlock {
 	private $originalBlocks;
 
 	/**
+	 * Helper method for merging multiple blocks into a composite block.
+	 * @param AbstractBlock ...$blocks
+	 * @return self
+	 */
+	public static function createFromBlocks( AbstractBlock ...$blocks ): self {
+		$originalBlocks = [];
+		foreach ( $blocks as $block ) {
+			if ( $block instanceof self ) {
+				$originalBlocks = array_merge( $originalBlocks, $block->getOriginalBlocks() );
+			} else {
+				$originalBlocks[] = $block;
+			}
+		}
+		if ( !$originalBlocks ) {
+			throw new InvalidArgumentException( 'No blocks given' );
+		}
+		return new self( [
+			'address' => $originalBlocks[0]->target,
+			'reason' => new Message( 'blockedtext-composite-reason' ),
+			'originalBlocks' => $originalBlocks,
+		] );
+	}
+
+	/**
 	 * Create a new block with specified parameters on a user, IP or IP range.
 	 *
-	 * @param array $options Parameters of the block:
-	 *     originalBlocks Block[] Blocks that this block is composed from
+	 * @param array $options Parameters of the block, with options supported by
+	 *  `AbstractBlock::__construct`, and also:
+	 *  - originalBlocks: (Block[]) Blocks that this block is composed from
 	 */
 	public function __construct( array $options = [] ) {
 		parent::__construct( $options );
@@ -54,9 +81,10 @@ class CompositeBlock extends AbstractBlock {
 
 		$this->originalBlocks = $options[ 'originalBlocks' ];
 
-		$this->setHideName( $this->propHasValue( 'mHideName', true ) );
+		$this->setHideName( $this->propHasValue( 'hideName', true ) );
+		$this->isHardblock( $this->propHasValue( 'isHardblock', true ) );
 		$this->isSitewide( $this->propHasValue( 'isSitewide', true ) );
-		$this->isEmailBlocked( $this->propHasValue( 'mBlockEmail', true ) );
+		$this->isEmailBlocked( $this->propHasValue( 'blockEmail', true ) );
 		$this->isCreateAccountBlocked( $this->propHasValue( 'blockCreateAccount', true ) );
 		$this->isUsertalkEditAllowed( !$this->propHasValue( 'allowUsertalk', false ) );
 	}
@@ -107,9 +135,41 @@ class CompositeBlock extends AbstractBlock {
 	}
 
 	/**
+	 * Create a clone of the object with the original blocks array set to
+	 * something else.
+	 *
+	 * @since 1.42
+	 * @param AbstractBlock[] $blocks
+	 * @return self
+	 */
+	public function withOriginalBlocks( array $blocks ) {
+		$clone = clone $this;
+		$clone->originalBlocks = $blocks;
+		return $clone;
+	}
+
+	public function toArray(): array {
+		return $this->originalBlocks;
+	}
+
+	/**
 	 * @inheritDoc
 	 */
-	public function getExpiry() {
+	public function getTimestamp(): string {
+		$minStart = null;
+		foreach ( $this->originalBlocks as $block ) {
+			$startTime = $block->getTimestamp();
+			if ( $minStart === null || $startTime === '' || $startTime < $minStart ) {
+				$minStart = $startTime;
+			}
+		}
+		return $minStart ?? '';
+	}
+
+	/**
+	 * @inheritDoc
+	 */
+	public function getExpiry(): string {
 		$maxExpiry = null;
 		foreach ( $this->originalBlocks as $block ) {
 			$expiry = $block->getExpiry();
@@ -117,33 +177,50 @@ class CompositeBlock extends AbstractBlock {
 				$maxExpiry = $expiry;
 			}
 		}
-		return $maxExpiry;
+		return $maxExpiry ?? '';
 	}
 
 	/**
 	 * @inheritDoc
 	 */
-	public function getPermissionsError( IContextSource $context ) {
-		$params = $this->getBlockErrorParams( $context );
-
-		$msg = 'blockedtext-composite';
-
-		array_unshift( $params, $msg );
-
-		return $params;
+	public function getIdentifier( $wikiId = self::LOCAL ) {
+		$identifier = [];
+		foreach ( $this->originalBlocks as $block ) {
+			$identifier[] = $block->getIdentifier( $wikiId );
+		}
+		return $identifier;
 	}
 
 	/**
 	 * @inheritDoc
+	 *
+	 * Determines whether the CompositeBlock applies to a right by checking
+	 * whether the original blocks apply to that right. Each block can report
+	 * true (applies), false (does not apply) or null (unsure). Then:
+	 * - If any original blocks apply, this block applies
+	 * - If no original blocks apply but any are unsure, this block is unsure
+	 * - If all blocks do not apply, this block does not apply
 	 */
 	public function appliesToRight( $right ) {
-		return $this->methodReturnsValue( __FUNCTION__, true, $right );
+		$isUnsure = false;
+
+		foreach ( $this->originalBlocks as $block ) {
+			$appliesToRight = $block->appliesToRight( $right );
+
+			if ( $appliesToRight ) {
+				return true;
+			} elseif ( $appliesToRight === null ) {
+				$isUnsure = true;
+			}
+		}
+
+		return $isUnsure ? null : false;
 	}
 
 	/**
 	 * @inheritDoc
 	 */
-	public function appliesToUsertalk( Title $usertalk = null ) {
+	public function appliesToUsertalk( ?Title $usertalk = null ) {
 		return $this->methodReturnsValue( __FUNCTION__, true, $usertalk );
 	}
 
@@ -175,4 +252,25 @@ class CompositeBlock extends AbstractBlock {
 		return $this->methodReturnsValue( __FUNCTION__, true );
 	}
 
+	/**
+	 * @inheritDoc
+	 */
+	public function getBy( $wikiId = self::LOCAL ): int {
+		$this->assertWiki( $wikiId );
+		return 0;
+	}
+
+	/**
+	 * @inheritDoc
+	 */
+	public function getByName() {
+		return '';
+	}
+
+	/**
+	 * @inheritDoc
+	 */
+	public function getBlocker(): ?UserIdentity {
+		return null;
+	}
 }

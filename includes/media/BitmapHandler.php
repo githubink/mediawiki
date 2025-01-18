@@ -21,11 +21,14 @@
  * @ingroup Media
  */
 
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiServices;
 use MediaWiki\Shell\Shell;
 
 /**
  * Generic handler for bitmap images
  *
+ * @stable to extend
  * @ingroup Media
  */
 class BitmapHandler extends TransformationalImageHandler {
@@ -33,24 +36,27 @@ class BitmapHandler extends TransformationalImageHandler {
 	/**
 	 * Returns which scaler type should be used. Creates parent directories
 	 * for $dstPath and returns 'client' on error
+	 * @stable to override
 	 *
-	 * @param string $dstPath
+	 * @param string|null $dstPath
 	 * @param bool $checkDstPath
-	 * @return string|Callable One of client, im, custom, gd, imext or an array( object, method )
+	 * @return string|callable One of client, im, custom, gd, imext or an array( object, method )
 	 */
 	protected function getScalerType( $dstPath, $checkDstPath = true ) {
-		global $wgUseImageResize, $wgUseImageMagick, $wgCustomConvertCommand;
-
+		$mainConfig = MediaWikiServices::getInstance()->getMainConfig();
+		$useImageResize = $mainConfig->get( MainConfigNames::UseImageResize );
+		$useImageMagick = $mainConfig->get( MainConfigNames::UseImageMagick );
+		$customConvertCommand = $mainConfig->get( MainConfigNames::CustomConvertCommand );
 		if ( !$dstPath && $checkDstPath ) {
 			# No output path available, client side scaling only
 			$scaler = 'client';
-		} elseif ( !$wgUseImageResize ) {
+		} elseif ( !$useImageResize ) {
 			$scaler = 'client';
-		} elseif ( $wgUseImageMagick ) {
+		} elseif ( $useImageMagick ) {
 			$scaler = 'im';
-		} elseif ( $wgCustomConvertCommand ) {
+		} elseif ( $customConvertCommand ) {
 			$scaler = 'custom';
-		} elseif ( function_exists( 'imagecreatetruecolor' ) ) {
+		} elseif ( $this->hasGDSupport() && function_exists( 'imagecreatetruecolor' ) ) {
 			$scaler = 'gd';
 		} elseif ( class_exists( 'Imagick' ) ) {
 			$scaler = 'imext';
@@ -61,15 +67,32 @@ class BitmapHandler extends TransformationalImageHandler {
 		return $scaler;
 	}
 
+	/**
+	 * Whether the php-gd extension supports this type of file.
+	 *
+	 * @stable to override
+	 * @return bool
+	 */
+	protected function hasGDSupport() {
+		return true;
+	}
+
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function makeParamString( $params ) {
 		$res = parent::makeParamString( $params );
 		if ( isset( $params['interlace'] ) && $params['interlace'] ) {
-			return "interlaced-{$res}";
-		} else {
-			return $res;
+			return "interlaced-$res";
 		}
+		return $res;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function parseParamString( $str ) {
 		$remainder = preg_replace( '/^interlaced-/', '', $str );
 		$params = parent::parseParamString( $remainder );
@@ -80,28 +103,33 @@ class BitmapHandler extends TransformationalImageHandler {
 		return $params;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function validateParam( $name, $value ) {
 		if ( $name === 'interlace' ) {
 			return $value === false || $value === true;
-		} else {
-			return parent::validateParam( $name, $value );
 		}
+		return parent::validateParam( $name, $value );
 	}
 
 	/**
+	 * @stable to override
 	 * @param File $image
 	 * @param array &$params
 	 * @return bool
 	 */
 	public function normaliseParams( $image, &$params ) {
-		global $wgMaxInterlacingAreas;
+		$maxInterlacingAreas = MediaWikiServices::getInstance()->getMainConfig()
+			->get( MainConfigNames::MaxInterlacingAreas );
 		if ( !parent::normaliseParams( $image, $params ) ) {
 			return false;
 		}
 		$mimeType = $image->getMimeType();
 		$interlace = isset( $params['interlace'] ) && $params['interlace']
-			&& isset( $wgMaxInterlacingAreas[$mimeType] )
-			&& $this->getImageArea( $image ) <= $wgMaxInterlacingAreas[$mimeType];
+			&& isset( $maxInterlacingAreas[$mimeType] )
+			&& $this->getImageArea( $image ) <= $maxInterlacingAreas[$mimeType];
 		$params['interlace'] = $interlace;
 		return true;
 	}
@@ -121,24 +149,29 @@ class BitmapHandler extends TransformationalImageHandler {
 			case 'yuv420':
 				return [ '2x2', '1x1', '1x1' ];
 			default:
-				throw new MWException( 'Invalid pixel format for JPEG output' );
+				throw new UnexpectedValueException( 'Invalid pixel format for JPEG output' );
 		}
 	}
 
 	/**
 	 * Transform an image using ImageMagick
+	 * @stable to override
 	 *
 	 * @param File $image File associated with this thumbnail
 	 * @param array $params Array with scaler params
 	 *
-	 * @return MediaTransformError|bool Error object if error occurred, false (=no error) otherwise
+	 * @return MediaTransformError|false Error object if error occurred, false (=no error) otherwise
 	 */
 	protected function transformImageMagick( $image, $params ) {
 		# use ImageMagick
-		global $wgSharpenReductionThreshold, $wgSharpenParameter, $wgMaxAnimatedGifArea,
-			$wgImageMagickTempDir, $wgImageMagickConvertCommand, $wgJpegPixelFormat,
-			$wgJpegQuality;
-
+		$mainConfig = MediaWikiServices::getInstance()->getMainConfig();
+		$sharpenReductionThreshold = $mainConfig->get( MainConfigNames::SharpenReductionThreshold );
+		$sharpenParameter = $mainConfig->get( MainConfigNames::SharpenParameter );
+		$maxAnimatedGifArea = $mainConfig->get( MainConfigNames::MaxAnimatedGifArea );
+		$imageMagickTempDir = $mainConfig->get( MainConfigNames::ImageMagickTempDir );
+		$imageMagickConvertCommand = $mainConfig->get( MainConfigNames::ImageMagickConvertCommand );
+		$jpegPixelFormat = $mainConfig->get( MainConfigNames::JpegPixelFormat );
+		$jpegQuality = $mainConfig->get( MainConfigNames::JpegQuality );
 		$quality = [];
 		$sharpen = [];
 		$scene = false;
@@ -147,54 +180,54 @@ class BitmapHandler extends TransformationalImageHandler {
 		$decoderHint = [];
 		$subsampling = [];
 
-		if ( $params['mimeType'] == 'image/jpeg' ) {
+		if ( $params['mimeType'] === 'image/jpeg' ) {
 			$qualityVal = isset( $params['quality'] ) ? (string)$params['quality'] : null;
-			$quality = [ '-quality', $qualityVal ?: (string)$wgJpegQuality ]; // 80% by default
+			$quality = [ '-quality', $qualityVal ?: (string)$jpegQuality ]; // 80% by default
 			if ( $params['interlace'] ) {
 				$animation_post = [ '-interlace', 'JPEG' ];
 			}
 			# Sharpening, see T8193
 			if ( ( $params['physicalWidth'] + $params['physicalHeight'] )
 				/ ( $params['srcWidth'] + $params['srcHeight'] )
-				< $wgSharpenReductionThreshold
+				< $sharpenReductionThreshold
 			) {
-				$sharpen = [ '-sharpen', $wgSharpenParameter ];
+				$sharpen = [ '-sharpen', $sharpenParameter ];
 			}
-			if ( version_compare( $this->getMagickVersion(), "6.5.6" ) >= 0 ) {
-				// JPEG decoder hint to reduce memory, available since IM 6.5.6-2
-				$decoderHint = [ '-define', "jpeg:size={$params['physicalDimensions']}" ];
-			}
-			if ( $wgJpegPixelFormat ) {
-				$factors = $this->imageMagickSubsampling( $wgJpegPixelFormat );
+
+			// JPEG decoder hint to reduce memory, available since IM 6.5.6-2
+			$decoderHint = [ '-define', "jpeg:size={$params['physicalDimensions']}" ];
+
+			if ( $jpegPixelFormat ) {
+				$factors = $this->imageMagickSubsampling( $jpegPixelFormat );
 				$subsampling = [ '-sampling-factor', implode( ',', $factors ) ];
 			}
-		} elseif ( $params['mimeType'] == 'image/png' ) {
+		} elseif ( $params['mimeType'] === 'image/png' ) {
 			$quality = [ '-quality', '95' ]; // zlib 9, adaptive filtering
 			if ( $params['interlace'] ) {
 				$animation_post = [ '-interlace', 'PNG' ];
 			}
-		} elseif ( $params['mimeType'] == 'image/webp' ) {
+		} elseif ( $params['mimeType'] === 'image/webp' ) {
 			$quality = [ '-quality', '95' ]; // zlib 9, adaptive filtering
-		} elseif ( $params['mimeType'] == 'image/gif' ) {
-			if ( $this->getImageArea( $image ) > $wgMaxAnimatedGifArea ) {
+		} elseif ( $params['mimeType'] === 'image/gif' ) {
+			if ( $this->getImageArea( $image ) > $maxAnimatedGifArea ) {
 				// Extract initial frame only; we're so big it'll
 				// be a total drag. :P
 				$scene = 0;
 			} elseif ( $this->isAnimatedImage( $image ) ) {
 				// Coalesce is needed to scale animated GIFs properly (T3017).
 				$animation_pre = [ '-coalesce' ];
+
 				// We optimize the output, but -optimize is broken,
-				// use optimizeTransparency instead (T13822)
-				if ( version_compare( $this->getMagickVersion(), "6.3.5" ) >= 0 ) {
-					$animation_post = [ '-fuzz', '5%', '-layers', 'optimizeTransparency' ];
-				}
+				// use optimizeTransparency instead (T13822). Version >= IM 6.3.5
+				$animation_post = [ '-fuzz', '5%', '-layers', 'optimizeTransparency' ];
 			}
-			if ( $params['interlace'] && version_compare( $this->getMagickVersion(), "6.3.4" ) >= 0
-				&& !$this->isAnimatedImage( $image ) ) { // interlacing animated GIFs is a bad idea
+			if ( $params['interlace'] && !$this->isAnimatedImage( $image ) ) {
+				// Version >= IM 6.3.4
+				// interlacing animated GIFs is a bad idea
 				$animation_post[] = '-interlace';
 				$animation_post[] = 'GIF';
 			}
-		} elseif ( $params['mimeType'] == 'image/x-xcf' ) {
+		} elseif ( $params['mimeType'] === 'image/x-xcf' ) {
 			// Before merging layers, we need to set the background
 			// to be transparent to preserve alpha, as -layers merge
 			// merges all layers on to a canvas filled with the
@@ -206,32 +239,19 @@ class BitmapHandler extends TransformationalImageHandler {
 				'-layers', 'merge',
 				'-background', 'white',
 			];
-			Wikimedia\suppressWarnings();
-			$xcfMeta = unserialize( $image->getMetadata() );
-			Wikimedia\restoreWarnings();
-			if ( $xcfMeta
-				&& isset( $xcfMeta['colorType'] )
-				&& $xcfMeta['colorType'] === 'greyscale-alpha'
-				&& version_compare( $this->getMagickVersion(), "6.8.9-3" ) < 0
-			) {
-				// T68323 - Greyscale images not rendered properly.
-				// So only take the "red" channel.
-				$channelOnly = [ '-channel', 'R', '-separate' ];
-				$animation_pre = array_merge( $animation_pre, $channelOnly );
-			}
 		}
 
 		// Use one thread only, to avoid deadlock bugs on OOM
 		$env = [ 'OMP_NUM_THREADS' => 1 ];
-		if ( strval( $wgImageMagickTempDir ) !== '' ) {
-			$env['MAGICK_TMPDIR'] = $wgImageMagickTempDir;
+		if ( (string)$imageMagickTempDir !== '' ) {
+			$env['MAGICK_TMPDIR'] = $imageMagickTempDir;
 		}
 
 		$rotation = isset( $params['disableRotation'] ) ? 0 : $this->getRotation( $image );
-		list( $width, $height ) = $this->extractPreRotationDimensions( $params, $rotation );
+		[ $width, $height ] = $this->extractPreRotationDimensions( $params, $rotation );
 
 		$cmd = Shell::escape( ...array_merge(
-			[ $wgImageMagickConvertCommand ],
+			[ $imageMagickConvertCommand ],
 			$quality,
 			// Specify white background color, will be used for transparent images
 			// in Internet Explorer/Windows instead of default black.
@@ -256,7 +276,7 @@ class BitmapHandler extends TransformationalImageHandler {
 			$animation_post,
 			[ $this->escapeMagickOutput( $params['dstPath'] ) ] ) );
 
-		wfDebug( __METHOD__ . ": running ImageMagick: $cmd\n" );
+		wfDebug( __METHOD__ . ": running ImageMagick: $cmd" );
 		$retval = 0;
 		$err = wfShellExecWithStderr( $cmd, $retval, $env );
 
@@ -275,42 +295,45 @@ class BitmapHandler extends TransformationalImageHandler {
 	 * @param File $image File associated with this thumbnail
 	 * @param array $params Array with scaler params
 	 *
-	 * @return MediaTransformError Error|bool object if error occurred, false (=no error) otherwise
+	 * @return MediaTransformError|false Error object if error occurred, false (=no error) otherwise
 	 */
 	protected function transformImageMagickExt( $image, $params ) {
-		global $wgSharpenReductionThreshold, $wgSharpenParameter, $wgMaxAnimatedGifArea,
-			$wgJpegPixelFormat, $wgJpegQuality;
-
+		$mainConfig = MediaWikiServices::getInstance()->getMainConfig();
+		$sharpenReductionThreshold = $mainConfig->get( MainConfigNames::SharpenReductionThreshold );
+		$sharpenParameter = $mainConfig->get( MainConfigNames::SharpenParameter );
+		$maxAnimatedGifArea = $mainConfig->get( MainConfigNames::MaxAnimatedGifArea );
+		$jpegPixelFormat = $mainConfig->get( MainConfigNames::JpegPixelFormat );
+		$jpegQuality = $mainConfig->get( MainConfigNames::JpegQuality );
 		try {
 			$im = new Imagick();
 			$im->readImage( $params['srcPath'] );
 
-			if ( $params['mimeType'] == 'image/jpeg' ) {
+			if ( $params['mimeType'] === 'image/jpeg' ) {
 				// Sharpening, see T8193
 				if ( ( $params['physicalWidth'] + $params['physicalHeight'] )
 					/ ( $params['srcWidth'] + $params['srcHeight'] )
-					< $wgSharpenReductionThreshold
+					< $sharpenReductionThreshold
 				) {
 					// Hack, since $wgSharpenParameter is written specifically for the command line convert
-					list( $radius, $sigma ) = explode( 'x', $wgSharpenParameter );
-					$im->sharpenImage( $radius, $sigma );
+					[ $radius, $sigma ] = explode( 'x', $sharpenParameter, 2 );
+					$im->sharpenImage( (float)$radius, (float)$sigma );
 				}
 				$qualityVal = isset( $params['quality'] ) ? (string)$params['quality'] : null;
-				$im->setCompressionQuality( $qualityVal ?: $wgJpegQuality );
+				$im->setCompressionQuality( $qualityVal ?: $jpegQuality );
 				if ( $params['interlace'] ) {
 					$im->setInterlaceScheme( Imagick::INTERLACE_JPEG );
 				}
-				if ( $wgJpegPixelFormat ) {
-					$factors = $this->imageMagickSubsampling( $wgJpegPixelFormat );
+				if ( $jpegPixelFormat ) {
+					$factors = $this->imageMagickSubsampling( $jpegPixelFormat );
 					$im->setSamplingFactors( $factors );
 				}
-			} elseif ( $params['mimeType'] == 'image/png' ) {
+			} elseif ( $params['mimeType'] === 'image/png' ) {
 				$im->setCompressionQuality( 95 );
 				if ( $params['interlace'] ) {
 					$im->setInterlaceScheme( Imagick::INTERLACE_PNG );
 				}
-			} elseif ( $params['mimeType'] == 'image/gif' ) {
-				if ( $this->getImageArea( $image ) > $wgMaxAnimatedGifArea ) {
+			} elseif ( $params['mimeType'] === 'image/gif' ) {
+				if ( $this->getImageArea( $image ) > $maxAnimatedGifArea ) {
 					// Extract initial frame only; we're so big it'll
 					// be a total drag. :P
 					$im->setImageScene( 0 );
@@ -319,16 +342,13 @@ class BitmapHandler extends TransformationalImageHandler {
 					$im = $im->coalesceImages();
 				}
 				// GIF interlacing is only available since 6.3.4
-				$v = Imagick::getVersion();
-				preg_match( '/ImageMagick ([0-9]+\.[0-9]+\.[0-9]+)/', $v['versionString'], $v );
-
-				if ( $params['interlace'] && version_compare( $v[1], '6.3.4' ) >= 0 ) {
+				if ( $params['interlace'] ) {
 					$im->setInterlaceScheme( Imagick::INTERLACE_GIF );
 				}
 			}
 
 			$rotation = isset( $params['disableRotation'] ) ? 0 : $this->getRotation( $image );
-			list( $width, $height ) = $this->extractPreRotationDimensions( $params, $rotation );
+			[ $width, $height ] = $this->extractPreRotationDimensions( $params, $rotation );
 
 			$im->setImageBackgroundColor( new ImagickPixel( 'white' ) );
 
@@ -345,7 +365,7 @@ class BitmapHandler extends TransformationalImageHandler {
 			}
 
 			if ( $this->isAnimatedImage( $image ) ) {
-				wfDebug( __METHOD__ . ": Writing animated thumbnail\n" );
+				wfDebug( __METHOD__ . ": Writing animated thumbnail" );
 				// This is broken somehow... can't find out how to fix it
 				$result = $im->writeImages( $params['dstPath'], true );
 			} else {
@@ -368,20 +388,22 @@ class BitmapHandler extends TransformationalImageHandler {
 	 * @param File $image File associated with this thumbnail
 	 * @param array $params Array with scaler params
 	 *
-	 * @return MediaTransformError Error|bool object if error occurred, false (=no error) otherwise
+	 * @return MediaTransformError|false Error object if error occurred, false (=no error) otherwise
 	 */
 	protected function transformCustom( $image, $params ) {
-		# Use a custom convert command
-		global $wgCustomConvertCommand;
+		// Use a custom convert command
+		$customConvertCommand = MediaWikiServices::getInstance()->getMainConfig()
+			->get( MainConfigNames::CustomConvertCommand );
 
-		# Variables: %s %d %w %h
-		$src = Shell::escape( $params['srcPath'] );
-		$dst = Shell::escape( $params['dstPath'] );
-		$cmd = $wgCustomConvertCommand;
-		$cmd = str_replace( '%s', $src, str_replace( '%d', $dst, $cmd ) ); # Filenames
-		$cmd = str_replace( '%h', Shell::escape( $params['physicalHeight'] ),
-			str_replace( '%w', Shell::escape( $params['physicalWidth'] ), $cmd ) ); # Size
-		wfDebug( __METHOD__ . ": Running custom convert command $cmd\n" );
+		// Find all variables in the original command at once,
+		// so that replacement values cannot inject variable placeholders
+		$cmd = strtr( $customConvertCommand, [
+			'%s' => Shell::escape( $params['srcPath'] ),
+			'%d' => Shell::escape( $params['dstPath'] ),
+			'%w' => Shell::escape( $params['physicalWidth'] ),
+			'%h' => Shell::escape( $params['physicalHeight'] ),
+		] );
+		wfDebug( __METHOD__ . ": Running custom convert command $cmd" );
 		$retval = 0;
 		$err = wfShellExecWithStderr( $cmd, $retval );
 
@@ -400,7 +422,7 @@ class BitmapHandler extends TransformationalImageHandler {
 	 * @param File $image File associated with this thumbnail
 	 * @param array $params Array with scaler params
 	 *
-	 * @return MediaTransformError|bool Error object if error occurred, false (=no error) otherwise
+	 * @return MediaTransformError|false Error object if error occurred, false (=no error) otherwise
 	 */
 	protected function transformGd( $image, $params ) {
 		# Use PHP's builtin GD library functions.
@@ -418,16 +440,16 @@ class BitmapHandler extends TransformationalImageHandler {
 
 		if ( !isset( $typemap[$params['mimeType']] ) ) {
 			$err = 'Image type not supported';
-			wfDebug( "$err\n" );
+			wfDebug( $err );
 			$errMsg = wfMessage( 'thumbnail_image-type' )->text();
 
 			return $this->getMediaTransformError( $params, $errMsg );
 		}
-		list( $loader, $colorStyle, $useQuality, $saveType ) = $typemap[$params['mimeType']];
+		[ $loader, $colorStyle, $useQuality, $saveType ] = $typemap[$params['mimeType']];
 
 		if ( !function_exists( $loader ) ) {
 			$err = "Incomplete GD library configuration: missing function $loader";
-			wfDebug( "$err\n" );
+			wfDebug( $err );
 			$errMsg = wfMessage( 'thumbnail_gd-library', $loader )->text();
 
 			return $this->getMediaTransformError( $params, $errMsg );
@@ -435,7 +457,7 @@ class BitmapHandler extends TransformationalImageHandler {
 
 		if ( !file_exists( $params['srcPath'] ) ) {
 			$err = "File seems to be missing: {$params['srcPath']}";
-			wfDebug( "$err\n" );
+			wfDebug( $err );
 			$errMsg = wfMessage( 'thumbnail_image-missing', $params['srcPath'] )->text();
 
 			return $this->getMediaTransformError( $params, $errMsg );
@@ -443,7 +465,7 @@ class BitmapHandler extends TransformationalImageHandler {
 
 		if ( filesize( $params['srcPath'] ) === 0 ) {
 			$err = "Image file size seems to be zero.";
-			wfDebug( "$err\n" );
+			wfDebug( $err );
 			$errMsg = wfMessage( 'thumbnail_image-size-zero', $params['srcPath'] )->text();
 
 			return $this->getMediaTransformError( $params, $errMsg );
@@ -454,7 +476,7 @@ class BitmapHandler extends TransformationalImageHandler {
 		$rotation = function_exists( 'imagerotate' ) && !isset( $params['disableRotation'] ) ?
 			$this->getRotation( $image ) :
 			0;
-		list( $width, $height ) = $this->extractPreRotationDimensions( $params, $rotation );
+		[ $width, $height ] = $this->extractPreRotationDimensions( $params, $rotation );
 		$dst_image = imagecreatetruecolor( $width, $height );
 
 		// Initialise the destination image to transparent instead of
@@ -463,7 +485,7 @@ class BitmapHandler extends TransformationalImageHandler {
 		imagecolortransparent( $dst_image, $background );
 		imagealphablending( $dst_image, false );
 
-		if ( $colorStyle == 'palette' ) {
+		if ( $colorStyle === 'palette' ) {
 			// Don't resample for paletted GIF images.
 			// It may just uglify them, and completely breaks transparency.
 			imagecopyresized( $dst_image, $src_image,
@@ -477,7 +499,7 @@ class BitmapHandler extends TransformationalImageHandler {
 				imagesx( $src_image ), imagesy( $src_image ) );
 		}
 
-		if ( $rotation % 360 != 0 && $rotation % 90 == 0 ) {
+		if ( $rotation % 360 !== 0 && $rotation % 90 === 0 ) {
 			$rot_image = imagerotate( $dst_image, $rotation, 0 );
 			imagedestroy( $dst_image );
 			$dst_image = $rot_image;
@@ -489,6 +511,7 @@ class BitmapHandler extends TransformationalImageHandler {
 		if ( $useQuality && isset( $params['quality'] ) ) {
 			$funcParams[] = $params['quality'];
 		}
+		// @phan-suppress-next-line PhanParamTooFewInternalUnpack,PhanParamTooFewUnpack There are at least 2 args
 		$saveType( ...$funcParams );
 
 		imagedestroy( $dst_image );
@@ -500,24 +523,22 @@ class BitmapHandler extends TransformationalImageHandler {
 	/**
 	 * Callback for transformGd when transforming jpeg images.
 	 *
-	 * @param resource $dst_image Image resource of the original image
+	 * @phpcs:ignore MediaWiki.Commenting.FunctionComment.ObjectTypeHintParam
+	 * @param resource|object $dst_image Image resource of the original image
 	 * @param string $thumbPath File path to write the thumbnail image to
 	 * @param int|null $quality Quality of the thumbnail from 1-100,
 	 *    or null to use default quality.
 	 */
-	static function imageJpegWrapper( $dst_image, $thumbPath, $quality = null ) {
-		global $wgJpegQuality;
-
-		if ( $quality === null ) {
-			$quality = $wgJpegQuality;
-		}
+	public static function imageJpegWrapper( $dst_image, $thumbPath, $quality = null ) {
+		$jpegQuality = MediaWikiServices::getInstance()->getMainConfig()->get( MainConfigNames::JpegQuality );
 
 		imageinterlace( $dst_image );
-		imagejpeg( $dst_image, $thumbPath, $quality );
+		imagejpeg( $dst_image, $thumbPath, $quality ?? $jpegQuality );
 	}
 
 	/**
 	 * Returns whether the current scaler supports rotation (im and gd do)
+	 * @stable to override
 	 *
 	 * @return bool
 	 */
@@ -542,28 +563,32 @@ class BitmapHandler extends TransformationalImageHandler {
 
 	/**
 	 * @see $wgEnableAutoRotation
+	 * @stable to override
 	 * @return bool Whether auto rotation is enabled
 	 */
 	public function autoRotateEnabled() {
-		global $wgEnableAutoRotation;
+		$enableAutoRotation = MediaWikiServices::getInstance()->getMainConfig()
+			->get( MainConfigNames::EnableAutoRotation );
 
-		if ( $wgEnableAutoRotation === null ) {
+		if ( $enableAutoRotation === null ) {
 			// Only enable auto-rotation when we actually can
 			return $this->canRotate();
 		}
 
-		return $wgEnableAutoRotation;
+		return $enableAutoRotation;
 	}
 
 	/**
+	 * @stable to override
 	 * @param File $file
 	 * @param array $params Rotate parameters.
 	 *   'rotation' clockwise rotation in degrees, allowed are multiples of 90
 	 * @since 1.21
-	 * @return bool|MediaTransformError
+	 * @return MediaTransformError|false
 	 */
 	public function rotate( $file, $params ) {
-		global $wgImageMagickConvertCommand;
+		$imageMagickConvertCommand = MediaWikiServices::getInstance()
+			->getMainConfig()->get( MainConfigNames::ImageMagickConvertCommand );
 
 		$rotation = ( $params['rotation'] + $this->getRotation( $file ) ) % 360;
 		$scene = false;
@@ -571,11 +596,11 @@ class BitmapHandler extends TransformationalImageHandler {
 		$scaler = $this->getScalerType( null, false );
 		switch ( $scaler ) {
 			case 'im':
-				$cmd = Shell::escape( $wgImageMagickConvertCommand ) . " " .
+				$cmd = Shell::escape( $imageMagickConvertCommand ) . " " .
 					Shell::escape( $this->escapeMagickInput( $params['srcPath'], $scene ) ) .
 					" -rotate " . Shell::escape( "-$rotation" ) . " " .
 					Shell::escape( $this->escapeMagickOutput( $params['dstPath'] ) );
-				wfDebug( __METHOD__ . ": running ImageMagick: $cmd\n" );
+				wfDebug( __METHOD__ . ": running ImageMagick: $cmd" );
 				$retval = 0;
 				$err = wfShellExecWithStderr( $cmd, $retval );
 				if ( $retval !== 0 ) {

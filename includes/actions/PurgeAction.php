@@ -20,6 +20,10 @@
  * @ingroup Actions
  */
 
+use MediaWiki\HTMLForm\HTMLForm;
+use MediaWiki\Permissions\PermissionStatus;
+use MediaWiki\Status\Status;
+
 /**
  * User-requested page cache purging
  *
@@ -27,14 +31,11 @@
  */
 class PurgeAction extends FormAction {
 
+	/** @var string */
 	private $redirectParams;
 
 	public function getName() {
 		return 'purge';
-	}
-
-	public function requiresUnblock() {
-		return false;
 	}
 
 	public function getDescription() {
@@ -42,7 +43,15 @@ class PurgeAction extends FormAction {
 	}
 
 	public function onSubmit( $data ) {
-		return $this->page->doPurge();
+		$authority = $this->getAuthority();
+		$page = $this->getWikiPage();
+
+		$status = PermissionStatus::newEmpty();
+		if ( !$authority->authorizeAction( 'purge', $status ) ) {
+			return Status::wrap( $status );
+		}
+
+		return $page->doPurge();
 	}
 
 	public function show() {
@@ -51,20 +60,21 @@ class PurgeAction extends FormAction {
 		// This will throw exceptions if there's a problem
 		$this->checkCanExecute( $this->getUser() );
 
-		$user = $this->getUser();
-
-		if ( $user->pingLimiter( 'purge' ) ) {
-			// TODO: Display actionthrottledtext
-			return;
-		}
-
 		if ( $this->getRequest()->wasPosted() ) {
 			$this->redirectParams = wfArrayToCgi( array_diff_key(
 				$this->getRequest()->getQueryValues(),
 				[ 'title' => null, 'action' => null ]
 			) );
-			if ( $this->onSubmit( [] ) ) {
+
+			$result = $this->onSubmit( [] );
+			if ( $result === true ) {
 				$this->onSuccess();
+			} elseif ( $result instanceof Status ) {
+				if ( $result->isOK() ) {
+					$this->onSuccess();
+				} else {
+					$this->getOutput()->addHTML( $result->getHTML() );
+				}
 			}
 		} else {
 			$this->redirectParams = $this->getRequest()->getVal( 'redirectparams', '' );
@@ -83,7 +93,6 @@ class PurgeAction extends FormAction {
 		return [
 			'intro' => [
 				'type' => 'info',
-				'vertical-label' => true,
 				'raw' => true,
 				'default' => $this->msg( 'confirm-purge-top' )->parse()
 			]

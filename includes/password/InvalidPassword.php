@@ -20,6 +20,10 @@
  * @file
  */
 
+declare( strict_types = 1 );
+
+namespace MediaWiki\Password;
+
 /**
  * Represents an invalid password hash. It is represented as the empty string (i.e.,
  * a password hash with no type).
@@ -30,24 +34,21 @@
  * @since 1.24
  */
 class InvalidPassword extends Password {
-	public function crypt( $plaintext ) {
+	public function crypt( string $plaintext ): void {
 	}
 
-	public function toString() {
+	public function toString(): string {
 		return '';
 	}
 
-	public function equals( $other ) {
-		wfDeprecated( __METHOD__, '1.33' );
-
+	public function verify( string $password ): bool {
 		return false;
 	}
 
-	public function verify( $password ) {
-		return false;
-	}
-
-	public function needsUpdate() {
+	public function needsUpdate(): bool {
 		return false;
 	}
 }
+
+/** @deprecated since 1.43 use MediaWiki\\Password\\InvalidPassword */
+class_alias( InvalidPassword::class, 'InvalidPassword' );

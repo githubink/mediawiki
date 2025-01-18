@@ -19,28 +19,33 @@
  * @ingroup Parser
  */
 
+namespace MediaWiki\Parser;
+
+use MediaWiki\Title\Title;
+
 /**
  * @ingroup Parser
+ *
+ * @property int $depth
+ * @property PPFrame $parent
  */
 interface PPFrame {
-	const NO_ARGS = 1;
-	const NO_TEMPLATES = 2;
-	const STRIP_COMMENTS = 4;
-	const NO_IGNORE = 8;
-	const RECOVER_COMMENTS = 16;
-	const NO_TAGS = 32;
+	public const NO_ARGS = 1;
+	public const NO_TEMPLATES = 2;
+	public const STRIP_COMMENTS = 4;
+	public const NO_IGNORE = 8;
+	public const RECOVER_COMMENTS = 16;
+	public const NO_TAGS = 32;
+	public const PROCESS_NOWIKI = 64;
 
-	const RECOVER_ORIG = self::NO_ARGS | self::NO_TEMPLATES | self::NO_IGNORE |
+	public const RECOVER_ORIG = self::NO_ARGS | self::NO_TEMPLATES | self::NO_IGNORE |
 		self::RECOVER_COMMENTS | self::NO_TAGS;
-
-	/** This constant exists when $indexOffset is supported in newChild() */
-	const SUPPORTS_INDEX_OFFSET = 1;
 
 	/**
 	 * Create a child frame
 	 *
-	 * @param array|bool $args
-	 * @param bool|Title $title
+	 * @param PPNode[]|false $args
+	 * @param Title|false $title
 	 * @param int $indexOffset A number subtracted from the index attributes of the arguments
 	 *
 	 * @return PPFrame
@@ -68,37 +73,37 @@ interface PPFrame {
 	 * Implode with flags for expand()
 	 * @param string $sep
 	 * @param int $flags
-	 * @param string|PPNode $args,...
+	 * @param string|PPNode ...$params
 	 * @return string
 	 */
-	public function implodeWithFlags( $sep, $flags /*, ... */ );
+	public function implodeWithFlags( $sep, $flags, ...$params );
 
 	/**
 	 * Implode with no flags specified
 	 * @param string $sep
-	 * @param string|PPNode $args,...
+	 * @param string|PPNode ...$params
 	 * @return string
 	 */
-	public function implode( $sep /*, ... */ );
+	public function implode( $sep, ...$params );
 
 	/**
 	 * Makes an object that, when expand()ed, will be the same as one obtained
 	 * with implode()
 	 * @param string $sep
-	 * @param string|PPNode $args,...
+	 * @param string|PPNode ...$params
 	 * @return PPNode
 	 */
-	public function virtualImplode( $sep /*, ... */ );
+	public function virtualImplode( $sep, ...$params );
 
 	/**
 	 * Virtual implode with brackets
 	 * @param string $start
 	 * @param string $sep
 	 * @param string $end
-	 * @param string|PPNode $args,...
+	 * @param string|PPNode ...$params
 	 * @return PPNode
 	 */
-	public function virtualBracketedImplode( $start, $sep, $end /*, ... */ );
+	public function virtualBracketedImplode( $start, $sep, $end, ...$params );
 
 	/**
 	 * Returns true if there are no arguments in this frame
@@ -128,7 +133,7 @@ interface PPFrame {
 	/**
 	 * Get an argument to this frame by name
 	 * @param int|string $name
-	 * @return string|bool
+	 * @return string|false
 	 */
 	public function getArgument( $name );
 
@@ -202,3 +207,6 @@ interface PPFrame {
 	 */
 	public function getTitle();
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( PPFrame::class, 'PPFrame' );

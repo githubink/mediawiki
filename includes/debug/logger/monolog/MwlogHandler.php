@@ -24,25 +24,35 @@ use Monolog\Handler\SyslogUdpHandler;
 use Monolog\Logger;
 
 /**
- * Log handler that will append the record's channel to a fixed 'application
- * prefix' given at construction time.
+ * Write logs to syslog with the channel appended to the application name.
  *
- * The use case for this handler is to deprecate udp2log with a localhost
- * syslog endpoint. The application name is then used to reconstruct the
- * message's channel.
+ * This use case for this handler is to emulate Wikimedia Foundation's
+ * udp2log system by leveraging syslog (and e.g. Rsyslog/Kafka) and
+ * allow an unstructured string to pass through mostly as-is, with the
+ * exception of the channel name, which is encoded in transit as part
+ * of the syslog "application name". It is intended that the syslog
+ * consumer "wildcard" subscribes to all messages with the app prefix,
+ * and then * strips it off at some point before writing the messages
+ * to a log file named after the channel.
  *
+ * Transition plan (2016):
+ * - https://phabricator.wikimedia.org/T205856#4957430
+ * - https://phabricator.wikimedia.org/T126989
+ *
+ * @unstable
  * @since 1.32
+ * @ingroup Debug
  * @copyright © 2019 Wikimedia Foundation and contributors
  */
 class MwlogHandler extends SyslogUdpHandler {
 
 	/**
-	 * @var string $appprefix
+	 * @var string
 	 */
 	private $appprefix;
 
 	/**
-	 * @var string $hostname
+	 * @var string
 	 */
 	private $hostname;
 
@@ -89,7 +99,7 @@ class MwlogHandler extends SyslogUdpHandler {
 		return preg_split( '/$\R?^/m', (string)$message, -1, PREG_SPLIT_NO_EMPTY );
 	}
 
-	protected function write( array $record ) {
+	protected function write( array $record ): void {
 		$lines = $this->splitMessageIntoLines( $record['formatted'] );
 		$header = $this->syslogHeader(
 			$this->logLevels[$record['level']],

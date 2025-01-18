@@ -1,5 +1,10 @@
 <?php
 
+namespace MediaWiki\Tests\Site;
+
+use MediaWiki\Site\Site;
+use MediaWikiIntegrationTestCase;
+
 /**
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -26,7 +31,7 @@
  *
  * @author Jeroen De Dauw < jeroendedauw@gmail.com >
  */
-class SiteTest extends MediaWikiTestCase {
+class SiteTest extends MediaWikiIntegrationTestCase {
 
 	public function instanceProvider() {
 		return $this->arrayWrap( TestSites::getSites() );
@@ -35,54 +40,57 @@ class SiteTest extends MediaWikiTestCase {
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::getInterwikiIds
+	 * @covers \MediaWiki\Site\Site::getInterwikiIds
 	 */
 	public function testGetInterwikiIds( Site $site ) {
-		$this->assertInternalType( 'array', $site->getInterwikiIds() );
+		$this->assertIsArray( $site->getInterwikiIds() );
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::getNavigationIds
+	 * @covers \MediaWiki\Site\Site::getNavigationIds
 	 */
 	public function testGetNavigationIds( Site $site ) {
-		$this->assertInternalType( 'array', $site->getNavigationIds() );
+		$this->assertIsArray( $site->getNavigationIds() );
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::addNavigationId
+	 * @covers \MediaWiki\Site\Site::addNavigationId
 	 */
 	public function testAddNavigationId( Site $site ) {
 		$site->addNavigationId( 'foobar' );
-		$this->assertTrue( in_array( 'foobar', $site->getNavigationIds(), true ) );
+		$this->assertContains( 'foobar', $site->getNavigationIds() );
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::addInterwikiId
+	 * @covers \MediaWiki\Site\Site::addInterwikiId
 	 */
 	public function testAddInterwikiId( Site $site ) {
 		$site->addInterwikiId( 'foobar' );
-		$this->assertTrue( in_array( 'foobar', $site->getInterwikiIds(), true ) );
+		$this->assertContains( 'foobar', $site->getInterwikiIds() );
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::getLanguageCode
+	 * @covers \MediaWiki\Site\Site::getLanguageCode
 	 */
 	public function testGetLanguageCode( Site $site ) {
-		$this->assertTypeOrValue( 'string', $site->getLanguageCode(), null );
+		$this->assertThat(
+			$site->getLanguageCode(),
+			$this->logicalOr( $this->isNull(), $this->isType( 'string' ) )
+		);
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::setLanguageCode
+	 * @covers \MediaWiki\Site\Site::setLanguageCode
 	 */
 	public function testSetLanguageCode( Site $site ) {
 		$site->setLanguageCode( 'en' );
@@ -92,25 +100,28 @@ class SiteTest extends MediaWikiTestCase {
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::normalizePageName
+	 * @covers \MediaWiki\Site\Site::normalizePageName
 	 */
 	public function testNormalizePageName( Site $site ) {
-		$this->assertInternalType( 'string', $site->normalizePageName( 'Foobar' ) );
+		$this->assertIsString( $site->normalizePageName( 'Foobar' ) );
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::getGlobalId
+	 * @covers \MediaWiki\Site\Site::getGlobalId
 	 */
 	public function testGetGlobalId( Site $site ) {
-		$this->assertTypeOrValue( 'string', $site->getGlobalId(), null );
+		$this->assertThat(
+			$site->getGlobalId(),
+			$this->logicalOr( $this->isNull(), $this->isType( 'string' ) )
+		);
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::setGlobalId
+	 * @covers \MediaWiki\Site\Site::setGlobalId
 	 */
 	public function testSetGlobalId( Site $site ) {
 		$site->setGlobalId( 'foobar' );
@@ -120,37 +131,46 @@ class SiteTest extends MediaWikiTestCase {
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::getType
+	 * @covers \MediaWiki\Site\Site::getType
 	 */
 	public function testGetType( Site $site ) {
-		$this->assertInternalType( 'string', $site->getType() );
+		$this->assertIsString( $site->getType() );
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::getPath
+	 * @covers \MediaWiki\Site\Site::getPath
 	 */
 	public function testGetPath( Site $site ) {
-		$this->assertTypeOrValue( 'string', $site->getPath( 'page_path' ), null );
-		$this->assertTypeOrValue( 'string', $site->getPath( 'file_path' ), null );
-		$this->assertTypeOrValue( 'string', $site->getPath( 'foobar' ), null );
+		$this->assertThat(
+			$site->getPath( 'page_path' ),
+			$this->logicalOr( $this->isNull(), $this->isType( 'string' ) )
+		);
+		$this->assertThat(
+			$site->getPath( 'file_path' ),
+			$this->logicalOr( $this->isNull(), $this->isType( 'string' ) )
+		);
+		$this->assertThat(
+			$site->getPath( 'foobar' ),
+			$this->logicalOr( $this->isNull(), $this->isType( 'string' ) )
+		);
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::getAllPaths
+	 * @covers \MediaWiki\Site\Site::getAllPaths
 	 */
 	public function testGetAllPaths( Site $site ) {
-		$this->assertInternalType( 'array', $site->getAllPaths() );
+		$this->assertIsArray( $site->getAllPaths() );
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::setPath
-	 * @covers Site::removePath
+	 * @covers \MediaWiki\Site\Site::setPath
+	 * @covers \MediaWiki\Site\Site::removePath
 	 */
 	public function testSetAndRemovePath( Site $site ) {
 		$count = count( $site->getAllPaths() );
@@ -159,22 +179,22 @@ class SiteTest extends MediaWikiTestCase {
 		$site->setPath( 'spam', 'http://www.wikidata.org/foo/$1' );
 		$site->setPath( 'foobar', 'http://www.wikidata.org/bar/$1' );
 
-		$this->assertEquals( $count + 2, count( $site->getAllPaths() ) );
+		$this->assertCount( $count + 2, $site->getAllPaths() );
 
-		$this->assertInternalType( 'string', $site->getPath( 'foobar' ) );
+		$this->assertIsString( $site->getPath( 'foobar' ) );
 		$this->assertEquals( 'http://www.wikidata.org/foo/$1', $site->getPath( 'spam' ) );
 
 		$site->removePath( 'spam' );
 		$site->removePath( 'foobar' );
 
-		$this->assertEquals( $count, count( $site->getAllPaths() ) );
+		$this->assertCount( $count, $site->getAllPaths() );
 
 		$this->assertNull( $site->getPath( 'foobar' ) );
 		$this->assertNull( $site->getPath( 'spam' ) );
 	}
 
 	/**
-	 * @covers Site::setLinkPath
+	 * @covers \MediaWiki\Site\Site::setLinkPath
 	 */
 	public function testSetLinkPath() {
 		$site = new Site();
@@ -185,7 +205,7 @@ class SiteTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers Site::getLinkPathType
+	 * @covers \MediaWiki\Site\Site::getLinkPathType
 	 */
 	public function testGetLinkPathType() {
 		$site = new Site();
@@ -200,7 +220,7 @@ class SiteTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers Site::setPath
+	 * @covers \MediaWiki\Site\Site::setPath
 	 */
 	public function testSetPath() {
 		$site = new Site();
@@ -212,8 +232,8 @@ class SiteTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers Site::setPath
-	 * @covers Site::getProtocol
+	 * @covers \MediaWiki\Site\Site::setPath
+	 * @covers \MediaWiki\Site\Site::getProtocol
 	 */
 	public function testProtocolRelativePath() {
 		$site = new Site();
@@ -222,7 +242,7 @@ class SiteTest extends MediaWikiTestCase {
 		$path = '//acme.com/'; // protocol-relative URL
 		$site->setPath( $type, $path );
 
-		$this->assertEquals( '', $site->getProtocol() );
+		$this->assertSame( '', $site->getProtocol() );
 	}
 
 	public static function provideGetPageUrl() {
@@ -252,7 +272,7 @@ class SiteTest extends MediaWikiTestCase {
 
 	/**
 	 * @dataProvider provideGetPageUrl
-	 * @covers Site::getPageUrl
+	 * @covers \MediaWiki\Site\Site::getPageUrl
 	 */
 	public function testGetPageUrl( $path, $page, $expected ) {
 		$site = new Site();
@@ -261,28 +281,18 @@ class SiteTest extends MediaWikiTestCase {
 		//      is true for Site but not guaranteed for subclasses.
 		//      Subclasses need to override this test case appropriately.
 		$site->setLinkPath( $path );
-		$this->assertContains( $path, $site->getPageUrl() );
+		$this->assertStringContainsString( $path, $site->getPageUrl() );
 
-		$this->assertContains( $expected, $site->getPageUrl( $page ) );
-	}
-
-	protected function assertTypeOrFalse( $type, $value ) {
-		if ( $value === false ) {
-			$this->assertTrue( true );
-		} else {
-			$this->assertInternalType( $type, $value );
-		}
+		$this->assertStringContainsString( $expected, $site->getPageUrl( $page ) );
 	}
 
 	/**
 	 * @dataProvider instanceProvider
 	 * @param Site $site
-	 * @covers Site::serialize
-	 * @covers Site::unserialize
+	 * @covers \MediaWiki\Site\Site::__serialize
+	 * @covers \MediaWiki\Site\Site::__unserialize
 	 */
 	public function testSerialization( Site $site ) {
-		$this->assertInstanceOf( Serializable::class, $site );
-
 		$serialization = serialize( $site );
 		$newInstance = unserialize( $serialization );
 

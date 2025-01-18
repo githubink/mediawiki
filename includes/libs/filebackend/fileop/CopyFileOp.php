@@ -21,6 +21,11 @@
  * @ingroup FileBackend
  */
 
+namespace Wikimedia\FileBackend\FileOps;
+
+use StatusValue;
+use Wikimedia\FileBackend\FileBackend;
+
 /**
  * Copy a file from one storage path to another in the backend.
  * Parameters for this operation are outlined in FileBackend::doOperations().
@@ -34,15 +39,19 @@ class CopyFileOp extends FileOp {
 		];
 	}
 
-	protected function doPrecheck( array &$predicates ) {
+	protected function doPrecheck(
+		FileStatePredicates $opPredicates,
+		FileStatePredicates $batchPredicates
+	) {
 		$status = StatusValue::newGood();
-		// Check if the source file exists
-		if ( !$this->fileExists( $this->params['src'], $predicates ) ) {
+
+		// Check source file existence
+		$srcExists = $this->resolveFileExistence( $this->params['src'], $opPredicates );
+		if ( $srcExists === false ) {
 			if ( $this->getParam( 'ignoreMissingSource' ) ) {
-				$this->doOperation = false; // no-op
+				$this->noOp = true; // no-op
 				// Update file existence predicates (cache 404s)
-				$predicates['exists'][$this->params['src']] = false;
-				$predicates['sha1'][$this->params['src']] = false;
+				$batchPredicates->assumeFileDoesNotExist( $this->params['src'] );
 
 				return $status; // nothing to do
 			} else {
@@ -50,20 +59,28 @@ class CopyFileOp extends FileOp {
 
 				return $status;
 			}
-			// Check if a file can be placed/changed at the destination
-		} elseif ( !$this->backend->isPathUsableInternal( $this->params['dst'] ) ) {
-			$status->fatal( 'backend-fail-usable', $this->params['dst'] );
-			$status->fatal( 'backend-fail-copy', $this->params['src'], $this->params['dst'] );
+		} elseif ( $srcExists === FileBackend::EXISTENCE_ERROR ) {
+			$status->fatal( 'backend-fail-stat', $this->params['src'] );
 
 			return $status;
 		}
-		// Check if destination file exists
-		$status->merge( $this->precheckDestExistence( $predicates ) );
+		// Check if an incompatible destination file exists
+		$srcSize = function () use ( $opPredicates ) {
+			static $size = null;
+			$size ??= $this->resolveFileSize( $this->params['src'], $opPredicates );
+			return $size;
+		};
+		$srcSha1 = function () use ( $opPredicates ) {
+			static $sha1 = null;
+			$sha1 ??= $this->resolveFileSha1Base36( $this->params['src'], $opPredicates );
+			return $sha1;
+		};
+		$status->merge( $this->precheckDestExistence( $opPredicates, $srcSize, $srcSha1 ) );
 		$this->params['dstExists'] = $this->destExists; // see FileBackendStore::setFileCache()
+
+		// Update file existence predicates if the operation is expected to be allowed to run
 		if ( $status->isOK() ) {
-			// Update file existence predicates
-			$predicates['exists'][$this->params['dst']] = true;
-			$predicates['sha1'][$this->params['dst']] = $this->sourceSha1;
+			$batchPredicates->assumeFileExists( $this->params['dst'], $srcSize, $srcSha1 );
 		}
 
 		return $status; // safe to call attempt()
@@ -94,3 +111,6 @@ class CopyFileOp extends FileOp {
 		return [ $this->params['dst'] ];
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( CopyFileOp::class, 'CopyFileOp' );

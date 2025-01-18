@@ -1,46 +1,37 @@
 <?php
 
-class FileRepoTest extends MediaWikiTestCase {
+use MediaWiki\MainConfigNames;
+use Wikimedia\FileBackend\FSFileBackend;
 
-	/**
-	 * @expectedException MWException
-	 * @covers FileRepo::__construct
-	 */
+/**
+ * @covers \FileRepo
+ */
+class FileRepoTest extends MediaWikiIntegrationTestCase {
+
 	public function testFileRepoConstructionOptionCanNotBeNull() {
+		$this->expectException( InvalidArgumentException::class );
 		new FileRepo();
 	}
 
-	/**
-	 * @expectedException MWException
-	 * @covers FileRepo::__construct
-	 */
 	public function testFileRepoConstructionOptionCanNotBeAnEmptyArray() {
+		$this->expectException( InvalidArgumentException::class );
 		new FileRepo( [] );
 	}
 
-	/**
-	 * @expectedException MWException
-	 * @covers FileRepo::__construct
-	 */
 	public function testFileRepoConstructionOptionNeedNameKey() {
+		$this->expectException( InvalidArgumentException::class );
 		new FileRepo( [
 			'backend' => 'foobar'
 		] );
 	}
 
-	/**
-	 * @expectedException MWException
-	 * @covers FileRepo::__construct
-	 */
 	public function testFileRepoConstructionOptionNeedBackendKey() {
+		$this->expectException( InvalidArgumentException::class );
 		new FileRepo( [
 			'name' => 'foobar'
 		] );
 	}
 
-	/**
-	 * @covers FileRepo::__construct
-	 */
 	public function testFileRepoConstructionWithRequiredOptions() {
 		$f = new FileRepo( [
 			'name' => 'FileRepoTestRepository',
@@ -51,5 +42,18 @@ class FileRepoTest extends MediaWikiTestCase {
 			] )
 		] );
 		$this->assertInstanceOf( FileRepo::class, $f );
+	}
+
+	public function testFileRepoConstructionWithInvalidCasing() {
+		$this->expectException( InvalidArgumentException::class );
+		$this->expectExceptionMessage( 'File repos with initial capital false' );
+
+		$this->overrideConfigValue( MainConfigNames::CapitalLinks, true );
+
+		new FileRepo( [
+			'name' => 'foobar',
+			'backend' => 'local-backend',
+			'initialCapital' => false,
+		] );
 	}
 }

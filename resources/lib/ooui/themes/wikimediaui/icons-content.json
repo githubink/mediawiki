@@ -1,7 +1,7 @@
 {
 	"selectorWithoutVariant": ".oo-ui-icon-{name}",
 	"selectorWithVariant": ".oo-ui-image-{variant}.oo-ui-icon-{name}",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"variants": {
 		"invert": {
 			"color": "#fff",
@@ -12,13 +12,13 @@
 			"global": true
 		},
 		"destructive": {
-			"color": "#d33"
+			"color": "#d73333"
 		},
 		"error": {
-			"color": "#d33"
+			"color": "#d73333"
 		},
 		"warning": {
-			"color": "#fc3"
+			"color": "#edab00"
 		},
 		"success": {
 			"color": "#14866d"
@@ -61,11 +61,20 @@
 		"articleSearch": {
 			"file": "images/icons/articleSearch.svg"
 		},
+		"articlesSearch": {
+			"file": {
+				"ltr": "images/icons/articlesSearch-ltr.svg",
+				"rtl": "images/icons/articlesSearch-rtl.svg"
+			}
+		},
 		"articleRedirect": {
 			"file": {
 				"ltr": "images/icons/articleRedirect-ltr.svg",
 				"rtl": "images/icons/articleRedirect-rtl.svg"
 			}
+		},
+		"database": {
+			"file": "../wikimediaui/images/icons/database.svg"
 		},
 		"die": {
 			"file": "images/icons/die.svg"
@@ -98,8 +107,20 @@
 				}
 			}
 		},
+		"qrCode": {
+			"file": "images/icons/qrCode.svg"
+		},
 		"robot": {
 			"file": "images/icons/robot.svg"
+		},
+		"share": {
+			"file": "images/icons/share.svg"
+		},
+		"specialPages": {
+			"file": {
+				"ltr": "images/icons/specialPages-ltr.svg",
+				"rtl": "images/icons/specialPages-rtl.svg"
+			}
 		},
 		"tag": {
 			"file": {

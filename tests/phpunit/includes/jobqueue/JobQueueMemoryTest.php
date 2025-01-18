@@ -1,7 +1,11 @@
 <?php
 
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Title\Title;
+use MediaWiki\WikiMap\WikiMap;
+
 /**
- * @covers JobQueueMemory
+ * @covers \JobQueueMemory
  *
  * @group JobQueue
  *
@@ -16,10 +20,13 @@ class JobQueueMemoryTest extends PHPUnit\Framework\TestCase {
 	 * @return JobQueueMemory
 	 */
 	private function newJobQueue() {
+		$services = MediaWikiServices::getInstance();
+
 		return JobQueue::factory( [
 			'class' => JobQueueMemory::class,
 			'domain' => WikiMap::getCurrentWikiDbDomain()->getId(),
 			'type' => 'null',
+			'idGenerator' => $services->getGlobalIdGenerator(),
 		] );
 	}
 
@@ -28,7 +35,7 @@ class JobQueueMemoryTest extends PHPUnit\Framework\TestCase {
 			'null',
 			[ 'customParameter' => null ],
 			[],
-			Title::newFromText( 'Custom title' )
+			Title::makeTitle( NS_MAIN, 'Custom title' )
 		);
 	}
 

@@ -1,26 +1,32 @@
 <?php
 
-use Wikimedia\Rdbms\IDatabase;
-use Wikimedia\Rdbms\ILoadBalancer;
-use MediaWiki\MediaWikiServices;
+use MediaWiki\HookContainer\HookContainer;
+use Wikimedia\ObjectFactory\ObjectFactory;
+use Wikimedia\Rdbms\IConnectionProvider;
 
 /**
  * Factory class for SearchEngine.
  * Allows to create engine of the specific type.
  */
 class SearchEngineFactory {
-	/**
-	 * Configuration for SearchEngine classes.
-	 * @var SearchEngineConfig
-	 */
-	private $config;
 
-	public function __construct( SearchEngineConfig $config ) {
+	private SearchEngineConfig $config;
+	private HookContainer $hookContainer;
+	private IConnectionProvider $dbProvider;
+
+	public function __construct(
+		SearchEngineConfig $config,
+		HookContainer $hookContainer,
+		IConnectionProvider $dbProvider
+	) {
 		$this->config = $config;
+		$this->hookContainer = $hookContainer;
+		$this->dbProvider = $dbProvider;
 	}
 
 	/**
 	 * Create SearchEngine of the given type.
+	 *
 	 * @param string|null $type
 	 * @return SearchEngine
 	 */
@@ -28,31 +34,40 @@ class SearchEngineFactory {
 		$configuredClass = $this->config->getSearchType();
 		$alternativesClasses = $this->config->getSearchTypes();
 
-		$lb = MediaWikiServices::getInstance()->getDBLoadBalancer();
 		if ( $type !== null && in_array( $type, $alternativesClasses ) ) {
 			$class = $type;
 		} elseif ( $configuredClass !== null ) {
 			$class = $configuredClass;
 		} else {
-			$class = self::getSearchEngineClass( $lb );
+			$class = self::getSearchEngineClass( $this->dbProvider );
 		}
 
-		if ( is_subclass_of( $class, SearchDatabase::class ) ) {
-			return new $class( $lb );
-		} else {
-			return new $class();
+		$mappings = $this->config->getSearchMappings();
+
+		// Convert non mapped classes to ObjectFactory spec
+		$spec = $mappings[$class] ?? [ 'class' => $class ];
+
+		$args = [];
+
+		if ( isset( $spec['class'] ) && is_subclass_of( $spec['class'], SearchDatabase::class ) ) {
+			$args['extraArgs'][] = $this->dbProvider;
 		}
+
+		// ObjectFactory::getObjectFromSpec accepts an array, not just a callable (phan bug)
+		// @phan-suppress-next-line PhanTypeInvalidCallableArraySize
+		$engine = ObjectFactory::getObjectFromSpec( $spec, $args );
+		/** @var SearchEngine $engine */
+		$engine->setHookContainer( $this->hookContainer );
+		return $engine;
 	}
 
 	/**
-	 * @param IDatabase|ILoadBalancer $dbOrLb
+	 * @param IConnectionProvider $dbProvider
 	 * @return string SearchEngine subclass name
 	 * @since 1.28
 	 */
-	public static function getSearchEngineClass( $dbOrLb ) {
-		$type = ( $dbOrLb instanceof IDatabase )
-			? $dbOrLb->getType()
-			: $dbOrLb->getServerType( $dbOrLb->getWriterIndex() );
+	public static function getSearchEngineClass( IConnectionProvider $dbProvider ) {
+		$type = $dbProvider->getReplicaDatabase()->getType();
 
 		switch ( $type ) {
 			case 'sqlite':
@@ -61,10 +76,6 @@ class SearchEngineFactory {
 				return SearchMySQL::class;
 			case 'postgres':
 				return SearchPostgres::class;
-			case 'mssql':
-				return SearchMssql::class;
-			case 'oracle':
-				return SearchOracle::class;
 			default:
 				return SearchEngineDummy::class;
 		}

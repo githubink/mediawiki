@@ -2,10 +2,7 @@
 
 namespace MediaWiki\Tests\Revision;
 
-use MediaWiki\MediaWikiServices;
-use MediaWiki\Revision\SlotRecord;
-use MediaWikiTestCase;
-use Revision;
+use MediaWikiIntegrationTestCase;
 
 /**
  * Tests RevisionStore against the post-migration MCR DB schema.
@@ -14,7 +11,7 @@ use Revision;
  * @group Storage
  * @group Database
  */
-class RevisionQueryInfoTest extends MediaWikiTestCase {
+class RevisionQueryInfoTest extends MediaWikiIntegrationTestCase {
 
 	protected function getRevisionQueryFields( $returnTextIdField = true ) {
 		$fields = [
@@ -53,7 +50,7 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 		return $fields;
 	}
 
-	protected function getNewCommentQueryFields( $prefix ) {
+	protected function getCommentQueryFields( $prefix ) {
 		return [
 			"{$prefix}_comment_text" => "comment_{$prefix}_comment.comment_text",
 			"{$prefix}_comment_data" => "comment_{$prefix}_comment.comment_data",
@@ -61,33 +58,26 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 		];
 	}
 
-	protected function getOldActorQueryFields( $prefix ) {
-		return [
-			"{$prefix}_user" => "{$prefix}_user",
-			"{$prefix}_user_text" => "{$prefix}_user_text",
-			"{$prefix}_actor" => 'NULL',
-		];
-	}
-
-	protected function getNewActorQueryFields( $prefix, $tmp = false ) {
-		return [
-			"{$prefix}_user" => "actor_{$prefix}_user.actor_user",
-			"{$prefix}_user_text" => "actor_{$prefix}_user.actor_name",
-			"{$prefix}_actor" => $tmp ?: "{$prefix}_actor",
-		];
-	}
-
-	protected function getNewActorJoins( $prefix ) {
-		return [
-			"temp_{$prefix}_user" => [
-				"JOIN",
-				"temp_{$prefix}_user.revactor_{$prefix} = {$prefix}_id",
-			],
-			"actor_{$prefix}_user" => [
-				"JOIN",
-				"actor_{$prefix}_user.actor_id = temp_{$prefix}_user.revactor_actor",
-			],
-		];
+	protected function getActorQueryFields( $prefix, $tmp = false ) {
+		if ( $tmp ) {
+			return [
+				"{$prefix}_user" => "actor_{$prefix}_user.actor_user",
+				"{$prefix}_user_text" => "actor_{$prefix}_user.actor_name",
+				"{$prefix}_actor" => "temp_{$prefix}_user.{$prefix}actor_actor",
+			];
+		} elseif ( $prefix === 'ar' ) {
+			return [
+				"{$prefix}_actor",
+				"{$prefix}_user" => 'archive_actor.actor_user',
+				"{$prefix}_user_text" => 'archive_actor.actor_name',
+			];
+		} else {
+			return [
+				"{$prefix}_actor" => "{$prefix}_actor",
+				"{$prefix}_user" => "actor_{$prefix}_user.actor_user",
+				"{$prefix}_user_text" => "actor_{$prefix}_user.actor_name",
+			];
+		}
 	}
 
 	protected function getTextQueryFields() {
@@ -122,97 +112,23 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 	}
 
 	public function provideArchiveQueryInfo() {
-		yield 'MCR, comment, actor' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_NEW,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_NEW,
-			],
+		yield 'no options' => [
+			[],
 			[
 				'tables' => [
 					'archive',
-					'actor_ar_user' => 'actor',
+					'archive_actor' => 'actor',
 					'comment_ar_comment' => 'comment',
 				],
 				'fields' => array_merge(
 					$this->getArchiveQueryFields( false ),
-					$this->getNewActorQueryFields( 'ar' ),
-					$this->getNewCommentQueryFields( 'ar' )
+					$this->getActorQueryFields( 'ar' ),
+					$this->getCommentQueryFields( 'ar' )
 				),
 				'joins' => [
 					'comment_ar_comment'
 						=> [ 'JOIN', 'comment_ar_comment.comment_id = ar_comment_id' ],
-					'actor_ar_user' => [ 'JOIN', 'actor_ar_user.actor_id = ar_actor' ],
-				],
-			]
-		];
-		yield 'read-new MCR, comment, actor' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_NEW,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_NEW,
-			],
-			[
-				'tables' => [
-					'archive',
-					'actor_ar_user' => 'actor',
-					'comment_ar_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getArchiveQueryFields( false ),
-					$this->getNewActorQueryFields( 'ar' ),
-					$this->getNewCommentQueryFields( 'ar' )
-				),
-				'joins' => [
-					'comment_ar_comment'
-						=> [ 'JOIN', 'comment_ar_comment.comment_id = ar_comment_id' ],
-					'actor_ar_user' => [ 'JOIN', 'actor_ar_user.actor_id = ar_actor' ],
-				],
-			]
-		];
-		yield 'MCR write-both/read-old' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-			],
-			[
-				'tables' => [
-					'archive',
-					'comment_ar_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getArchiveQueryFields( true ),
-					$this->getContentHandlerQueryFields( 'ar' ),
-					$this->getOldActorQueryFields( 'ar' ),
-					$this->getNewCommentQueryFields( 'ar' )
-				),
-				'joins' => [
-					'comment_ar_comment'
-						=> [ 'JOIN', 'comment_ar_comment.comment_id = ar_comment_id' ],
-				],
-			]
-		];
-		yield 'pre-MCR, no model' => [
-			[
-				'wgContentHandlerUseDB' => false,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			[
-				'tables' => [
-					'archive',
-					'comment_ar_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getArchiveQueryFields( true ),
-					$this->getOldActorQueryFields( 'ar' ),
-					$this->getNewCommentQueryFields( 'ar' )
-				),
-				'joins' => [
-					'comment_ar_comment'
-						=> [ 'JOIN', 'comment_ar_comment.comment_id = ar_comment_id' ],
+					'archive_actor' => [ 'JOIN', 'actor_id=ar_actor' ],
 				],
 			]
 		];
@@ -220,20 +136,14 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 
 	public function provideQueryInfo() {
 		// TODO: more option variations
-		yield 'MCR, page, user, comment, actor' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_NEW,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_NEW,
-			],
+		yield 'page and user option, actor-new' => [
+			[],
 			[ 'page', 'user' ],
 			[
 				'tables' => [
 					'revision',
 					'page',
 					'user',
-					'temp_rev_user' => 'revision_actor_temp',
-					'temp_rev_comment' => 'revision_comment_temp',
 					'actor_rev_user' => 'actor',
 					'comment_rev_comment' => 'comment',
 				],
@@ -241,8 +151,8 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 					$this->getRevisionQueryFields( false ),
 					$this->getPageQueryFields(),
 					$this->getUserQueryFields(),
-					$this->getNewActorQueryFields( 'rev', 'temp_rev_user.revactor_actor' ),
-					$this->getNewCommentQueryFields( 'rev' )
+					$this->getActorQueryFields( 'rev' ),
+					$this->getCommentQueryFields( 'rev' )
 				),
 				'joins' => [
 					'page' => [ 'JOIN', [ 'page_id = rev_page' ] ],
@@ -250,385 +160,36 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 						'LEFT JOIN',
 						[ 'actor_rev_user.actor_user != 0', 'user_id = actor_rev_user.actor_user' ],
 					],
-					'comment_rev_comment' => [
-						'JOIN',
-						'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id',
-					],
-					'actor_rev_user' => [
-						'JOIN',
-						'actor_rev_user.actor_id = temp_rev_user.revactor_actor',
-					],
-					'temp_rev_user' => [ 'JOIN', 'temp_rev_user.revactor_rev = rev_id' ],
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
+					'comment_rev_comment' => [ 'JOIN', 'comment_rev_comment.comment_id = rev_comment_id' ],
+					'actor_rev_user' => [ 'JOIN', 'actor_rev_user.actor_id = rev_actor' ]
 				],
 			]
 		];
-		yield 'MCR read-new, page, user, comment, actor' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_NEW,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_NEW,
-			],
-			[ 'page', 'user' ],
+		yield 'no options, actor-new' => [
+			[],
+			[],
 			[
 				'tables' => [
 					'revision',
-					'page',
-					'user',
-					'temp_rev_user' => 'revision_actor_temp',
-					'temp_rev_comment' => 'revision_comment_temp',
 					'actor_rev_user' => 'actor',
 					'comment_rev_comment' => 'comment',
 				],
 				'fields' => array_merge(
 					$this->getRevisionQueryFields( false ),
-					$this->getPageQueryFields(),
-					$this->getUserQueryFields(),
-					$this->getNewActorQueryFields( 'rev', 'temp_rev_user.revactor_actor' ),
-					$this->getNewCommentQueryFields( 'rev' )
+					$this->getActorQueryFields( 'rev' ),
+					$this->getCommentQueryFields( 'rev' )
 				),
-				'joins' => array_merge(
-					[
-						'page' => [ 'JOIN', [ 'page_id = rev_page' ] ],
-						'user' => [
-							'LEFT JOIN',
-							[
-								'actor_rev_user.actor_user != 0',
-								'user_id = actor_rev_user.actor_user',
-							]
-						],
-						'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-						'comment_rev_comment'
-							=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-					],
-					$this->getNewActorJoins( 'rev' )
-				),
+				'joins' => [
+					'comment_rev_comment' => [ 'JOIN', 'comment_rev_comment.comment_id = rev_comment_id' ],
+					'actor_rev_user' => [ 'JOIN', 'actor_rev_user.actor_id = rev_actor' ],
+				]
 			]
-		];
-		yield 'MCR read-new' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_NEW,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_NEW,
-			],
-			[ 'page', 'user' ],
-			[
-				'tables' => [
-					'revision',
-					'page',
-					'user',
-					'temp_rev_user' => 'revision_actor_temp',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'actor_rev_user' => 'actor',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( false ),
-					$this->getPageQueryFields(),
-					$this->getUserQueryFields(),
-					$this->getNewActorQueryFields( 'rev', 'temp_rev_user.revactor_actor' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => array_merge(
-					[
-						'page' => [ 'JOIN', [ 'page_id = rev_page' ] ],
-						'user' => [
-							'LEFT JOIN',
-							[
-								'actor_rev_user.actor_user != 0',
-								'user_id = actor_rev_user.actor_user'
-							]
-						],
-						'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-						'comment_rev_comment'
-							=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-					],
-					$this->getNewActorJoins( 'rev' )
-				),
-			]
-		];
-		yield 'MCR write-both/read-old' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-			],
-			[],
-			[
-				'tables' => [
-					'revision',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getContentHandlerQueryFields( 'rev' ),
-					$this->getOldActorQueryFields( 'rev', 'temp_rev_user.revactor_actor' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => [
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-					'comment_rev_comment'
-						=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-				],
-			]
-		];
-		yield 'MCR write-both/read-old, page, user' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-			],
-			[ 'page', 'user' ],
-			[
-				'tables' => [
-					'revision',
-					'page',
-					'user',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getContentHandlerQueryFields( 'rev' ),
-					$this->getUserQueryFields(),
-					$this->getPageQueryFields(),
-					$this->getOldActorQueryFields( 'rev', 'temp_rev_user.revactor_actor' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => array_merge(
-					[
-						'page' => [ 'JOIN', [ 'page_id = rev_page' ] ],
-						'user' => [
-							'LEFT JOIN',
-							[
-								'rev_user != 0',
-								'user_id = rev_user'
-							]
-						],
-						'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-						'comment_rev_comment'
-							=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-					]
-				),
-			]
-		];
-		yield 'pre-MCR' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			[],
-			[
-				'tables' => [
-					'revision',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getContentHandlerQueryFields( 'rev' ),
-					$this->getOldActorQueryFields( 'rev' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => [
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-					'comment_rev_comment'
-						=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-				],
-			]
-		];
-		yield 'pre-MCR, page, user' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			[ 'page', 'user' ],
-			[
-				'tables' => [
-					'revision', 'page', 'user',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getContentHandlerQueryFields( 'rev' ),
-					$this->getPageQueryFields(),
-					$this->getUserQueryFields(),
-					$this->getOldActorQueryFields( 'rev' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => [
-					'page' => [ 'JOIN', [ 'page_id = rev_page' ] ],
-					'user' => [ 'LEFT JOIN', [ 'rev_user != 0', 'user_id = rev_user' ] ],
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-					'comment_rev_comment'
-						=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-				],
-			]
-		];
-		yield 'pre-MCR, no model' => [
-			[
-				'wgContentHandlerUseDB' => false,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			[],
-			[
-				'tables' => [
-					'revision',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getOldActorQueryFields( 'rev' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => [
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-					'comment_rev_comment'
-						=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-				],
-			],
-		];
-		yield 'pre-MCR, no model, page' => [
-			[
-				'wgContentHandlerUseDB' => false,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			[ 'page' ],
-			[
-				'tables' => [
-					'revision', 'page',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getPageQueryFields(),
-					$this->getOldActorQueryFields( 'rev' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => [
-					'page' => [ 'JOIN', [ 'page_id = rev_page' ], ],
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-					'comment_rev_comment'
-						=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-				],
-			],
-		];
-		yield 'pre-MCR, no model, user' => [
-			[
-				'wgContentHandlerUseDB' => false,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			[ 'user' ],
-			[
-				'tables' => [
-					'revision', 'user',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getUserQueryFields(),
-					$this->getOldActorQueryFields( 'rev' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => [
-					'user' => [ 'LEFT JOIN', [ 'rev_user != 0', 'user_id = rev_user' ] ],
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-					'comment_rev_comment'
-						=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-				],
-			],
-		];
-		yield 'pre-MCR, no model, text' => [
-			[
-				'wgContentHandlerUseDB' => false,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			[ 'text' ],
-			[
-				'tables' => [
-					'revision', 'text',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getTextQueryFields(),
-					$this->getOldActorQueryFields( 'rev' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => [
-					'text' => [ 'JOIN', [ 'rev_text_id=old_id' ] ],
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-					'comment_rev_comment'
-						=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-				],
-			],
-		];
-		yield 'pre-MCR, no model, text, page, user' => [
-			[
-				'wgContentHandlerUseDB' => false,
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			[ 'text', 'page', 'user' ],
-			[
-				'tables' => [
-					'revision', 'page', 'user', 'text',
-					'temp_rev_comment' => 'revision_comment_temp',
-					'comment_rev_comment' => 'comment',
-				],
-				'fields' => array_merge(
-					$this->getRevisionQueryFields( true ),
-					$this->getPageQueryFields(),
-					$this->getUserQueryFields(),
-					$this->getTextQueryFields(),
-					$this->getOldActorQueryFields( 'rev' ),
-					$this->getNewCommentQueryFields( 'rev' )
-				),
-				'joins' => [
-					'page' => [
-						'JOIN',
-						[ 'page_id = rev_page' ],
-					],
-					'user' => [
-						'LEFT JOIN',
-						[
-							'rev_user != 0',
-							'user_id = rev_user',
-						],
-					],
-					'text' => [
-						'JOIN',
-						[ 'rev_text_id=old_id' ],
-					],
-					'temp_rev_comment' => [ 'JOIN', 'temp_rev_comment.revcomment_rev = rev_id' ],
-					'comment_rev_comment'
-						=> [ 'JOIN', 'comment_rev_comment.comment_id = temp_rev_comment.revcomment_comment_id' ],
-				],
-			],
 		];
 	}
 
-	public function provideSlotsQueryInfo() {
-		yield 'MCR, no options' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_NEW,
-			],
+	public static function provideSlotsQueryInfo() {
+		yield 'no options' => [
+			[],
 			[],
 			[
 				'tables' => [
@@ -641,12 +202,14 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 					'slot_role_id',
 				],
 				'joins' => [],
+				'keys' => [
+					'rev_id' => 'slot_revision_id',
+					'role_id' => 'slot_role_id'
+				],
 			]
 		];
-		yield 'MCR, role option' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage' => SCHEMA_COMPAT_NEW,
-			],
+		yield 'role option' => [
+			[],
 			[ 'role' ],
 			[
 				'tables' => [
@@ -663,13 +226,14 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 				'joins' => [
 					'slot_roles' => [ 'LEFT JOIN', [ 'slot_role_id = role_id' ] ],
 				],
+				'keys' => [
+					'rev_id' => 'slot_revision_id',
+					'role_id' => 'slot_role_id'
+				],
 			]
 		];
-		yield 'MCR read-new, content option' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_NEW,
-			],
+		yield 'content option' => [
+			[],
 			[ 'content' ],
 			[
 				'tables' => [
@@ -689,13 +253,15 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 				'joins' => [
 					'content' => [ 'JOIN', [ 'slot_content_id = content_id' ] ],
 				],
+				'keys' => [
+					'rev_id' => 'slot_revision_id',
+					'role_id' => 'slot_role_id',
+					'model_id' => 'content_model',
+				],
 			]
 		];
-		yield 'MCR read-new, content and model options' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_NEW,
-			],
+		yield 'content and model options' => [
+			[],
 			[ 'content', 'model' ],
 			[
 				'tables' => [
@@ -718,345 +284,13 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 					'content' => [ 'JOIN', [ 'slot_content_id = content_id' ] ],
 					'content_models' => [ 'LEFT JOIN', [ 'content_model = model_id' ] ],
 				],
+				'keys' => [
+					'rev_id' => 'slot_revision_id',
+					'role_id' => 'slot_role_id',
+					'model_id' => 'content_model',
+				],
 			]
 		];
-
-		$db = wfGetDB( DB_REPLICA );
-
-		yield 'MCR write-both/read-old' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-			],
-			[],
-			[
-				'tables' => [
-					'revision',
-				],
-				'fields' => array_merge(
-					[
-						'slot_revision_id' => 'rev_id',
-						'slot_content_id' => 'NULL',
-						'slot_origin' => 'rev_id',
-						'role_name' => $db->addQuotes( SlotRecord::MAIN ),
-					]
-				),
-				'joins' => [],
-			]
-		];
-		yield 'MCR write-both/read-old, content' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-			],
-			[ 'content' ],
-			[
-				'tables' => [
-					'revision',
-				],
-				'fields' => array_merge(
-					[
-						'slot_revision_id' => 'rev_id',
-						'slot_content_id' => 'NULL',
-						'slot_origin' => 'rev_id',
-						'role_name' => $db->addQuotes( SlotRecord::MAIN ),
-						'content_size' => 'rev_len',
-						'content_sha1' => 'rev_sha1',
-						'content_address' => $db->buildConcat( [
-							$db->addQuotes( 'tt:' ), 'rev_text_id' ] ),
-						'rev_text_id' => 'rev_text_id',
-						'model_name' => 'rev_content_model',
-					]
-				),
-				'joins' => [],
-			]
-		];
-		yield 'MCR write-both/read-old, content, model, role' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-			],
-			[ 'content', 'model', 'role' ],
-			[
-				'tables' => [
-					'revision',
-				],
-				'fields' => array_merge(
-					[
-						'slot_revision_id' => 'rev_id',
-						'slot_content_id' => 'NULL',
-						'slot_origin' => 'rev_id',
-						'role_name' => $db->addQuotes( SlotRecord::MAIN ),
-						'content_size' => 'rev_len',
-						'content_sha1' => 'rev_sha1',
-						'content_address' => $db->buildConcat( [
-							$db->addQuotes( 'tt:' ), 'rev_text_id' ] ),
-						'rev_text_id' => 'rev_text_id',
-						'model_name' => 'rev_content_model',
-					]
-				),
-				'joins' => [],
-			]
-		];
-		yield 'pre-MCR' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_OLD,
-			],
-			[],
-			[
-				'tables' => [
-					'revision',
-				],
-				'fields' => array_merge(
-					[
-						'slot_revision_id' => 'rev_id',
-						'slot_content_id' => 'NULL',
-						'slot_origin' => 'rev_id',
-						'role_name' => $db->addQuotes( SlotRecord::MAIN ),
-					]
-				),
-				'joins' => [],
-			]
-		];
-		yield 'pre-MCR, content' => [
-			[
-				'wgMultiContentRevisionSchemaMigrationStage'
-					=> SCHEMA_COMPAT_OLD,
-			],
-			[ 'content' ],
-			[
-				'tables' => [
-					'revision',
-				],
-				'fields' => array_merge(
-					[
-						'slot_revision_id' => 'rev_id',
-						'slot_content_id' => 'NULL',
-						'slot_origin' => 'rev_id',
-						'role_name' => $db->addQuotes( SlotRecord::MAIN ),
-						'content_size' => 'rev_len',
-						'content_sha1' => 'rev_sha1',
-						'content_address' =>
-							$db->buildConcat( [ $db->addQuotes( 'tt:' ), 'rev_text_id' ] ),
-						'rev_text_id' => 'rev_text_id',
-						'model_name' => 'rev_content_model',
-					]
-				),
-				'joins' => [],
-			]
-		];
-	}
-
-	public function provideSelectFields() {
-		yield 'with model, comment, and actor' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-			],
-			'fields' => array_merge(
-				[
-					'rev_id',
-					'rev_page',
-					'rev_text_id',
-					'rev_timestamp',
-					'rev_user_text',
-					'rev_user',
-					'rev_actor' => 'NULL',
-					'rev_minor_edit',
-					'rev_deleted',
-					'rev_len',
-					'rev_parent_id',
-					'rev_sha1',
-				],
-				$this->getContentHandlerQueryFields( 'rev' ),
-				[
-					'rev_comment_pk' => 'rev_id',
-				]
-			),
-		];
-		yield 'no mode, no comment, no actor' => [
-			[
-				'wgContentHandlerUseDB' => false,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			'fields' => array_merge(
-				[
-					'rev_id',
-					'rev_page',
-					'rev_text_id',
-					'rev_timestamp',
-					'rev_user_text',
-					'rev_user',
-					'rev_actor' => 'NULL',
-					'rev_minor_edit',
-					'rev_deleted',
-					'rev_len',
-					'rev_parent_id',
-					'rev_sha1',
-					'rev_comment_pk' => 'rev_id',
-				]
-			),
-		];
-	}
-
-	public function provideSelectArchiveFields() {
-		yield 'with model, comment, and actor' => [
-			[
-				'wgContentHandlerUseDB' => true,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_WRITE_BOTH | SCHEMA_COMPAT_READ_OLD,
-			],
-			'fields' => array_merge(
-				[
-					'ar_id',
-					'ar_page_id',
-					'ar_rev_id',
-					'ar_text_id',
-					'ar_timestamp',
-					'ar_user_text',
-					'ar_user',
-					'ar_actor' => 'NULL',
-					'ar_minor_edit',
-					'ar_deleted',
-					'ar_len',
-					'ar_parent_id',
-					'ar_sha1',
-				],
-				$this->getContentHandlerQueryFields( 'ar' ),
-				[
-					'ar_comment_id' => 'ar_comment_id',
-				]
-			),
-		];
-		yield 'no mode, no comment, no actor' => [
-			[
-				'wgContentHandlerUseDB' => false,
-				'wgActorTableSchemaMigrationStage' => SCHEMA_COMPAT_OLD,
-			],
-			'fields' => array_merge(
-				[
-					'ar_id',
-					'ar_page_id',
-					'ar_rev_id',
-					'ar_text_id',
-					'ar_timestamp',
-					'ar_user_text',
-					'ar_user',
-					'ar_actor' => 'NULL',
-					'ar_minor_edit',
-					'ar_deleted',
-					'ar_len',
-					'ar_parent_id',
-					'ar_sha1',
-					'ar_comment_id' => 'ar_comment_id',
-				]
-			),
-		];
-	}
-
-	/**
-	 * @dataProvider provideSelectFields
-	 * @covers Revision::selectFields
-	 */
-	public function testRevisionSelectFields( $migrationStageSettings, $expected ) {
-		$this->setMwGlobals( $migrationStageSettings );
-		$this->overrideMwServices();
-
-		$this->hideDeprecated( 'Revision::selectFields' );
-		$this->assertArrayEqualsIgnoringIntKeyOrder( $expected, Revision::selectFields() );
-	}
-
-	/**
-	 * @dataProvider provideSelectArchiveFields
-	 * @covers Revision::selectArchiveFields
-	 */
-	public function testRevisionSelectArchiveFields( $migrationStageSettings, $expected ) {
-		$this->setMwGlobals( $migrationStageSettings );
-		$this->overrideMwServices();
-
-		$this->hideDeprecated( 'Revision::selectArchiveFields' );
-		$this->assertArrayEqualsIgnoringIntKeyOrder( $expected, Revision::selectArchiveFields() );
-	}
-
-	/**
-	 * @covers Revision::userJoinCond
-	 */
-	public function testRevisionUserJoinCond() {
-		$this->hideDeprecated( 'Revision::userJoinCond' );
-		$this->setMwGlobals( 'wgActorTableSchemaMigrationStage', SCHEMA_COMPAT_OLD );
-		$this->overrideMwServices();
-		$this->assertEquals(
-			[ 'LEFT JOIN', [ 'rev_user != 0', 'user_id = rev_user' ] ],
-			Revision::userJoinCond()
-		);
-	}
-
-	/**
-	 * @covers Revision::pageJoinCond
-	 */
-	public function testRevisionPageJoinCond() {
-		$this->hideDeprecated( 'Revision::pageJoinCond' );
-		$this->assertEquals(
-			[ 'JOIN', [ 'page_id = rev_page' ] ],
-			Revision::pageJoinCond()
-		);
-	}
-
-	/**
-	 * @covers Revision::selectTextFields
-	 */
-	public function testRevisionSelectTextFields() {
-		$this->hideDeprecated( 'Revision::selectTextFields' );
-		$this->assertEquals(
-			$this->getTextQueryFields(),
-			Revision::selectTextFields()
-		);
-	}
-
-	/**
-	 * @covers Revision::selectPageFields
-	 */
-	public function testRevisionSelectPageFields() {
-		$this->hideDeprecated( 'Revision::selectPageFields' );
-		$this->assertEquals(
-			$this->getPageQueryFields(),
-			Revision::selectPageFields()
-		);
-	}
-
-	/**
-	 * @covers Revision::selectUserFields
-	 */
-	public function testRevisionSelectUserFields() {
-		$this->hideDeprecated( 'Revision::selectUserFields' );
-		$this->assertEquals(
-			$this->getUserQueryFields(),
-			Revision::selectUserFields()
-		);
-	}
-
-	/**
-	 * @covers Revision::getArchiveQueryInfo
-	 * @dataProvider provideArchiveQueryInfo
-	 */
-	public function testRevisionGetArchiveQueryInfo( $migrationStageSettings, $expected ) {
-		$this->setMwGlobals( $migrationStageSettings );
-		$this->overrideMwServices();
-
-		$queryInfo = Revision::getArchiveQueryInfo();
-		$this->assertQueryInfoEquals( $expected, $queryInfo );
-	}
-
-	/**
-	 * @covers Revision::getQueryInfo
-	 * @dataProvider provideQueryInfo
-	 */
-	public function testRevisionGetQueryInfo( $migrationStageSettings, $options, $expected ) {
-		$this->setMwGlobals( $migrationStageSettings );
-		$this->overrideMwServices();
-
-		$queryInfo = Revision::getQueryInfo( $options );
-		$this->assertQueryInfoEquals( $expected, $queryInfo );
 	}
 
 	/**
@@ -1064,10 +298,9 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 	 * @covers \MediaWiki\Revision\RevisionStore::getQueryInfo
 	 */
 	public function testRevisionStoreGetQueryInfo( $migrationStageSettings, $options, $expected ) {
-		$this->setMwGlobals( $migrationStageSettings );
-		$this->overrideMwServices();
+		$this->overrideConfigValues( $migrationStageSettings );
 
-		$store = MediaWikiServices::getInstance()->getRevisionStore();
+		$store = $this->getServiceContainer()->getRevisionStore();
 
 		$queryInfo = $store->getQueryInfo( $options );
 		$this->assertQueryInfoEquals( $expected, $queryInfo );
@@ -1082,10 +315,9 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 		$options,
 		$expected
 	) {
-		$this->setMwGlobals( $migrationStageSettings );
-		$this->overrideMwServices();
+		$this->overrideConfigValues( $migrationStageSettings );
 
-		$store = MediaWikiServices::getInstance()->getRevisionStore();
+		$store = $this->getServiceContainer()->getRevisionStore();
 
 		$queryInfo = $store->getSlotsQueryInfo( $options );
 		$this->assertQueryInfoEquals( $expected, $queryInfo );
@@ -1096,10 +328,9 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 	 * @covers \MediaWiki\Revision\RevisionStore::getArchiveQueryInfo
 	 */
 	public function testRevisionStoreGetArchiveQueryInfo( $migrationStageSettings, $expected ) {
-		$this->setMwGlobals( $migrationStageSettings );
-		$this->overrideMwServices();
+		$this->overrideConfigValues( $migrationStageSettings );
 
-		$store = MediaWikiServices::getInstance()->getRevisionStore();
+		$store = $this->getServiceContainer()->getRevisionStore();
 
 		$queryInfo = $store->getArchiveQueryInfo();
 		$this->assertQueryInfoEquals( $expected, $queryInfo );
@@ -1121,6 +352,13 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 			$queryInfo['joins'],
 			'joins'
 		);
+		if ( isset( $expected['keys'] ) ) {
+			$this->assertArrayEqualsIgnoringIntKeyOrder(
+				$expected['keys'],
+				$queryInfo['keys'],
+				'keys'
+			);
+		}
 	}
 
 	/**
@@ -1132,6 +370,7 @@ class RevisionQueryInfoTest extends MediaWikiTestCase {
 	 *
 	 * @param array $expected
 	 * @param array $actual
+	 * @param string|null $message
 	 */
 	private function assertArrayEqualsIgnoringIntKeyOrder(
 		array $expected,

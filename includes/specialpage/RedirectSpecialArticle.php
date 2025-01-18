@@ -1,7 +1,5 @@
 <?php
 /**
- * Shortcuts to construct a special page alias.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,16 +16,24 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup SpecialPage
  */
 
+namespace MediaWiki\SpecialPage;
+
+use MediaWiki\Title\Title;
+
 /**
- * Superclass for any RedirectSpecialPage which redirects the user
+ * Helper for any RedirectSpecialPage which redirects the user
  * to a particular article (as opposed to user contributions, logs, etc.).
  *
- * For security reasons these special pages are restricted to pass on
- * the following subset of GET parameters to the target page while
- * removing all others:
+ * This is used by subclasses to create user-independent URLs pointing to
+ * pages about the current user (user page, talk page, contributions, etc.).
+ * This can let us link it statically and cache-safe within wikitext,
+ * e.g. on help pages.
+ *
+ * For security reasons these special pages are restricted to only preserve
+ * the following subset of GET parameters to the target page, while
+ * removing and/or ignoring all others.
  *
  * - useskin, uselang, printable: to alter the appearance of the resulting page
  *
@@ -82,10 +88,17 @@
  *    }
  * @endcode
  *
+ * @stable to extend
  * @ingroup SpecialPage
  */
 abstract class RedirectSpecialArticle extends RedirectSpecialPage {
-	function __construct( $name ) {
+
+	/**
+	 * @stable to call
+	 *
+	 * @param string $name
+	 */
+	public function __construct( $name ) {
 		parent::__construct( $name );
 		$redirectParams = [
 			'action',
@@ -103,7 +116,31 @@ abstract class RedirectSpecialArticle extends RedirectSpecialPage {
 			'ctype', 'maxage', 'smaxage',
 		];
 
-		Hooks::run( "RedirectSpecialArticleRedirectParams", [ &$redirectParams ] );
+		$this->getHookRunner()->onRedirectSpecialArticleRedirectParams( $redirectParams );
 		$this->mAllowedRedirectParams = $redirectParams;
 	}
+
+	/**
+	 * @inheritDoc
+	 */
+	public function getRedirectQuery( $subpage ) {
+		$query = parent::getRedirectQuery( $subpage );
+		$title = $this->getRedirect( $subpage );
+		// Avoid double redirect for action=edit&redlink=1 for existing pages
+		// (compare to the check in EditPage::edit)
+		if (
+			$query && isset( $query['action'] ) && isset( $query['redlink'] ) &&
+			( $query['action'] === 'edit' || $query['action'] === 'submit' ) &&
+			(bool)$query['redlink'] &&
+			$title instanceof Title &&
+			$title->exists()
+		) {
+			return false;
+		}
+		return $query;
+	}
+
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( RedirectSpecialArticle::class, 'RedirectSpecialArticle' );

@@ -20,9 +20,12 @@
  * @file
  */
 
-use MediaWiki\Auth\AuthManager;
+namespace MediaWiki\Api;
+
 use MediaWiki\Auth\AuthenticationResponse;
+use MediaWiki\Auth\AuthManager;
 use MediaWiki\Auth\CreateFromLoginAuthenticationRequest;
+use MediaWiki\Utils\UrlUtils;
 
 /**
  * Log in to the wiki with AuthManager
@@ -31,30 +34,41 @@ use MediaWiki\Auth\CreateFromLoginAuthenticationRequest;
  */
 class ApiClientLogin extends ApiBase {
 
-	public function __construct( ApiMain $main, $action ) {
+	private AuthManager $authManager;
+	private UrlUtils $urlUtils;
+
+	public function __construct(
+		ApiMain $main,
+		string $action,
+		AuthManager $authManager,
+		UrlUtils $urlUtils
+	) {
 		parent::__construct( $main, $action, 'login' );
+		$this->authManager = $authManager;
+		$this->urlUtils = $urlUtils;
 	}
 
 	public function getFinalDescription() {
 		// A bit of a hack to append 'api-help-authmanager-general-usage'
 		$msgs = parent::getFinalDescription();
-		$msgs[] = ApiBase::makeMessage( 'api-help-authmanager-general-usage', $this->getContext(), [
+		$msgs[] = $this->msg( 'api-help-authmanager-general-usage',
 			$this->getModulePrefix(),
 			$this->getModuleName(),
 			$this->getModulePath(),
 			AuthManager::ACTION_LOGIN,
-			self::needsToken(),
-		] );
+			$this->needsToken(),
+		);
 		return $msgs;
 	}
 
 	public function execute() {
 		$params = $this->extractRequestParams();
+		$performer = $this->getUser();
 
 		$this->requireAtLeastOneParameter( $params, 'continue', 'returnurl' );
 
 		if ( $params['returnurl'] !== null ) {
-			$bits = wfParseUrl( $params['returnurl'] );
+			$bits = $this->urlUtils->parse( $params['returnurl'] );
 			if ( !$bits || $bits['scheme'] === '' ) {
 				$encParamName = $this->encodeParamName( 'returnurl' );
 				$this->dieWithError(
@@ -64,22 +78,21 @@ class ApiClientLogin extends ApiBase {
 			}
 		}
 
-		$helper = new ApiAuthManagerHelper( $this );
-		$manager = AuthManager::singleton();
+		$helper = new ApiAuthManagerHelper( $this, $this->authManager );
 
 		// Make sure it's possible to log in
-		if ( !$manager->canAuthenticateNow() ) {
-			$this->getResult()->addValue( null, 'clientlogin', $helper->formatAuthenticationResponse(
-				AuthenticationResponse::newFail( $this->msg( 'userlogin-cannot-' . AuthManager::ACTION_LOGIN ) )
-			) );
-			$helper->logAuthenticationResult( 'login', 'userlogin-cannot-' . AuthManager::ACTION_LOGIN );
+		if ( !$this->authManager->canAuthenticateNow() ) {
+			$res = AuthenticationResponse::newFail( $this->msg( 'userlogin-cannot-' . AuthManager::ACTION_LOGIN ) );
+			$this->getResult()->addValue( null, 'clientlogin',
+				$helper->formatAuthenticationResponse( $res ) );
+			$helper->logAuthenticationResult( 'login', $performer, $res );
 			return;
 		}
 
 		// Perform the login step
 		if ( $params['continue'] ) {
 			$reqs = $helper->loadAuthenticationRequests( AuthManager::ACTION_LOGIN_CONTINUE );
-			$res = $manager->continueAuthentication( $reqs );
+			$res = $this->authManager->continueAuthentication( $reqs );
 		} else {
 			$reqs = $helper->loadAuthenticationRequests( AuthManager::ACTION_LOGIN );
 			if ( $params['preservestate'] ) {
@@ -88,7 +101,7 @@ class ApiClientLogin extends ApiBase {
 					$reqs[] = $req;
 				}
 			}
-			$res = $manager->beginAuthentication( $reqs, $params['returnurl'] );
+			$res = $this->authManager->beginAuthentication( $reqs, $params['returnurl'] );
 		}
 
 		// Remove CreateFromLoginAuthenticationRequest from $res->neededRequests.
@@ -100,11 +113,16 @@ class ApiClientLogin extends ApiBase {
 
 		$this->getResult()->addValue( null, 'clientlogin',
 			$helper->formatAuthenticationResponse( $res ) );
-		$helper->logAuthenticationResult( 'login', $res );
+		$helper->logAuthenticationResult( 'login', $performer, $res );
 	}
 
 	public function isReadMode() {
 		return false;
+	}
+
+	public function isWriteMode() {
+		// (T283394) Logging in triggers some database writes, so should be marked appropriately.
+		return true;
 	}
 
 	public function needsToken() {
@@ -135,3 +153,6 @@ class ApiClientLogin extends ApiBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Login';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiClientLogin::class, 'ApiClientLogin' );

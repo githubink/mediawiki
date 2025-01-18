@@ -18,25 +18,41 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use ILocalizedException;
+use InvalidArgumentException;
+use MediaWiki\Status\Status;
+use MWException;
+use StatusValue;
+use Stringable;
+use Throwable;
+use Wikimedia\Message\MessageSpecifier;
+
 /**
  * Exception used to abort API execution with an error
  *
  * If possible, use ApiBase::dieWithError() instead of throwing this directly.
  *
+ * @newable
  * @ingroup API
  */
-class ApiUsageException extends MWException implements ILocalizedException {
+class ApiUsageException extends MWException implements Stringable, ILocalizedException {
 
+	/** @var string|null */
 	protected $modulePath;
+	/** @var StatusValue */
 	protected $status;
 
 	/**
+	 * @stable to call
 	 * @param ApiBase|null $module API module responsible for the error, if known
 	 * @param StatusValue $status Status holding errors
 	 * @param int $httpCode HTTP error code to use
+	 * @param Throwable|null $previous Previous exception
 	 */
 	public function __construct(
-		ApiBase $module = null, StatusValue $status, $httpCode = 0
+		?ApiBase $module, StatusValue $status, $httpCode = 0, ?Throwable $previous = null
 	) {
 		if ( $status->isOK() ) {
 			throw new InvalidArgumentException( __METHOD__ . ' requires a fatal Status' );
@@ -49,24 +65,26 @@ class ApiUsageException extends MWException implements ILocalizedException {
 		// customized by the local wiki.
 		$enMsg = clone $this->getApiMessage();
 		$enMsg->inLanguage( 'en' )->useDatabase( false );
-		parent::__construct( ApiErrorFormatter::stripMarkup( $enMsg->text() ), $httpCode );
+		parent::__construct( ApiErrorFormatter::stripMarkup( $enMsg->text() ), $httpCode, $previous );
 	}
 
 	/**
 	 * @param ApiBase|null $module API module responsible for the error, if known
-	 * @param string|array|Message $msg See ApiMessage::create()
+	 * @param string|array|MessageSpecifier $msg See ApiMessage::create()
 	 * @param string|null $code See ApiMessage::create()
 	 * @param array|null $data See ApiMessage::create()
 	 * @param int $httpCode HTTP error code to use
+	 * @param Throwable|null $previous Previous exception
 	 * @return static
 	 */
 	public static function newWithMessage(
-		ApiBase $module = null, $msg, $code = null, $data = null, $httpCode = 0
+		?ApiBase $module, $msg, $code = null, $data = null, $httpCode = 0, ?Throwable $previous = null
 	) {
 		return new static(
 			$module,
 			StatusValue::newFatal( ApiMessage::create( $msg, $code, $data ) ),
-			$httpCode
+			$httpCode,
+			$previous
 		);
 	}
 
@@ -74,16 +92,16 @@ class ApiUsageException extends MWException implements ILocalizedException {
 	 * @return ApiMessage
 	 */
 	private function getApiMessage() {
-		$errors = $this->status->getErrorsByType( 'error' );
-		if ( !$errors ) {
-			$errors = $this->status->getErrors();
+		// Return the first error message, if any; or the first warning message, if any; or a generic message
+		foreach ( $this->status->getMessages( 'error' ) as $msg ) {
+			// @phan-suppress-next-line PhanTypeMismatchReturnSuperType
+			return ApiMessage::create( $msg );
 		}
-		if ( !$errors ) {
-			$msg = new ApiMessage( 'apierror-unknownerror-nocode', 'unknownerror' );
-		} else {
-			$msg = ApiMessage::create( $errors[0] );
+		foreach ( $this->status->getMessages( 'warning' ) as $msg ) {
+			// @phan-suppress-next-line PhanTypeMismatchReturnSuperType
+			return ApiMessage::create( $msg );
 		}
-		return $msg;
+		return new ApiMessage( 'apierror-unknownerror-nocode', 'unknownerror' );
 	}
 
 	/**
@@ -119,7 +137,11 @@ class ApiUsageException extends MWException implements ILocalizedException {
 
 		return get_class( $this ) . ": {$enMsg->getApiCode()}: {$text} "
 			. "in {$this->getFile()}:{$this->getLine()}\n"
-			. "Stack trace:\n{$this->getTraceAsString()}";
+			. "Stack trace:\n{$this->getTraceAsString()}"
+			. ( $this->getPrevious() ? "\n\nNext {$this->getPrevious()}" : "" );
 	}
 
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiUsageException::class, 'ApiUsageException' );

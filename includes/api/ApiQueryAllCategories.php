@@ -1,6 +1,6 @@
 <?php
 /**
- * Copyright © 2007 Roan Kattouw "<Firstname>.<Lastname>@gmail.com"
+ * Copyright © 2007 Roan Kattouw <roan.kattouw@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -20,6 +20,14 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use MediaWiki\Title\Title;
+use Wikimedia\ParamValidator\ParamValidator;
+use Wikimedia\ParamValidator\TypeDef\IntegerDef;
+use Wikimedia\Rdbms\IExpression;
+use Wikimedia\Rdbms\LikeValue;
+
 /**
  * Query module to enumerate all categories, even the ones that don't have
  * category pages.
@@ -28,7 +36,7 @@
  */
 class ApiQueryAllCategories extends ApiQueryGeneratorBase {
 
-	public function __construct( ApiQuery $query, $moduleName ) {
+	public function __construct( ApiQuery $query, string $moduleName ) {
 		parent::__construct( $query, $moduleName, 'ac' );
 	}
 
@@ -45,7 +53,7 @@ class ApiQueryAllCategories extends ApiQueryGeneratorBase {
 	}
 
 	/**
-	 * @param ApiPageSet $resultPageSet
+	 * @param ApiPageSet|null $resultPageSet
 	 */
 	private function run( $resultPageSet = null ) {
 		$db = $this->getDB();
@@ -54,12 +62,10 @@ class ApiQueryAllCategories extends ApiQueryGeneratorBase {
 		$this->addTables( 'category' );
 		$this->addFields( 'cat_title' );
 
-		if ( !is_null( $params['continue'] ) ) {
-			$cont = explode( '|', $params['continue'] );
-			$this->dieContinueUsageIf( count( $cont ) != 1 );
-			$op = $params['dir'] == 'descending' ? '<' : '>';
-			$cont_from = $db->addQuotes( $cont[0] );
-			$this->addWhere( "cat_title $op= $cont_from" );
+		if ( $params['continue'] !== null ) {
+			$cont = $this->parseContinueParamOrDie( $params['continue'], [ 'string' ] );
+			$op = $params['dir'] == 'descending' ? '<=' : '>=';
+			$this->addWhere( $db->expr( 'cat_title', $op, $cont[0] ) );
 		}
 
 		$dir = ( $params['dir'] == 'descending' ? 'older' : 'newer' );
@@ -80,16 +86,20 @@ class ApiQueryAllCategories extends ApiQueryGeneratorBase {
 		}
 
 		if ( isset( $params['prefix'] ) ) {
-			$this->addWhere( 'cat_title' . $db->buildLike(
-				$this->titlePartToKey( $params['prefix'], NS_CATEGORY ),
-				$db->anyString() ) );
+			$this->addWhere(
+				$db->expr(
+					'cat_title',
+					IExpression::LIKE,
+					new LikeValue( $this->titlePartToKey( $params['prefix'], NS_CATEGORY ), $db->anyString() )
+				)
+			);
 		}
 
 		$this->addOption( 'LIMIT', $params['limit'] + 1 );
 		$sort = ( $params['dir'] == 'descending' ? ' DESC' : '' );
 		$this->addOption( 'ORDER BY', 'cat_title' . $sort );
 
-		$prop = array_flip( $params['prop'] );
+		$prop = array_fill_keys( $params['prop'], true );
 		$this->addFieldsIf( [ 'cat_pages', 'cat_subcats', 'cat_files' ], isset( $prop['size'] ) );
 		if ( isset( $prop['hidden'] ) ) {
 			$this->addTables( [ 'page', 'page_props' ] );
@@ -120,7 +130,7 @@ class ApiQueryAllCategories extends ApiQueryGeneratorBase {
 
 			// Normalize titles
 			$titleObj = Title::makeTitle( NS_CATEGORY, $row->cat_title );
-			if ( !is_null( $resultPageSet ) ) {
+			if ( $resultPageSet !== null ) {
 				$pages[] = $titleObj;
 			} else {
 				$item = [];
@@ -142,7 +152,7 @@ class ApiQueryAllCategories extends ApiQueryGeneratorBase {
 			}
 		}
 
-		if ( is_null( $resultPageSet ) ) {
+		if ( $resultPageSet === null ) {
 			$result->addIndexedTagName( [ 'query', $this->getModuleName() ], 'c' );
 		} else {
 			$resultPageSet->populateFromTitles( $pages );
@@ -158,29 +168,29 @@ class ApiQueryAllCategories extends ApiQueryGeneratorBase {
 			'to' => null,
 			'prefix' => null,
 			'dir' => [
-				ApiBase::PARAM_DFLT => 'ascending',
-				ApiBase::PARAM_TYPE => [
+				ParamValidator::PARAM_DEFAULT => 'ascending',
+				ParamValidator::PARAM_TYPE => [
 					'ascending',
 					'descending'
 				],
 			],
 			'min' => [
-				ApiBase::PARAM_TYPE => 'integer'
+				ParamValidator::PARAM_TYPE => 'integer'
 			],
 			'max' => [
-				ApiBase::PARAM_TYPE => 'integer'
+				ParamValidator::PARAM_TYPE => 'integer'
 			],
 			'limit' => [
-				ApiBase::PARAM_DFLT => 10,
-				ApiBase::PARAM_TYPE => 'limit',
-				ApiBase::PARAM_MIN => 1,
-				ApiBase::PARAM_MAX => ApiBase::LIMIT_BIG1,
-				ApiBase::PARAM_MAX2 => ApiBase::LIMIT_BIG2
+				ParamValidator::PARAM_DEFAULT => 10,
+				ParamValidator::PARAM_TYPE => 'limit',
+				IntegerDef::PARAM_MIN => 1,
+				IntegerDef::PARAM_MAX => ApiBase::LIMIT_BIG1,
+				IntegerDef::PARAM_MAX2 => ApiBase::LIMIT_BIG2
 			],
 			'prop' => [
-				ApiBase::PARAM_TYPE => [ 'size', 'hidden' ],
-				ApiBase::PARAM_DFLT => '',
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => [ 'size', 'hidden' ],
+				ParamValidator::PARAM_DEFAULT => '',
+				ParamValidator::PARAM_ISMULTI => true,
 				ApiBase::PARAM_HELP_MSG_PER_VALUE => [],
 			],
 		];
@@ -199,3 +209,6 @@ class ApiQueryAllCategories extends ApiQueryGeneratorBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Allcategories';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiQueryAllCategories::class, 'ApiQueryAllCategories' );

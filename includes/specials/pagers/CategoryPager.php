@@ -18,37 +18,52 @@
  * @file
  * @ingroup Pager
  */
+
+namespace MediaWiki\Pager;
+
+use MediaWiki\Cache\LinkBatchFactory;
+use MediaWiki\Context\IContextSource;
+use MediaWiki\Html\Html;
+use MediaWiki\HTMLForm\HTMLForm;
 use MediaWiki\Linker\LinkRenderer;
+use MediaWiki\Title\Title;
+use MediaWiki\Title\TitleValue;
+use Wikimedia\Rdbms\IConnectionProvider;
 
 /**
  * @ingroup Pager
  */
 class CategoryPager extends AlphabeticPager {
 
-	/**
-	 * @var LinkRenderer
-	 */
-	protected $linkRenderer;
+	private LinkBatchFactory $linkBatchFactory;
 
 	/**
 	 * @param IContextSource $context
-	 * @param string $from
+	 * @param LinkBatchFactory $linkBatchFactory
 	 * @param LinkRenderer $linkRenderer
+	 * @param IConnectionProvider $dbProvider
+	 * @param string $from
 	 */
-	public function __construct( IContextSource $context, $from, LinkRenderer $linkRenderer
+	public function __construct(
+		IContextSource $context,
+		LinkBatchFactory $linkBatchFactory,
+		LinkRenderer $linkRenderer,
+		IConnectionProvider $dbProvider,
+		$from
 	) {
-		parent::__construct( $context );
+		// Set database before parent constructor to avoid setting it there
+		$this->mDb = $dbProvider->getReplicaDatabase();
+		parent::__construct( $context, $linkRenderer );
+		$this->linkBatchFactory = $linkBatchFactory;
 		$from = str_replace( ' ', '_', $from );
 		if ( $from !== '' ) {
 			$from = Title::capitalize( $from, NS_CATEGORY );
 			$this->setOffset( $from );
 			$this->setIncludeOffset( true );
 		}
-
-		$this->linkRenderer = $linkRenderer;
 	}
 
-	function getQueryInfo() {
+	public function getQueryInfo() {
 		return [
 			'tables' => [ 'category' ],
 			'fields' => [ 'cat_title', 'cat_pages' ],
@@ -56,11 +71,11 @@ class CategoryPager extends AlphabeticPager {
 		];
 	}
 
-	function getIndexField() {
+	public function getIndexField() {
 		return 'cat_title';
 	}
 
-	function getDefaultQuery() {
+	public function getDefaultQuery() {
 		parent::getDefaultQuery();
 		unset( $this->mDefaultQuery['from'] );
 
@@ -69,12 +84,12 @@ class CategoryPager extends AlphabeticPager {
 
 	/* Override getBody to apply LinksBatch on resultset before actually outputting anything. */
 	public function getBody() {
-		$batch = new LinkBatch;
+		$batch = $this->linkBatchFactory->newLinkBatch();
 
 		$this->mResult->rewind();
 
 		foreach ( $this->mResult as $row ) {
-			$batch->addObj( new TitleValue( NS_CATEGORY, $row->cat_title ) );
+			$batch->add( NS_CATEGORY, $row->cat_title );
 		}
 		$batch->execute();
 		$this->mResult->rewind();
@@ -82,13 +97,13 @@ class CategoryPager extends AlphabeticPager {
 		return parent::getBody();
 	}
 
-	function formatRow( $result ) {
+	public function formatRow( $result ) {
 		$title = new TitleValue( NS_CATEGORY, $result->cat_title );
 		$text = $title->getText();
-		$link = $this->linkRenderer->makeLink( $title, $text );
+		$link = $this->getLinkRenderer()->makeLink( $title, $text );
 
 		$count = $this->msg( 'nmembers' )->numParams( $result->cat_pages )->escaped();
-		return Html::rawElement( 'li', null, $this->getLanguage()->specialList( $link, $count ) ) . "\n";
+		return Html::rawElement( 'li', [], $this->getLanguage()->specialList( $link, $count ) ) . "\n";
 	}
 
 	public function getStartForm( $from ) {
@@ -113,3 +128,9 @@ class CategoryPager extends AlphabeticPager {
 	}
 
 }
+
+/**
+ * Retain the old class name for backwards compatibility.
+ * @deprecated since 1.41
+ */
+class_alias( CategoryPager::class, 'CategoryPager' );

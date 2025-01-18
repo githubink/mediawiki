@@ -21,29 +21,45 @@
  * @ingroup Parser
  */
 
+namespace MediaWiki\Parser;
+
+use Closure;
+use InvalidArgumentException;
+
 /**
  * @todo document, briefly.
+ * @newable
  * @ingroup Parser
  */
 class StripState {
+	/** @var array[] */
 	protected $data;
+	/** @var string */
 	protected $regex;
 
-	protected $parser;
+	protected ?Parser $parser;
 
+	/** @var array */
 	protected $circularRefGuard;
+	/** @var int */
 	protected $depth = 0;
+	/** @var int */
 	protected $highestDepth = 0;
+	/** @var int */
 	protected $expandSize = 0;
 
+	/** @var int */
 	protected $depthLimit = 20;
-	protected $sizeLimit = 5000000;
+	/** @var int */
+	protected $sizeLimit = 5_000_000;
 
 	/**
+	 * @stable to call
+	 *
 	 * @param Parser|null $parser
 	 * @param array $options
 	 */
-	public function __construct( Parser $parser = null, $options = [] ) {
+	public function __construct( ?Parser $parser = null, $options = [] ) {
 		$this->data = [
 			'nowiki' => [],
 			'general' => []
@@ -63,7 +79,7 @@ class StripState {
 	/**
 	 * Add a nowiki strip item
 	 * @param string $marker
-	 * @param string $value
+	 * @param string|Closure $value
 	 */
 	public function addNoWiki( $marker, $value ) {
 		$this->addItem( 'nowiki', $marker, $value );
@@ -71,21 +87,33 @@ class StripState {
 
 	/**
 	 * @param string $marker
-	 * @param string $value
+	 * @param string|Closure $value
 	 */
 	public function addGeneral( $marker, $value ) {
 		$this->addItem( 'general', $marker, $value );
 	}
 
 	/**
-	 * @throws MWException
-	 * @param string $type
 	 * @param string $marker
-	 * @param string $value
+	 * @param string|Closure $value
+	 * @since 1.44
+	 * @internal Parsoid use only.
+	 */
+	public function addExtTag( $marker, $value ) {
+		$this->addItem( 'exttag', $marker, $value );
+	}
+
+	/**
+	 * @param string $type
+	 * @param-taint $type none
+	 * @param string $marker
+	 * @param-taint $marker none
+	 * @param string|Closure $value
+	 * @param-taint $value exec_html
 	 */
 	protected function addItem( $type, $marker, $value ) {
 		if ( !preg_match( $this->regex, $marker, $m ) ) {
-			throw new MWException( "Invalid marker: $marker" );
+			throw new InvalidArgumentException( "Invalid marker: $marker" );
 		}
 
 		$this->data[$type][$m[1]] = $value;
@@ -105,6 +133,69 @@ class StripState {
 	 */
 	public function unstripNoWiki( $text ) {
 		return $this->unstripType( 'nowiki', $text );
+	}
+
+	/**
+	 * @param string $text
+	 * @param callable $callback
+	 * @return string
+	 */
+	public function replaceNoWikis( string $text, callable $callback ): string {
+		// Shortcut
+		if ( !count( $this->data['nowiki'] ) ) {
+			return $text;
+		}
+
+		$callback = function ( $m ) use ( $callback ) {
+			$marker = $m[1];
+			if ( isset( $this->data['nowiki'][$marker] ) ) {
+				$value = $this->data['nowiki'][$marker];
+				if ( $value instanceof Closure ) {
+					$value = $value();
+				}
+
+				$this->expandSize += strlen( $value );
+				if ( $this->expandSize > $this->sizeLimit ) {
+					return $this->getLimitationWarning( 'unstrip-size', $this->sizeLimit );
+				}
+
+				return call_user_func( $callback, $value );
+			} else {
+				return $m[0];
+			}
+		};
+
+		return preg_replace_callback( $this->regex, $callback, $text );
+	}
+
+	/**
+	 * Split the given text by strip markers, returning an array that
+	 * alternates between plain text and strip marker information.  The
+	 * strip marker information includes 'type', and 'content'.  The
+	 * resulting array will always be at least 1 element long and contain
+	 * an odd number of elements.
+	 * @return array<string|array{type:string,content:string}>
+	 */
+	public function split( string $text ): array {
+		$pieces = preg_split( $this->regex, $text, -1, PREG_SPLIT_DELIM_CAPTURE );
+		for ( $i = 1; $i < count( $pieces ); $i += 2 ) {
+			$marker = $pieces[$i];
+			foreach ( $this->data as $type => $items ) {
+				if ( isset( $items[$marker] ) ) {
+					$pieces[$i] = [
+						'type' => $type,
+						'content' => $items[$marker],
+					];
+					continue 2;
+				}
+			}
+			$pieces[$i] = [
+				'marker' => $marker,
+				'type' => 'unknown',
+				'content' => null,
+			];
+		}
+		return $pieces;
 	}
 
 	/**
@@ -172,7 +263,7 @@ class StripState {
 	 * Get warning HTML and register a limitation warning with the parser
 	 *
 	 * @param string $type
-	 * @param int $max
+	 * @param int|string $max
 	 * @return string
 	 */
 	private function getLimitationWarning( $type, $max = '' ) {
@@ -186,7 +277,7 @@ class StripState {
 	 * Get warning HTML
 	 *
 	 * @param string $message
-	 * @param int $max
+	 * @param int|string $max
 	 * @return string
 	 */
 	private function getWarning( $message, $max = '' ) {
@@ -220,72 +311,6 @@ class StripState {
 	}
 
 	/**
-	 * Get a StripState object which is sufficient to unstrip the given text.
-	 * It will contain the minimum subset of strip items necessary.
-	 *
-	 * @deprecated since 1.31
-	 * @param string $text
-	 * @return StripState
-	 */
-	public function getSubState( $text ) {
-		wfDeprecated( __METHOD__, '1.31' );
-
-		$subState = new StripState;
-		$pos = 0;
-		while ( true ) {
-			$startPos = strpos( $text, Parser::MARKER_PREFIX, $pos );
-			$endPos = strpos( $text, Parser::MARKER_SUFFIX, $pos );
-			if ( $startPos === false || $endPos === false ) {
-				break;
-			}
-
-			$endPos += strlen( Parser::MARKER_SUFFIX );
-			$marker = substr( $text, $startPos, $endPos - $startPos );
-			if ( !preg_match( $this->regex, $marker, $m ) ) {
-				continue;
-			}
-
-			$key = $m[1];
-			if ( isset( $this->data['nowiki'][$key] ) ) {
-				$subState->data['nowiki'][$key] = $this->data['nowiki'][$key];
-			} elseif ( isset( $this->data['general'][$key] ) ) {
-				$subState->data['general'][$key] = $this->data['general'][$key];
-			}
-			$pos = $endPos;
-		}
-		return $subState;
-	}
-
-	/**
-	 * Merge another StripState object into this one. The strip marker keys
-	 * will not be preserved. The strings in the $texts array will have their
-	 * strip markers rewritten, the resulting array of strings will be returned.
-	 *
-	 * @deprecated since 1.31
-	 * @param StripState $otherState
-	 * @param array $texts
-	 * @return array
-	 */
-	public function merge( $otherState, $texts ) {
-		wfDeprecated( __METHOD__, '1.31' );
-
-		$mergePrefix = wfRandomString( 16 );
-
-		foreach ( $otherState->data as $type => $items ) {
-			foreach ( $items as $key => $value ) {
-				$this->data[$type]["$mergePrefix-$key"] = $value;
-			}
-		}
-
-		$callback = function ( $m ) use ( $mergePrefix ) {
-			$key = $m[1];
-			return Parser::MARKER_PREFIX . $mergePrefix . '-' . $key . Parser::MARKER_SUFFIX;
-		};
-		$texts = preg_replace_callback( $otherState->regex, $callback, $texts );
-		return $texts;
-	}
-
-	/**
 	 * Remove any strip markers found in the given text.
 	 *
 	 * @param string $text
@@ -295,3 +320,6 @@ class StripState {
 		return preg_replace( $this->regex, '', $text );
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( StripState::class, 'StripState' );

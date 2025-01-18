@@ -1,75 +1,92 @@
 <?php
 
+namespace MediaWiki\Tests\Api;
+
+use MediaWiki\User\User;
+
 /**
  * @group API
  * @group Database
  * @group medium
  *
- * @covers ApiLogout
+ * @covers \MediaWiki\Api\ApiLogout
  */
 class ApiLogoutTest extends ApiTestCase {
 
-	protected function setUp() {
-		global $wgRequest, $wgUser;
+	protected function setUp(): void {
+		global $wgRequest;
 
 		parent::setUp();
 
-		// Link the user to the Session properly so User::doLogout() doesn't complain.
-		$wgRequest->getSession()->setUser( $wgUser );
-		$wgUser = User::newFromSession( $wgRequest );
-		$this->apiContext->setUser( $wgUser );
+		$user = $this->getTestSysop()->getUser();
+		$wgRequest->getSession()->setUser( $user );
+		$this->apiContext->setUser( $user );
 	}
 
 	public function testUserLogoutBadToken() {
-		global $wgUser;
+		$user = $this->getTestSysop()->getUser();
 
-		$this->setExpectedApiException( 'apierror-badtoken' );
-
+		$this->expectApiErrorCode( 'badtoken' );
 		try {
 			$token = 'invalid token';
-			$this->doUserLogout( $token );
+			$this->doUserLogout( $token, $user );
 		} finally {
-			$this->assertTrue( $wgUser->isLoggedIn(), 'not logged out' );
+			$this->assertTrue( $user->isRegistered(), 'not logged out' );
 		}
 	}
 
-	public function testUserLogout() {
-		global $wgUser;
+	public function testUserLogoutAlreadyLoggedOut() {
+		$user = $this->getServiceContainer()->getUserFactory()->newAnonymous( '1.2.3.4' );
 
-		$this->assertTrue( $wgUser->isLoggedIn(), 'sanity check' );
-		$token = $this->getUserCsrfTokenFromApi();
-		$this->doUserLogout( $token );
-		$this->assertFalse( $wgUser->isLoggedIn() );
+		$this->assertFalse( $user->isRegistered() );
+		$token = $this->getUserCsrfTokenFromApi( $user );
+		$response = $this->doUserLogout( $token, $user )[0];
+		$this->assertFalse( $user->isRegistered() );
+
+		$this->assertArrayEquals(
+			[ 'warnings' => [ 'logout' => [ 'warnings' => 'You must be logged in.' ] ] ],
+			$response
+		);
+	}
+
+	public function testUserLogout() {
+		$user = $this->getTestSysop()->getUser();
+
+		$this->assertTrue( $user->isRegistered() );
+		$token = $this->getUserCsrfTokenFromApi( $user );
+		$this->doUserLogout( $token, $user );
+		$this->assertFalse( $user->isRegistered() );
 	}
 
 	public function testUserLogoutWithWebToken() {
-		global $wgUser, $wgRequest;
+		global $wgRequest;
 
-		$this->assertTrue( $wgUser->isLoggedIn(), 'sanity check' );
+		$user = $this->getTestSysop()->getUser();
+		$this->assertTrue( $user->isRegistered() );
 
 		// Logic copied from SkinTemplate.
-		$token = $wgUser->getEditToken( 'logoutToken', $wgRequest );
+		$token = $user->getEditToken( 'logoutToken', $wgRequest );
 
-		$this->doUserLogout( $token );
-		$this->assertFalse( $wgUser->isLoggedIn() );
+		$this->doUserLogout( $token, $user );
+		$this->assertFalse( $user->isRegistered() );
 	}
 
-	private function getUserCsrfTokenFromApi() {
+	private function getUserCsrfTokenFromApi( User $user ) {
 		$retToken = $this->doApiRequest( [
 			'action' => 'query',
 			'meta' => 'tokens',
 			'type' => 'csrf'
-		] );
+		], null, false, $user );
 
 		$this->assertArrayNotHasKey( 'warnings', $retToken );
 
 		return $retToken[0]['query']['tokens']['csrftoken'];
 	}
 
-	private function doUserLogout( $logoutToken ) {
+	private function doUserLogout( $logoutToken, User $user ) {
 		return $this->doApiRequest( [
 			'action' => 'logout',
 			'token' => $logoutToken
-		] );
+		], null, false, $user );
 	}
 }

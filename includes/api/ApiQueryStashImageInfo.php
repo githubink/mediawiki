@@ -20,6 +20,15 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use MediaWiki\Language\Language;
+use MediaWiki\Page\File\BadFileLookup;
+use RepoGroup;
+use UploadStashBadPathException;
+use UploadStashFileNotFoundException;
+use Wikimedia\ParamValidator\ParamValidator;
+
 /**
  * A query action to get image information from temporarily stashed files.
  *
@@ -27,19 +36,35 @@
  */
 class ApiQueryStashImageInfo extends ApiQueryImageInfo {
 
-	public function __construct( ApiQuery $query, $moduleName ) {
-		parent::__construct( $query, $moduleName, 'sii' );
+	private RepoGroup $repoGroup;
+
+	public function __construct(
+		ApiQuery $query,
+		string $moduleName,
+		RepoGroup $repoGroup,
+		Language $contentLanguage,
+		BadFileLookup $badFileLookup
+	) {
+		parent::__construct(
+			$query,
+			$moduleName,
+			'sii',
+			$repoGroup,
+			$contentLanguage,
+			$badFileLookup
+		);
+		$this->repoGroup = $repoGroup;
 	}
 
 	public function execute() {
-		if ( !$this->getUser()->isLoggedIn() ) {
+		if ( !$this->getUser()->isRegistered() ) {
 			$this->dieWithError( 'apierror-mustbeloggedin-uploadstash', 'notloggedin' );
 		}
 
 		$params = $this->extractRequestParams();
 		$modulePrefix = $this->getModulePrefix();
 
-		$prop = array_flip( $params['prop'] );
+		$prop = array_fill_keys( $params['prop'], true );
 
 		$scale = $this->getScale( $params );
 
@@ -53,7 +78,7 @@ class ApiQueryStashImageInfo extends ApiQueryImageInfo {
 		}
 
 		try {
-			$stash = RepoGroup::singleton()->getLocalRepo()->getUploadStash( $this->getUser() );
+			$stash = $this->repoGroup->getLocalRepo()->getUploadStash( $this->getUser() );
 
 			foreach ( $params['filekey'] as $filekey ) {
 				$file = $stash->getFile( $filekey );
@@ -70,43 +95,63 @@ class ApiQueryStashImageInfo extends ApiQueryImageInfo {
 		}
 	}
 
-	private $propertyFilter = [
+	private const PROPERTY_FILTER = [
 		'user', 'userid', 'comment', 'parsedcomment',
 		'mediatype', 'archivename', 'uploadwarning',
 	];
 
+	/**
+	 * Returns all possible parameters to siiprop
+	 *
+	 * @param array|null $filter List of properties to filter out
+	 * @return array
+	 */
+	public static function getPropertyNames( $filter = null ) {
+		return parent::getPropertyNames( $filter ?? self::PROPERTY_FILTER );
+	}
+
+	/**
+	 * Returns messages for all possible parameters to siiprop
+	 *
+	 * @param array|null $filter List of properties to filter out
+	 * @return array
+	 */
+	public static function getPropertyMessages( $filter = null ) {
+		return parent::getPropertyMessages( $filter ?? self::PROPERTY_FILTER );
+	}
+
 	public function getAllowedParams() {
 		return [
 			'filekey' => [
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_ISMULTI => true,
 			],
 			'sessionkey' => [
-				ApiBase::PARAM_ISMULTI => true,
-				ApiBase::PARAM_DEPRECATED => true,
+				ParamValidator::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_DEPRECATED => true,
 			],
 			'prop' => [
-				ApiBase::PARAM_ISMULTI => true,
-				ApiBase::PARAM_DFLT => 'timestamp|url',
-				ApiBase::PARAM_TYPE => self::getPropertyNames( $this->propertyFilter ),
+				ParamValidator::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_DEFAULT => 'timestamp|url',
+				ParamValidator::PARAM_TYPE => self::getPropertyNames(),
 				ApiBase::PARAM_HELP_MSG => 'apihelp-query+imageinfo-param-prop',
-				ApiBase::PARAM_HELP_MSG_PER_VALUE => self::getPropertyMessages( $this->propertyFilter )
+				ApiBase::PARAM_HELP_MSG_PER_VALUE => self::getPropertyMessages()
 			],
 			'urlwidth' => [
-				ApiBase::PARAM_TYPE => 'integer',
-				ApiBase::PARAM_DFLT => -1,
+				ParamValidator::PARAM_TYPE => 'integer',
+				ParamValidator::PARAM_DEFAULT => -1,
 				ApiBase::PARAM_HELP_MSG => [
 					'apihelp-query+imageinfo-param-urlwidth',
 					ApiQueryImageInfo::TRANSFORM_LIMIT,
 				],
 			],
 			'urlheight' => [
-				ApiBase::PARAM_TYPE => 'integer',
-				ApiBase::PARAM_DFLT => -1,
+				ParamValidator::PARAM_TYPE => 'integer',
+				ParamValidator::PARAM_DEFAULT => -1,
 				ApiBase::PARAM_HELP_MSG => 'apihelp-query+imageinfo-param-urlheight',
 			],
 			'urlparam' => [
-				ApiBase::PARAM_TYPE => 'string',
-				ApiBase::PARAM_DFLT => '',
+				ParamValidator::PARAM_TYPE => 'string',
+				ParamValidator::PARAM_DEFAULT => '',
 				ApiBase::PARAM_HELP_MSG => 'apihelp-query+imageinfo-param-urlparam',
 			],
 		];
@@ -126,3 +171,6 @@ class ApiQueryStashImageInfo extends ApiQueryImageInfo {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Stashimageinfo';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiQueryStashImageInfo::class, 'ApiQueryStashImageInfo' );

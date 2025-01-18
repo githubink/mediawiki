@@ -18,20 +18,35 @@
  * @file
  */
 
+use MediaWiki\Message\Message;
+use Wikimedia\Message\MessageSpecifier;
+
 /**
  * An error page which can definitely be safely rendered using the OutputPage.
+ *
+ * @newable
+ * @stable to extend
  *
  * @since 1.7
  * @ingroup Exception
  */
 class ErrorPageError extends MWException implements ILocalizedException {
-	public $title, $msg, $params;
+	public const SEND_OUTPUT = 0;
+	public const STAGE_OUTPUT = 1;
+
+	/** @var string|MessageSpecifier */
+	public $title;
+	/** @var string|MessageSpecifier */
+	public $msg;
+	public array $params;
 
 	/**
 	 * Note: these arguments are keys into wfMessage(), not text!
 	 *
-	 * @param string|Message $title Message key (string) for page title, or a Message object
-	 * @param string|Message $msg Message key (string) for error text, or a Message object
+	 * @stable to call
+	 *
+	 * @param string|MessageSpecifier $title Message key (string) for page title, or a MessageSpecifier
+	 * @param string|MessageSpecifier $msg Message key (string) for error text, or a MessageSpecifier
 	 * @param array $params Array with parameters to wfMessage()
 	 */
 	public function __construct( $title, $msg, $params = [] ) {
@@ -60,13 +75,26 @@ class ErrorPageError extends MWException implements ILocalizedException {
 		return wfMessage( $this->msg, $this->params );
 	}
 
-	public function report() {
+	/**
+	 * @stable to override
+	 * @param int $action
+	 *
+	 * @throws FatalError
+	 * @throws MWException
+	 */
+	public function report( $action = self::SEND_OUTPUT ) {
 		if ( self::isCommandLine() || defined( 'MW_API' ) ) {
-			parent::report();
+			MWExceptionRenderer::output( $this, MWExceptionRenderer::AS_PRETTY );
 		} else {
 			global $wgOut;
 			$wgOut->showErrorPage( $this->title, $this->msg, $this->params );
-			$wgOut->output();
+			// Allow skipping of the final output step, so that web-based page views
+			// from MediaWiki.php, can inspect the staged OutputPage state, and perform
+			// graceful shutdown via prepareForOutput() first, just like for regular
+			// output when there isn't an error page.
+			if ( $action === self::SEND_OUTPUT ) {
+				$wgOut->output();
+			}
 		}
 	}
 }

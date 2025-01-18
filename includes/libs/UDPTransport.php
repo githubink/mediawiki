@@ -18,6 +18,8 @@
  * @file
  */
 
+use Wikimedia\IPUtils;
+
 /**
  * A generic class to send a message over UDP
  *
@@ -29,7 +31,13 @@
  * @since 1.25
  */
 class UDPTransport {
-	private $host, $port, $prefix, $domain;
+	// Limit to 64 KiB
+	public const MAX_PAYLOAD_SIZE = 65507;
+	private string $host;
+	private int $port;
+	/** @var bool|string */
+	private $prefix;
+	private int $domain;
 
 	/**
 	 * @param string $host IP address to send to
@@ -47,7 +55,6 @@ class UDPTransport {
 	/**
 	 * @param string $info In the format of "udp://host:port/prefix"
 	 * @return UDPTransport
-	 * @throws InvalidArgumentException
 	 */
 	public static function newFromString( $info ) {
 		if ( preg_match( '!^udp:(?://)?\[([0-9a-fA-F:]+)\]:(\d+)(?:/(.*))?$!', $info, $m ) ) {
@@ -58,7 +65,7 @@ class UDPTransport {
 			$domain = AF_INET6;
 		} elseif ( preg_match( '!^udp:(?://)?([a-zA-Z0-9.-]+):(\d+)(?:/(.*))?$!', $info, $m ) ) {
 			$host = $m[1];
-			if ( !IP::isIPv4( $host ) ) {
+			if ( !IPUtils::isIPv4( $host ) ) {
 				$host = gethostbyname( $host );
 			}
 			$port = intval( $m[2] );
@@ -74,21 +81,20 @@ class UDPTransport {
 	/**
 	 * @param string $text
 	 */
-	public function emit( $text ) {
+	public function emit( $text ): void {
 		// Clean it up for the multiplexer
 		if ( $this->prefix !== false ) {
 			$text = preg_replace( '/^/m', $this->prefix . ' ', $text );
 
-			// Limit to 64KB
-			if ( strlen( $text ) > 65506 ) {
-				$text = substr( $text, 0, 65506 );
+			if ( strlen( $text ) > self::MAX_PAYLOAD_SIZE - 1 ) {
+				$text = substr( $text, 0, self::MAX_PAYLOAD_SIZE - 1 );
 			}
 
 			if ( substr( $text, -1 ) != "\n" ) {
 				$text .= "\n";
 			}
-		} elseif ( strlen( $text ) > 65507 ) {
-			$text = substr( $text, 0, 65507 );
+		} elseif ( strlen( $text ) > self::MAX_PAYLOAD_SIZE ) {
+			$text = substr( $text, 0, self::MAX_PAYLOAD_SIZE );
 		}
 
 		$sock = socket_create( $this->domain, SOCK_DGRAM, SOL_UDP );

@@ -21,12 +21,14 @@
 
 namespace MediaWiki\Auth;
 
-use Config;
-use MediaWiki\Block\DatabaseBlock;
-use StatusValue;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Message\Message;
 
 /**
  * Check if the user is blocked, and prevent authentication if so.
+ *
+ * Not all scenarios are covered by this class, AuthManager does some block checks itself
+ * via AuthManager::authorizeCreateAccount().
  *
  * @ingroup Auth
  * @since 1.27
@@ -47,68 +49,36 @@ class CheckBlocksSecondaryAuthenticationProvider extends AbstractSecondaryAuthen
 		}
 	}
 
-	public function setConfig( Config $config ) {
-		parent::setConfig( $config );
-
-		if ( $this->blockDisablesLogin === null ) {
-			$this->blockDisablesLogin = $this->config->get( 'BlockDisablesLogin' );
-		}
+	/** @inheritDoc */
+	protected function postInitSetup() {
+		$this->blockDisablesLogin ??= $this->config->get( MainConfigNames::BlockDisablesLogin );
 	}
 
+	/** @inheritDoc */
 	public function getAuthenticationRequests( $action, array $options ) {
 		return [];
 	}
 
+	/** @inheritDoc */
 	public function beginSecondaryAuthentication( $user, array $reqs ) {
-		// @TODO Partial blocks should not prevent the user from logging in.
-		//       see: https://phabricator.wikimedia.org/T208895
 		if ( !$this->blockDisablesLogin ) {
 			return AuthenticationResponse::newAbstain();
-		} elseif ( $user->getBlock() ) {
+		}
+		$block = $user->getBlock();
+		// Ignore IP blocks and partial blocks, $wgBlockDisablesLogin was meant for
+		// blocks banning specific users.
+		if ( $block && $block->isSitewide() && $block->isBlocking( $user ) ) {
 			return AuthenticationResponse::newFail(
-				new \Message( 'login-userblocked', [ $user->getName() ] )
+				new Message( 'login-userblocked', [ $user->getName() ] )
 			);
 		} else {
 			return AuthenticationResponse::newPass();
 		}
 	}
 
+	/** @inheritDoc */
 	public function beginSecondaryAccountCreation( $user, $creator, array $reqs ) {
 		return AuthenticationResponse::newAbstain();
-	}
-
-	public function testUserForCreation( $user, $autocreate, array $options = [] ) {
-		$block = $user->isBlockedFromCreateAccount();
-		if ( $block ) {
-			if ( $block->getReason() ) {
-				$reason = $block->getReason();
-			} else {
-				$msg = \Message::newFromKey( 'blockednoreason' );
-				if ( !\RequestContext::getMain()->getUser()->isSafeToLoad() ) {
-					$msg->inContentLanguage();
-				}
-				$reason = $msg->text();
-			}
-
-			$errorParams = [
-				$block->getTarget(),
-				$reason,
-				$block->getByName()
-			];
-
-			if ( $block->getType() === DatabaseBlock::TYPE_RANGE ) {
-				$errorMessage = 'cantcreateaccount-range-text';
-				$errorParams[] = $this->manager->getRequest()->getIP();
-			} else {
-				$errorMessage = 'cantcreateaccount-text';
-			}
-
-			return StatusValue::newFatal(
-				new \Message( $errorMessage, $errorParams )
-			);
-		} else {
-			return StatusValue::newGood();
-		}
 	}
 
 }

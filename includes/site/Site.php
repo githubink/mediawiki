@@ -1,8 +1,5 @@
 <?php
-
 /**
- * Represents a single site.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,26 +15,36 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  * http://www.gnu.org/copyleft/gpl.html
  *
- * @since 1.21
- *
  * @file
- * @ingroup Site
+ */
+
+namespace MediaWiki\Site;
+
+use InvalidArgumentException;
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiServices;
+use RuntimeException;
+use UnexpectedValueException;
+
+/**
+ * Represents a single site.
  *
- * @license GPL-2.0-or-later
+ * @since 1.21
+ * @ingroup Site
  * @author Jeroen De Dauw < jeroendedauw@gmail.com >
  */
-class Site implements Serializable {
-	const TYPE_UNKNOWN = 'unknown';
-	const TYPE_MEDIAWIKI = 'mediawiki';
+class Site {
+	public const TYPE_UNKNOWN = 'unknown';
+	public const TYPE_MEDIAWIKI = 'mediawiki';
 
-	const GROUP_NONE = 'none';
+	public const GROUP_NONE = 'none';
 
-	const ID_INTERWIKI = 'interwiki';
-	const ID_EQUIVALENT = 'equivalent';
+	public const ID_INTERWIKI = 'interwiki';
+	public const ID_EQUIVALENT = 'equivalent';
 
-	const SOURCE_LOCAL = 'local';
+	public const SOURCE_LOCAL = 'local';
 
-	const PATH_LINK = 'link';
+	public const PATH_LINK = 'link';
 
 	/**
 	 * A version ID that identifies the serialization structure used by getSerializationData()
@@ -46,7 +53,7 @@ class Site implements Serializable {
 	 *
 	 * @var string A string uniquely identifying the version of the serialization structure.
 	 */
-	const SERIAL_VERSION_ID = '2013-01-23';
+	public const SERIAL_VERSION_ID = '2013-01-23';
 
 	/**
 	 * @since 1.21
@@ -89,7 +96,7 @@ class Site implements Serializable {
 	 *
 	 * @since 1.21
 	 *
-	 * @var array[]
+	 * @var string[][]|false
 	 */
 	protected $localIds = [];
 
@@ -145,16 +152,9 @@ class Site implements Serializable {
 	 * Sets the global site identifier (ie enwiktionary).
 	 *
 	 * @since 1.21
-	 *
 	 * @param string|null $globalId
-	 *
-	 * @throws MWException
 	 */
-	public function setGlobalId( $globalId ) {
-		if ( $globalId !== null && !is_string( $globalId ) ) {
-			throw new MWException( '$globalId needs to be string or null' );
-		}
-
+	public function setGlobalId( ?string $globalId ) {
 		$this->globalId = $globalId;
 	}
 
@@ -184,16 +184,9 @@ class Site implements Serializable {
 	 * Sets the group of the site (ie wikipedia).
 	 *
 	 * @since 1.21
-	 *
 	 * @param string $group
-	 *
-	 * @throws MWException
 	 */
-	public function setGroup( $group ) {
-		if ( !is_string( $group ) ) {
-			throw new MWException( '$group needs to be a string' );
-		}
-
+	public function setGroup( string $group ) {
 		$this->group = $group;
 	}
 
@@ -212,16 +205,9 @@ class Site implements Serializable {
 	 * Sets the source of the site data (ie 'local', 'wikidata', 'my-magical-repo').
 	 *
 	 * @since 1.21
-	 *
 	 * @param string $source
-	 *
-	 * @throws MWException
 	 */
-	public function setSource( $source ) {
-		if ( !is_string( $source ) ) {
-			throw new MWException( '$source needs to be a string' );
-		}
-
+	public function setSource( string $source ) {
 		$this->source = $source;
 	}
 
@@ -242,43 +228,40 @@ class Site implements Serializable {
 	 * the actual site, where "key" is the local identifier.
 	 *
 	 * @since 1.21
-	 *
 	 * @param bool $shouldForward
-	 *
-	 * @throws MWException
 	 */
-	public function setForward( $shouldForward ) {
-		if ( !is_bool( $shouldForward ) ) {
-			throw new MWException( '$shouldForward needs to be a boolean' );
-		}
-
+	public function setForward( bool $shouldForward ) {
 		$this->forward = $shouldForward;
 	}
 
 	/**
 	 * Returns the domain of the site, ie en.wikipedia.org
-	 * Or false if it's not known.
+	 * Or null if it's not known.
 	 *
 	 * @since 1.21
 	 *
 	 * @return string|null
 	 */
-	public function getDomain() {
+	public function getDomain(): ?string {
 		$path = $this->getLinkPath();
 
 		if ( $path === null ) {
 			return null;
 		}
 
-		return parse_url( $path, PHP_URL_HOST );
+		$domain = parse_url( $path, PHP_URL_HOST );
+
+		if ( $domain === false ) {
+			$domain = null;
+		}
+
+		return $domain;
 	}
 
 	/**
 	 * Returns the protocol of the site.
 	 *
 	 * @since 1.21
-	 *
-	 * @throws MWException
 	 * @return string
 	 */
 	public function getProtocol() {
@@ -292,33 +275,26 @@ class Site implements Serializable {
 
 		// Malformed URL
 		if ( $protocol === false ) {
-			throw new MWException( "failed to parse URL '$path'" );
+			throw new UnexpectedValueException( "failed to parse URL '$path'" );
 		}
 
-		// No schema
-		if ( $protocol === null ) {
-			// Used for protocol relative URLs
-			$protocol = '';
-		}
-
-		return $protocol;
+		// Used for protocol relative URLs
+		return $protocol ?? '';
 	}
 
 	/**
-	 * Sets the path used to construct links with.
+	 * Set the path used to construct links with.
+	 *
 	 * Shall be equivalent to setPath( getLinkPathType(), $fullUrl ).
 	 *
 	 * @param string $fullUrl
-	 *
 	 * @since 1.21
-	 *
-	 * @throws MWException
 	 */
 	public function setLinkPath( $fullUrl ) {
 		$type = $this->getLinkPathType();
 
 		if ( $type === null ) {
-			throw new MWException( "This Site does not support link paths." );
+			throw new RuntimeException( "This Site does not support link paths." );
 		}
 
 		$this->setPath( $type, $fullUrl );
@@ -353,8 +329,9 @@ class Site implements Serializable {
 	}
 
 	/**
-	 * Returns the full URL for the given page on the site.
-	 * Or false if the needed information is not known.
+	 * Get the full URL for the given page on the site.
+	 *
+	 * Returns null if the needed information is not known.
 	 *
 	 * This generated URL is usually based upon the path returned by getLinkPath(),
 	 * but this is not a requirement.
@@ -362,16 +339,14 @@ class Site implements Serializable {
 	 * This implementation returns a URL constructed using the path returned by getLinkPath().
 	 *
 	 * @since 1.21
-	 *
-	 * @param bool|string $pageName
-	 *
-	 * @return string|bool
+	 * @param string|false $pageName
+	 * @return string|null
 	 */
 	public function getPageUrl( $pageName = false ) {
 		$url = $this->getLinkPath();
 
-		if ( $url === false ) {
-			return false;
+		if ( $url === null ) {
+			return null;
 		}
 
 		if ( $pageName !== false ) {
@@ -390,12 +365,15 @@ class Site implements Serializable {
 	 * @see Site::normalizePageName
 	 *
 	 * @since 1.21
+	 * @since 1.37 Added $followRedirect
 	 *
 	 * @param string $pageName
+	 * @param int $followRedirect either MediaWikiPageNameNormalizer::FOLLOW_REDIRECT or
+	 * MediaWikiPageNameNormalizer::NOFOLLOW_REDIRECT
 	 *
 	 * @return string|false
 	 */
-	public function normalizePageName( $pageName ) {
+	public function normalizePageName( $pageName, $followRedirect = MediaWikiPageNameNormalizer::FOLLOW_REDIRECT ) {
 		return $pageName;
 	}
 
@@ -463,7 +441,8 @@ class Site implements Serializable {
 	 * @param string|null $languageCode
 	 */
 	public function setLanguageCode( $languageCode ) {
-		if ( $languageCode !== null && !Language::isValidCode( $languageCode ) ) {
+		if ( $languageCode !== null &&
+			!MediaWikiServices::getInstance()->getLanguageNameUtils()->isValidCode( $languageCode ) ) {
 			throw new InvalidArgumentException( "$languageCode is not a valid language code." );
 		}
 		$this->languageCode = $languageCode;
@@ -474,7 +453,7 @@ class Site implements Serializable {
 	 *
 	 * @since 1.21
 	 *
-	 * @return string|null
+	 * @return int|null
 	 */
 	public function getInternalId() {
 		return $this->internalId;
@@ -505,9 +484,7 @@ class Site implements Serializable {
 			$this->localIds = [];
 		}
 
-		if ( !array_key_exists( $type, $this->localIds ) ) {
-			$this->localIds[$type] = [];
-		}
+		$this->localIds[$type] ??= [];
 
 		if ( !in_array( $identifier, $this->localIds[$type] ) ) {
 			$this->localIds[$type][] = $identifier;
@@ -544,9 +521,7 @@ class Site implements Serializable {
 	 * @return string[]
 	 */
 	public function getInterwikiIds() {
-		return array_key_exists( self::ID_INTERWIKI, $this->localIds )
-			? $this->localIds[self::ID_INTERWIKI]
-			: [];
+		return $this->localIds[self::ID_INTERWIKI] ?? [];
 	}
 
 	/**
@@ -558,9 +533,7 @@ class Site implements Serializable {
 	 * @return string[]
 	 */
 	public function getNavigationIds() {
-		return array_key_exists( self::ID_EQUIVALENT, $this->localIds )
-			? $this->localIds[self::ID_EQUIVALENT] :
-			[];
+		return $this->localIds[self::ID_EQUIVALENT] ?? [];
 	}
 
 	/**
@@ -575,30 +548,20 @@ class Site implements Serializable {
 	}
 
 	/**
-	 * Sets the path used to construct links with.
+	 * Set the path used to construct links with.
+	 *
 	 * Shall be equivalent to setPath( getLinkPathType(), $fullUrl ).
 	 *
 	 * @since 1.21
-	 *
 	 * @param string $pathType
 	 * @param string $fullUrl
-	 *
-	 * @throws MWException
 	 */
-	public function setPath( $pathType, $fullUrl ) {
-		if ( !is_string( $fullUrl ) ) {
-			throw new MWException( '$fullUrl needs to be a string' );
-		}
-
-		if ( !array_key_exists( 'paths', $this->extraData ) ) {
-			$this->extraData['paths'] = [];
-		}
-
+	public function setPath( $pathType, string $fullUrl ) {
 		$this->extraData['paths'][$pathType] = $fullUrl;
 	}
 
 	/**
-	 * Returns the path of the provided type or false if there is no such path.
+	 * Returns the path of the provided type or null if there is no such path.
 	 *
 	 * @since 1.21
 	 *
@@ -608,7 +571,7 @@ class Site implements Serializable {
 	 */
 	public function getPath( $pathType ) {
 		$paths = $this->getAllPaths();
-		return array_key_exists( $pathType, $paths ) ? $paths[$pathType] : null;
+		return $paths[$pathType] ?? null;
 	}
 
 	/**
@@ -620,7 +583,7 @@ class Site implements Serializable {
 	 * @return string[]
 	 */
 	public function getAllPaths() {
-		return array_key_exists( 'paths', $this->extraData ) ? $this->extraData['paths'] : [];
+		return $this->extraData['paths'] ?? [];
 	}
 
 	/**
@@ -644,10 +607,13 @@ class Site implements Serializable {
 	 * @return Site
 	 */
 	public static function newForType( $siteType ) {
-		global $wgSiteTypes;
+		/** @var class-string<Site>[] $siteTypes */
+		$siteTypes = MediaWikiServices::getInstance()->getMainConfig()->get(
+			MainConfigNames::SiteTypes
+		);
 
-		if ( array_key_exists( $siteType, $wgSiteTypes ) ) {
-			return new $wgSiteTypes[$siteType]();
+		if ( array_key_exists( $siteType, $siteTypes ) ) {
+			return new $siteTypes[$siteType]();
 		}
 
 		return new Site();
@@ -656,12 +622,12 @@ class Site implements Serializable {
 	/**
 	 * @see Serializable::serialize
 	 *
-	 * @since 1.21
+	 * @since 1.38
 	 *
-	 * @return string
+	 * @return array
 	 */
-	public function serialize() {
-		$fields = [
+	public function __serialize() {
+		return [
 			'globalid' => $this->globalId,
 			'type' => $this->type,
 			'group' => $this->group,
@@ -672,22 +638,17 @@ class Site implements Serializable {
 			'data' => $this->extraData,
 			'forward' => $this->forward,
 			'internalid' => $this->internalId,
-
 		];
-
-		return serialize( $fields );
 	}
 
 	/**
 	 * @see Serializable::unserialize
 	 *
-	 * @since 1.21
+	 * @since 1.38
 	 *
-	 * @param string $serialized
+	 * @param array $fields
 	 */
-	public function unserialize( $serialized ) {
-		$fields = unserialize( $serialized );
-
+	public function __unserialize( $fields ) {
 		$this->__construct( $fields['type'] );
 
 		$this->setGlobalId( $fields['globalid'] );
@@ -701,3 +662,6 @@ class Site implements Serializable {
 		$this->setInternalId( $fields['internalid'] );
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( Site::class, 'Site' );

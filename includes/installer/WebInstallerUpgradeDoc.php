@@ -16,8 +16,10 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Deployment
+ * @ingroup Installer
  */
+
+namespace MediaWiki\Installer;
 
 class WebInstallerUpgradeDoc extends WebInstallerDocument {
 

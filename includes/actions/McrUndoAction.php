@@ -5,10 +5,26 @@
  * @ingroup Actions
  */
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\CommentFormatter\CommentFormatter;
+use MediaWiki\CommentStore\CommentStore;
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Config\Config;
+use MediaWiki\Context\IContextSource;
+use MediaWiki\Html\Html;
+use MediaWiki\HTMLForm\HTMLForm;
+use MediaWiki\Linker\Linker;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Permissions\PermissionStatus;
 use MediaWiki\Revision\MutableRevisionRecord;
+use MediaWiki\Revision\RevisionLookup;
 use MediaWiki\Revision\RevisionRecord;
+use MediaWiki\Revision\RevisionRenderer;
 use MediaWiki\Revision\SlotRecord;
+use MediaWiki\SpecialPage\SpecialPage;
+use MediaWiki\Status\Status;
+use MediaWiki\Storage\EditResult;
+use MediaWiki\User\User;
+use Wikimedia\Rdbms\ReadOnlyMode;
 
 /**
  * Temporary action for MCR undos
@@ -24,14 +40,47 @@ use MediaWiki\Revision\SlotRecord;
  *
  * @ingroup Actions
  * @since 1.32
- * @deprecated since 1.32
  */
 class McrUndoAction extends FormAction {
 
-	protected $undo = 0, $undoafter = 0, $cur = 0;
+	protected int $undo = 0;
+	protected int $undoafter = 0;
+	protected int $cur = 0;
 
 	/** @var RevisionRecord|null */
 	protected $curRev = null;
+
+	private ReadOnlyMode $readOnlyMode;
+	private RevisionLookup $revisionLookup;
+	private RevisionRenderer $revisionRenderer;
+	private CommentFormatter $commentFormatter;
+	private bool $useRCPatrol;
+
+	/**
+	 * @param Article $article
+	 * @param IContextSource $context
+	 * @param ReadOnlyMode $readOnlyMode
+	 * @param RevisionLookup $revisionLookup
+	 * @param RevisionRenderer $revisionRenderer
+	 * @param CommentFormatter $commentFormatter
+	 * @param Config $config
+	 */
+	public function __construct(
+		Article $article,
+		IContextSource $context,
+		ReadOnlyMode $readOnlyMode,
+		RevisionLookup $revisionLookup,
+		RevisionRenderer $revisionRenderer,
+		CommentFormatter $commentFormatter,
+		Config $config
+	) {
+		parent::__construct( $article, $context );
+		$this->readOnlyMode = $readOnlyMode;
+		$this->revisionLookup = $revisionLookup;
+		$this->revisionRenderer = $revisionRenderer;
+		$this->commentFormatter = $commentFormatter;
+		$this->useRCPatrol = $config->get( MainConfigNames::UseRCPatrol );
+	}
 
 	public function getName() {
 		return 'mcrundo';
@@ -39,6 +88,11 @@ class McrUndoAction extends FormAction {
 
 	public function getDescription() {
 		return '';
+	}
+
+	public function getRestriction() {
+		// Require 'edit' permission to even see this action (T297322)
+		return 'edit';
 	}
 
 	public function show() {
@@ -51,38 +105,40 @@ class McrUndoAction extends FormAction {
 
 		$out = $this->getOutput();
 		$out->setRobotPolicy( 'noindex,nofollow' );
-		if ( $this->getContext()->getConfig()->get( 'UseMediaWikiUIEverywhere' ) ) {
-			$out->addModuleStyles( [
-				'mediawiki.ui.input',
-				'mediawiki.ui.checkbox',
-			] );
-		}
 
 		// IP warning headers copied from EditPage
 		// (should more be copied?)
-		if ( wfReadOnly() ) {
+		if ( $this->readOnlyMode->isReadOnly() ) {
 			$out->wrapWikiMsg(
 				"<div id=\"mw-read-only-warning\">\n$1\n</div>",
-				[ 'readonlywarning', wfReadOnlyReason() ]
+				[ 'readonlywarning', $this->readOnlyMode->getReason() ]
 			);
 		} elseif ( $this->context->getUser()->isAnon() ) {
+			// Note: EditPage has a special message for temp user creation intent here.
+			// But McrUndoAction doesn't support user creation.
 			if ( !$this->getRequest()->getCheck( 'wpPreview' ) ) {
-				$out->wrapWikiMsg(
-					"<div id='mw-anon-edit-warning' class='warningbox'>\n$1\n</div>",
-					[ 'anoneditwarning',
-						// Log-in link
-						SpecialPage::getTitleFor( 'Userlogin' )->getFullURL( [
-							'returnto' => $this->getTitle()->getPrefixedDBkey()
-						] ),
-						// Sign-up link
-						SpecialPage::getTitleFor( 'CreateAccount' )->getFullURL( [
-							'returnto' => $this->getTitle()->getPrefixedDBkey()
-						] )
-					]
+				$out->addHTML(
+					Html::warningBox(
+						$out->msg(
+							'anoneditwarning',
+							// Log-in link
+							SpecialPage::getTitleFor( 'Userlogin' )->getFullURL( [
+								'returnto' => $this->getTitle()->getPrefixedDBkey()
+							] ),
+							// Sign-up link
+							SpecialPage::getTitleFor( 'CreateAccount' )->getFullURL( [
+								'returnto' => $this->getTitle()->getPrefixedDBkey()
+							] )
+						)->parse(),
+						'mw-anon-edit-warning'
+					)
 				);
 			} else {
-				$out->wrapWikiMsg( "<div id=\"mw-anon-preview-warning\" class=\"warningbox\">\n$1</div>",
-					'anonpreviewwarning'
+				$out->addHTML(
+					Html::warningBox(
+						$out->msg( 'anonpreviewwarning' )->parse(),
+						'mw-anon-preview-warning'
+					)
 				);
 			}
 		}
@@ -98,11 +154,11 @@ class McrUndoAction extends FormAction {
 			throw new ErrorPageError( 'mcrundofailed', 'mcrundo-missingparam' );
 		}
 
-		$curRev = $this->page->getRevision();
+		$curRev = $this->getWikiPage()->getRevisionRecord();
 		if ( !$curRev ) {
 			throw new ErrorPageError( 'mcrundofailed', 'nopagetext' );
 		}
-		$this->curRev = $curRev->getRevisionRecord();
+		$this->curRev = $curRev;
 		$this->cur = $this->getRequest()->getInt( 'cur', $this->curRev->getId() );
 	}
 
@@ -111,10 +167,10 @@ class McrUndoAction extends FormAction {
 
 		$this->initFromParameters();
 
-		$revisionLookup = MediaWikiServices::getInstance()->getRevisionLookup();
-
-		$undoRev = $revisionLookup->getRevisionById( $this->undo );
-		$oldRev = $revisionLookup->getRevisionById( $this->undoafter );
+		// We use getRevisionByTitle to verify the revisions belong to this page (T297322)
+		$title = $this->getTitle();
+		$undoRev = $this->revisionLookup->getRevisionByTitle( $title, $this->undo );
+		$oldRev = $this->revisionLookup->getRevisionByTitle( $title, $this->undoafter );
 
 		if ( $undoRev === null || $oldRev === null ||
 			$undoRev->isDeleted( RevisionRecord::DELETED_TEXT ) ||
@@ -130,10 +186,8 @@ class McrUndoAction extends FormAction {
 	 * @return MutableRevisionRecord
 	 */
 	private function getNewRevision() {
-		$revisionLookup = MediaWikiServices::getInstance()->getRevisionLookup();
-
-		$undoRev = $revisionLookup->getRevisionById( $this->undo );
-		$oldRev = $revisionLookup->getRevisionById( $this->undoafter );
+		$undoRev = $this->revisionLookup->getRevisionById( $this->undo );
+		$oldRev = $this->revisionLookup->getRevisionById( $this->undoafter );
 		$curRev = $this->curRev;
 
 		$isLatest = $curRev->getId() === $undoRev->getId();
@@ -250,8 +304,6 @@ class McrUndoAction extends FormAction {
 		$out = $this->getOutput();
 
 		try {
-			$previewHTML = '';
-
 			# provide a anchor link to the form
 			$continueEditing = '<span class="mw-continue-editing">' .
 				'[[#mw-mcrundo-form|' .
@@ -260,15 +312,19 @@ class McrUndoAction extends FormAction {
 
 			$note = $this->context->msg( 'previewnote' )->plain() . ' ' . $continueEditing;
 
-			$parserOptions = $this->page->makeParserOptions( $this->context );
+			$parserOptions = $this->getWikiPage()->makeParserOptions( $this->context );
+			$parserOptions->setRenderReason( 'page-preview' );
 			$parserOptions->setIsPreview( true );
 			$parserOptions->setIsSectionPreview( false );
-			$parserOptions->enableLimitReport();
 
-			$parserOutput = MediaWikiServices::getInstance()->getRevisionRenderer()
-				->getRenderedRevision( $rev, $parserOptions, $this->context->getUser() )
+			$parserOutput = $this->revisionRenderer
+				->getRenderedRevision( $rev, $parserOptions, $this->getAuthority() )
 				->getRevisionParserOutput();
-			$previewHTML = $parserOutput->getText( [ 'enableSectionEditLinks' => false ] );
+			// TODO T371004 move runOutputPipeline out of $parserOutput
+			$previewHTML = $parserOutput->runOutputPipeline( $parserOptions, [
+				'enableSectionEditLinks' => false,
+				'includeDebugInfo' => true,
+			] )->getContentHolderText();
 
 			$out->addParserOutputMetadata( $parserOutput );
 			if ( count( $parserOutput->getWarnings() ) ) {
@@ -289,27 +345,21 @@ class McrUndoAction extends FormAction {
 				'h2', [ 'id' => 'mw-previewheader' ],
 				$this->context->msg( 'preview' )->text()
 			) .
-			$out->parseAsInterface( $note ) .
-			"<hr />"
+			Html::warningBox(
+				$out->parseAsInterface( $note )
+			)
 		);
-
-		$pageViewLang = $this->getTitle()->getPageViewLanguage();
-		$attribs = [ 'lang' => $pageViewLang->getHtmlCode(), 'dir' => $pageViewLang->getDir(),
-			'class' => 'mw-content-' . $pageViewLang->getDir() ];
-		$previewHTML = Html::rawElement( 'div', $attribs, $previewHTML );
 
 		$out->addHTML( $previewhead . $previewHTML );
 	}
 
 	public function onSubmit( $data ) {
-		global $wgUseRCPatrol;
-
 		if ( !$this->getRequest()->getCheck( 'wpSave' ) ) {
 			// Diff or preview
 			return false;
 		}
 
-		$updater = $this->page->getPage()->newPageUpdater( $this->context->getUser() );
+		$updater = $this->getWikiPage()->newPageUpdater( $this->context->getUser() );
 		$curRev = $updater->grabParentRevision();
 		if ( !$curRev ) {
 			throw new ErrorPageError( 'mcrundofailed', 'nopagetext' );
@@ -319,8 +369,42 @@ class McrUndoAction extends FormAction {
 			return Status::newFatal( 'mcrundo-changed' );
 		}
 
+		$status = new PermissionStatus();
+		$this->getAuthority()->authorizeWrite( 'edit', $this->getTitle(), $status );
+		if ( !$status->isOK() ) {
+			throw new PermissionsError( 'edit', $status );
+		}
+
 		$newRev = $this->getNewRevision();
 		if ( !$newRev->hasSameContent( $curRev ) ) {
+			$hookRunner = $this->getHookRunner();
+			foreach ( $newRev->getSlotRoles() as $slotRole ) {
+				$slot = $newRev->getSlot( $slotRole, RevisionRecord::RAW );
+
+				$status = new Status();
+				$hookResult = $hookRunner->onEditFilterMergedContent(
+					$this->getContext(),
+					$slot->getContent(),
+					$status,
+					trim( $this->getRequest()->getVal( 'wpSummary' ) ?? '' ),
+					$this->getUser(),
+					false
+				);
+
+				if ( !$hookResult ) {
+					if ( $status->isGood() ) {
+						$status->error( 'hookaborted' );
+					}
+
+					return $status;
+				} elseif ( !$status->isOK() ) {
+					if ( !$status->getMessages() ) {
+						$status->error( 'hookaborted' );
+					}
+					return $status;
+				}
+			}
+
 			// Copy new slots into the PageUpdater, and remove any removed slots.
 			// TODO: This interface is awful, there should be a way to just pass $newRev.
 			// TODO: MCR: test this once we can store multiple slots
@@ -333,22 +417,17 @@ class McrUndoAction extends FormAction {
 				}
 			}
 
-			$updater->setOriginalRevisionId( false );
-			$updater->setUndidRevisionId( $this->undo );
+			$updater->markAsRevert( EditResult::REVERT_UNDO, $this->undo, $this->undoafter );
 
-			$permissionManager = MediaWikiServices::getInstance()->getPermissionManager();
-
-			// TODO: Ugh.
-			if ( $wgUseRCPatrol && $permissionManager->userCan(
-				'autopatrol',
-				$this->getUser(),
-				$this->getTitle() )
+			if ( $this->useRCPatrol && $this->getAuthority()
+					->authorizeWrite( 'autopatrol', $this->getTitle() )
 			) {
 				$updater->setRcPatrolStatus( RecentChange::PRC_AUTOPATROLLED );
 			}
 
 			$updater->saveRevision(
-				CommentStoreComment::newUnsavedComment( trim( $this->getRequest()->getVal( 'wpSummary' ) ) ),
+				CommentStoreComment::newUnsavedComment(
+					trim( $this->getRequest()->getVal( 'wpSummary' ) ?? '' ) ),
 				EDIT_AUTOSUMMARY | EDIT_UPDATE
 			);
 
@@ -367,7 +446,6 @@ class McrUndoAction extends FormAction {
 		$ret = [
 			'diff' => [
 				'type' => 'info',
-				'vertical-label' => true,
 				'raw' => true,
 				'default' => function () {
 					return $this->generateDiffOrPreview();
@@ -392,8 +470,14 @@ class McrUndoAction extends FormAction {
 		];
 
 		if ( $request->getCheck( 'wpSummary' ) ) {
-			$ret['summarypreview']['default'] = Xml::tags( 'div', [ 'class' => 'mw-summary-preview' ],
-				Linker::commentBlock( trim( $request->getVal( 'wpSummary' ) ), $this->getTitle(), false )
+			$ret['summarypreview']['default'] = Html::rawElement(
+				'div',
+				[ 'class' => 'mw-summary-preview' ],
+				$this->commentFormatter->formatBlock(
+					trim( $request->getVal( 'wpSummary' ) ),
+					$this->getTitle(),
+					false
+				)
 			);
 		} else {
 			unset( $ret['summarypreview'] );
@@ -405,7 +489,7 @@ class McrUndoAction extends FormAction {
 	protected function alterForm( HTMLForm $form ) {
 		$form->setWrapperLegendMsg( 'confirm-mcrundo-title' );
 
-		$labelAsPublish = $this->context->getConfig()->get( 'EditSubmitButtonLabelPublish' );
+		$labelAsPublish = $this->context->getConfig()->get( MainConfigNames::EditSubmitButtonLabelPublish );
 
 		$form->setId( 'mw-mcrundo-form' );
 		$form->setSubmitName( 'wpSave' );

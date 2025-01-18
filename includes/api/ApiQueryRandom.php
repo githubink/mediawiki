@@ -21,13 +21,20 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use MediaWiki\Title\Title;
+use Wikimedia\ParamValidator\ParamValidator;
+use Wikimedia\ParamValidator\TypeDef\IntegerDef;
+
 /**
  * Query module to get list of random pages
  *
  * @ingroup API
  */
 class ApiQueryRandom extends ApiQueryGeneratorBase {
-	public function __construct( ApiQuery $query, $moduleName ) {
+
+	public function __construct( ApiQuery $query, string $moduleName ) {
 		parent::__construct( $query, $moduleName, 'rn' );
 	}
 
@@ -44,7 +51,7 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 	 * @param ApiPageSet|null $resultPageSet
 	 * @param int $limit Number of pages to fetch
 	 * @param string|null $start Starting page_random
-	 * @param int $startId Starting page_id
+	 * @param int|null $startId Starting page_id
 	 * @param string|null $end Ending page_random
 	 * @return array (int, string|null) Number of pages left to query and continuation string
 	 */
@@ -54,7 +61,7 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 		$this->resetQueryParams();
 		$this->addTables( 'page' );
 		$this->addFields( [ 'page_id', 'page_random' ] );
-		if ( is_null( $resultPageSet ) ) {
+		if ( $resultPageSet === null ) {
 			$this->addFields( [ 'page_title', 'page_namespace' ] );
 		} else {
 			$this->addFields( $resultPageSet->getPageTableFields() );
@@ -64,22 +71,26 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 			$this->addWhereFld( 'page_is_redirect', 1 );
 		} elseif ( $params['filterredir'] === 'nonredirects' ) {
 			$this->addWhereFld( 'page_is_redirect', 0 );
-		} elseif ( is_null( $resultPageSet ) ) {
+		} elseif ( $resultPageSet === null ) {
 			$this->addFields( [ 'page_is_redirect' ] );
 		}
 		$this->addOption( 'LIMIT', $limit + 1 );
 
 		if ( $start !== null ) {
-			$start = $this->getDB()->addQuotes( $start );
+			$db = $this->getDB();
 			if ( $startId > 0 ) {
-				$startId = (int)$startId; // safety
-				$this->addWhere( "page_random = $start AND page_id >= $startId OR page_random > $start" );
+				$this->addWhere( $db->buildComparison( '>=', [
+					'page_random' => $start,
+					'page_id' => $startId,
+				] ) );
 			} else {
-				$this->addWhere( "page_random >= $start" );
+				$this->addWhere( $db->buildComparison( '>=', [
+					'page_random' => $start,
+				] ) );
 			}
 		}
 		if ( $end !== null ) {
-			$this->addWhere( 'page_random < ' . $this->getDB()->addQuotes( $end ) );
+			$this->addWhere( $this->getDB()->expr( 'page_random', '<', $end ) );
 		}
 		$this->addOption( 'ORDER BY', [ 'page_random', 'page_id' ] );
 
@@ -87,12 +98,17 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 		$path = [ 'query', $this->getModuleName() ];
 
 		$res = $this->select( __METHOD__ );
+
+		if ( $resultPageSet === null ) {
+			$this->executeGenderCacheFromResultWrapper( $res, __METHOD__ );
+		}
+
 		$count = 0;
 		foreach ( $res as $row ) {
 			if ( $count++ >= $limit ) {
 				return [ 0, "{$row->page_random}|{$row->page_id}" ];
 			}
-			if ( is_null( $resultPageSet ) ) {
+			if ( $resultPageSet === null ) {
 				$title = Title::makeTitle( $row->page_namespace, $row->page_title );
 				$page = [
 					'id' => (int)$row->page_id,
@@ -127,15 +143,13 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 		}
 
 		if ( isset( $params['continue'] ) ) {
-			$cont = explode( '|', $params['continue'] );
-			$this->dieContinueUsageIf( count( $cont ) != 4 );
+			$cont = $this->parseContinueParamOrDie( $params['continue'], [ 'string', 'string', 'int', 'string' ] );
 			$rand = $cont[0];
 			$start = $cont[1];
-			$startId = (int)$cont[2];
+			$startId = $cont[2];
 			$end = $cont[3] ? $rand : null;
 			$this->dieContinueUsageIf( !preg_match( '/^0\.\d+$/', $rand ) );
 			$this->dieContinueUsageIf( !preg_match( '/^0\.\d+$/', $start ) );
-			$this->dieContinueUsageIf( $cont[2] !== (string)$startId );
 			$this->dieContinueUsageIf( $cont[3] !== '0' && $cont[3] !== '1' );
 		} else {
 			$rand = wfRandom();
@@ -153,14 +167,14 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 			);
 		}
 
-		list( $left, $continue ) =
+		[ $left, $continue ] =
 			$this->runQuery( $resultPageSet, $params['limit'], $start, $startId, $end );
 		if ( $end === null && $continue === null ) {
 			// Wrap around. We do this even if $left === 0 for continuation
 			// (saving a DB query in this rare case probably isn't worth the
 			// added code complexity it would require).
 			$end = $rand;
-			list( $left, $continue ) = $this->runQuery( $resultPageSet, $left, null, null, $end );
+			[ , $continue ] = $this->runQuery( $resultPageSet, $left, null, null, $end );
 		}
 
 		if ( $continue !== null ) {
@@ -168,7 +182,7 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 			$this->setContinueEnumParameter( 'continue', "$rand|$continue|$endFlag" );
 		}
 
-		if ( is_null( $resultPageSet ) ) {
+		if ( $resultPageSet === null ) {
 			$this->getResult()->addIndexedTagName( [ 'query', $this->getModuleName() ], 'page' );
 		}
 	}
@@ -180,23 +194,23 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 	public function getAllowedParams() {
 		return [
 			'namespace' => [
-				ApiBase::PARAM_TYPE => 'namespace',
-				ApiBase::PARAM_ISMULTI => true
+				ParamValidator::PARAM_TYPE => 'namespace',
+				ParamValidator::PARAM_ISMULTI => true
 			],
 			'filterredir' => [
-				ApiBase::PARAM_TYPE => [ 'all', 'redirects', 'nonredirects' ],
-				ApiBase::PARAM_DFLT => 'nonredirects', // for BC
+				ParamValidator::PARAM_TYPE => [ 'all', 'redirects', 'nonredirects' ],
+				ParamValidator::PARAM_DEFAULT => 'nonredirects', // for BC
 			],
 			'redirect' => [
-				ApiBase::PARAM_DEPRECATED => true,
-				ApiBase::PARAM_DFLT => false,
+				ParamValidator::PARAM_DEPRECATED => true,
+				ParamValidator::PARAM_DEFAULT => false,
 			],
 			'limit' => [
-				ApiBase::PARAM_TYPE => 'limit',
-				ApiBase::PARAM_DFLT => 1,
-				ApiBase::PARAM_MIN => 1,
-				ApiBase::PARAM_MAX => ApiBase::LIMIT_BIG1,
-				ApiBase::PARAM_MAX2 => ApiBase::LIMIT_BIG2
+				ParamValidator::PARAM_TYPE => 'limit',
+				ParamValidator::PARAM_DEFAULT => 1,
+				IntegerDef::PARAM_MIN => 1,
+				IntegerDef::PARAM_MAX => ApiBase::LIMIT_BIG1,
+				IntegerDef::PARAM_MAX2 => ApiBase::LIMIT_BIG2
 			],
 			'continue' => [
 				ApiBase::PARAM_HELP_MSG => 'api-help-param-continue'
@@ -217,3 +231,6 @@ class ApiQueryRandom extends ApiQueryGeneratorBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Random';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiQueryRandom::class, 'ApiQueryRandom' );

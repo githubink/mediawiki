@@ -1,9 +1,12 @@
 <?php
 
+use MediaWiki\Content\ContentHandler;
+use MediaWiki\Output\OutputPage;
+
 /**
- * @covers DifferenceEngineSlotDiffRenderer
+ * @covers \DifferenceEngineSlotDiffRenderer
  */
-class DifferenceEngineSlotDiffRendererTest extends \PHPUnit\Framework\TestCase {
+class DifferenceEngineSlotDiffRendererTest extends MediaWikiIntegrationTestCase {
 
 	public function testGetDiff() {
 		$differenceEngine = new CustomDifferenceEngine();
@@ -24,7 +27,7 @@ class DifferenceEngineSlotDiffRendererTest extends \PHPUnit\Framework\TestCase {
 	public function testAddModules() {
 		$output = $this->getMockBuilder( OutputPage::class )
 			->disableOriginalConstructor()
-			->setMethods( [ 'addModules' ] )
+			->onlyMethods( [ 'addModules' ] )
 			->getMock();
 		$output->expects( $this->once() )
 			->method( 'addModules' )
@@ -33,12 +36,4 @@ class DifferenceEngineSlotDiffRendererTest extends \PHPUnit\Framework\TestCase {
 		$slotDiffRenderer = new DifferenceEngineSlotDiffRenderer( $differenceEngine );
 		$slotDiffRenderer->addModules( $output );
 	}
-
-	public function testGetExtraCacheKeys() {
-		$differenceEngine = new CustomDifferenceEngine();
-		$slotDiffRenderer = new DifferenceEngineSlotDiffRenderer( $differenceEngine );
-		$extraCacheKeys = $slotDiffRenderer->getExtraCacheKeys();
-		$this->assertSame( [ 'foo' ], $extraCacheKeys );
-	}
-
 }

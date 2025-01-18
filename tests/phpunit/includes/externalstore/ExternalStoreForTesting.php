@@ -2,6 +2,7 @@
 
 class ExternalStoreForTesting {
 
+	/** @var array */
 	protected $data = [
 		'cluster1' => [
 			'200' => 'Hello',
@@ -23,11 +24,7 @@ class ExternalStoreForTesting {
 		$path = explode( '/', $url );
 		$cluster = $path[2];
 		$id = $path[3];
-		if ( isset( $path[4] ) ) {
-			$itemID = $path[4];
-		} else {
-			$itemID = false;
-		}
+		$itemID = $path[4] ?? false;
 
 		if ( !isset( $this->data[$cluster][$id] ) ) {
 			return null;
@@ -41,6 +38,16 @@ class ExternalStoreForTesting {
 		}
 
 		return $this->data[$cluster][$id];
+	}
+
+	public function store( $location, $data ) {
+		$itemId = mt_rand( 500, 1000 );
+		$this->data[$location][$itemId] = $data;
+		return "ForTesting://$location/$itemId";
+	}
+
+	public function isReadOnly() {
+		return false;
 	}
 
 }

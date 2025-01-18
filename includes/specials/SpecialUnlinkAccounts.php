@@ -1,14 +1,27 @@
 <?php
 
+namespace MediaWiki\Specials;
+
+use ErrorPageError;
 use MediaWiki\Auth\AuthenticationResponse;
 use MediaWiki\Auth\AuthManager;
+use MediaWiki\MainConfigNames;
 use MediaWiki\Session\SessionManager;
+use MediaWiki\SpecialPage\AuthManagerSpecialPage;
+use MediaWiki\Status\Status;
+use StatusValue;
 
+/**
+ * @ingroup SpecialPage
+ * @ingroup Auth
+ */
 class SpecialUnlinkAccounts extends AuthManagerSpecialPage {
+	/** @inheritDoc */
 	protected static $allowedActions = [ AuthManager::ACTION_UNLINK ];
 
-	public function __construct() {
+	public function __construct( AuthManager $authManager ) {
 		parent::__construct( 'UnlinkAccounts' );
+		$this->setAuthManager( $authManager );
 	}
 
 	protected function getLoginSecurityLevel() {
@@ -24,20 +37,35 @@ class SpecialUnlinkAccounts extends AuthManagerSpecialPage {
 	 * @return string
 	 */
 	protected function getGroupName() {
-		return 'users';
+		return 'login';
 	}
 
 	public function isListed() {
-		return AuthManager::singleton()->canLinkAccounts();
+		return $this->getAuthManager()->canLinkAccounts();
 	}
 
 	protected function getRequestBlacklist() {
-		return $this->getConfig()->get( 'RemoveCredentialsBlacklist' );
+		return $this->getConfig()->get( MainConfigNames::RemoveCredentialsBlacklist );
 	}
 
 	public function execute( $subPage ) {
 		$this->setHeaders();
 		$this->loadAuth( $subPage );
+
+		if ( !$this->isActionAllowed( $this->authAction ) ) {
+			if ( $this->authAction === AuthManager::ACTION_UNLINK ) {
+				// Looks like there are no linked accounts to unlink
+				$titleMessage = $this->msg( 'cannotunlink-no-provider-title' );
+				$errorMessage = $this->msg( 'cannotunlink-no-provider' );
+				throw new ErrorPageError( $titleMessage, $errorMessage );
+			} else {
+				// user probably back-button-navigated into an auth session that no longer exists
+				// FIXME would be nice to show a message
+				$this->getOutput()->redirect( $this->getPageTitle()->getFullURL( '', false, PROTO_HTTPS ) );
+				return;
+			}
+		}
+
 		$this->outputHeader();
 
 		$status = $this->trySubmit();
@@ -77,3 +105,9 @@ class SpecialUnlinkAccounts extends AuthManagerSpecialPage {
 		return Status::newGood( $response );
 	}
 }
+
+/**
+ * Retain the old class name for backwards compatibility.
+ * @deprecated since 1.41
+ */
+class_alias( SpecialUnlinkAccounts::class, 'SpecialUnlinkAccounts' );

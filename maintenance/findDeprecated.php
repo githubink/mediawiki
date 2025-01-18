@@ -20,15 +20,21 @@
  *
  * @file
  * @ingroup Maintenance
+ * @phan-file-suppress PhanUndeclaredProperty Lots of custom properties
  */
 
+use MediaWiki\Maintenance\Maintenance;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
 require_once __DIR__ . '/../vendor/autoload.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * A PHPParser node visitor that associates each node with its file name.
  */
 class FileAwareNodeVisitor extends PhpParser\NodeVisitorAbstract {
+	/** @var string|null */
 	private $currentFile = null;
 
 	public function enterNode( PhpParser\Node $node ) {
@@ -51,14 +57,16 @@ class FileAwareNodeVisitor extends PhpParser\NodeVisitorAbstract {
  */
 class DeprecatedInterfaceFinder extends FileAwareNodeVisitor {
 
+	/** @var string */
 	private $currentClass = null;
 
+	/** @var array[] */
 	private $foundNodes = [];
 
 	public function getFoundNodes() {
 		// Sort results by version, then by filename, then by name.
-		foreach ( $this->foundNodes as $version => &$nodes ) {
-			uasort( $nodes, function ( $a, $b ) {
+		foreach ( $this->foundNodes as &$nodes ) {
+			uasort( $nodes, static function ( $a, $b ) {
 				return ( $a['filename'] . $a['name'] ) <=> ( $b['filename'] . $b['name'] );
 			} );
 		}
@@ -77,10 +85,14 @@ class DeprecatedInterfaceFinder extends FileAwareNodeVisitor {
 			return false;
 		}
 		foreach ( $node->stmts as $stmt ) {
-			if (
-				$stmt instanceof PhpParser\Node\Expr\FuncCall
-				&& $stmt->name->toString() === 'wfDeprecated'
-			) {
+			$functionExpression = null;
+			if ( $stmt instanceof PhpParser\Node\Expr\FuncCall ) {
+				$functionExpression = $stmt;
+			}
+			if ( isset( $stmt->expr ) && $stmt->expr instanceof PhpParser\Node\Expr\FuncCall ) {
+				$functionExpression = $stmt->expr;
+			}
+			if ( $functionExpression && $functionExpression->name->toString() === 'wfDeprecated' ) {
 				return true;
 			}
 			return false;
@@ -133,12 +145,17 @@ class FindDeprecated extends Maintenance {
 	}
 
 	/**
+	 * @return string The installation path of MediaWiki. This method is mocked in PHPUnit tests.
+	 */
+	protected function getMwInstallPath() {
+		return MW_INSTALL_PATH;
+	}
+
+	/**
 	 * @return SplFileInfo[]
 	 */
 	public function getFiles() {
-		global $IP;
-
-		$files = new RecursiveDirectoryIterator( $IP . '/includes' );
+		$files = new RecursiveDirectoryIterator( $this->getMwInstallPath() . '/includes' );
 		$files = new RecursiveIteratorIterator( $files );
 		$files = new RegexIterator( $files, '/\.php$/' );
 		return iterator_to_array( $files, false );
@@ -148,20 +165,22 @@ class FindDeprecated extends Maintenance {
 		global $IP;
 
 		$files = $this->getFiles();
-		$chunkSize = ceil( count( $files ) / 72 );
+		$chunkSize = (int)ceil( count( $files ) / 72 );
 
-		$parser = ( new PhpParser\ParserFactory )->create( PhpParser\ParserFactory::PREFER_PHP7 );
+		$parser = ( new PhpParser\ParserFactory )->createForVersion( PhpParser\PhpVersion::fromComponents( 7, 0 ) );
 		$traverser = new PhpParser\NodeTraverser;
 		$finder = new DeprecatedInterfaceFinder;
 		$traverser->addVisitor( $finder );
 
 		$fileCount = count( $files );
 
+		$outputProgress = !defined( 'MW_PHPUNIT_TEST' );
+
 		for ( $i = 0; $i < $fileCount; $i++ ) {
 			$file = $files[$i];
 			$code = file_get_contents( $file );
 
-			if ( strpos( $code, '@deprecated' ) === -1 ) {
+			if ( !str_contains( $code, '@deprecated' ) ) {
 				continue;
 			}
 
@@ -171,14 +190,18 @@ class FindDeprecated extends Maintenance {
 
 			if ( $i % $chunkSize === 0 ) {
 				$percentDone = 100 * $i / $fileCount;
-				fprintf( STDERR, "\r[%-72s] %d%%", str_repeat( '#', $i / $chunkSize ), $percentDone );
+				if ( $outputProgress ) {
+					fprintf( STDERR, "\r[%-72s] %d%%", str_repeat( '#', $i / $chunkSize ), $percentDone );
+				}
 			}
 		}
 
-		fprintf( STDERR, "\r[%'#-72s] 100%%\n", '' );
+		if ( $outputProgress ) {
+			fprintf( STDERR, "\r[%'#-72s] 100%%\n", '' );
+		}
 
 		// Colorize output if STDOUT is an interactive terminal.
-		if ( posix_isatty( STDOUT ) ) {
+		if ( parent::posix_isatty( STDOUT ) ) {
 			$versionFmt = "\n* Deprecated since \033[37;1m%s\033[0m:\n";
 			$entryFmt = "  %s \033[33;1m%s\033[0m (%s:%d)\n";
 		} else {
@@ -202,5 +225,7 @@ class FindDeprecated extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = FindDeprecated::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

@@ -15,11 +15,23 @@
  * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  * http://www.gnu.org/copyleft/gpl.html
  *
- * @since 1.18
- *
- * @author Happy-melon
  * @file
  */
+
+namespace MediaWiki\Context;
+
+use MediaWiki\Config\Config;
+use MediaWiki\Language\Language;
+use MediaWiki\Language\LocalizationContext;
+use MediaWiki\Output\OutputPage;
+use MediaWiki\Permissions\Authority;
+use MediaWiki\Request\WebRequest;
+use MediaWiki\Session\CsrfTokenSetProvider;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+use Skin;
+use Timing;
+use WikiPage;
 
 /**
  * Interface for objects which can provide a MediaWiki context on request
@@ -31,9 +43,9 @@
  *   b) Key objects used for response building and PHP session state control
  *   c) Performance metric deltas accumulated from request execution
  *   d) The site configuration object
- * All of the objects are useful for the vast majority of MediaWiki requests.
+ * All these objects are useful for the vast majority of MediaWiki requests.
  * The site configuration object is included on grounds of extreme
- * utility, even though it should not actually depend on the web request.
+ * utility, even though it should not depend on the web request.
  *
  * More specifically, the scope of the context includes:
  *   a) Objects that represent the HTTP request/response and PHP session state
@@ -49,8 +61,14 @@
  * from Config itself). Objects that represent persistent data stores do not
  * belong here either. Session state changes should only be propagated on
  * shutdown by separate persistence handler objects, for example.
+ *
+ * Must not be implemented directly by extensions, extend ContextSource instead.
+ *
+ * @since 1.18
+ * @stable to type
+ * @author Happy-melon
  */
-interface IContextSource extends MessageLocalizer {
+interface IContextSource extends LocalizationContext, CsrfTokenSetProvider {
 
 	/**
 	 * @return WebRequest
@@ -63,7 +81,8 @@ interface IContextSource extends MessageLocalizer {
 	public function getTitle();
 
 	/**
-	 * Check whether a WikiPage object can be get with getWikiPage().
+	 * Check whether a WikiPage object can be obtained with getWikiPage().
+	 *
 	 * Callers should expect that an exception is thrown from getWikiPage()
 	 * if this method returns false.
 	 *
@@ -74,6 +93,7 @@ interface IContextSource extends MessageLocalizer {
 
 	/**
 	 * Get the WikiPage object.
+	 *
 	 * May throw an exception if there's no Title object set or the Title object
 	 * belongs to a special namespace that doesn't have WikiPage, so use first
 	 * canUseWikiPage() to check whether this method can be called safely.
@@ -82,6 +102,14 @@ interface IContextSource extends MessageLocalizer {
 	 * @return WikiPage
 	 */
 	public function getWikiPage();
+
+	/**
+	 * Get the action name for the current web request.
+	 *
+	 * @since 1.38
+	 * @return string
+	 */
+	public function getActionName(): string;
 
 	/**
 	 * @return OutputPage
@@ -94,8 +122,14 @@ interface IContextSource extends MessageLocalizer {
 	public function getUser();
 
 	/**
-	 * @return Language
+	 * @since 1.36
+	 * @return Authority
+	 */
+	public function getAuthority(): Authority;
+
+	/**
 	 * @since 1.19
+	 * @return Language
 	 */
 	public function getLanguage();
 
@@ -113,14 +147,6 @@ interface IContextSource extends MessageLocalizer {
 	public function getConfig();
 
 	/**
-	 * @deprecated since 1.27 use a StatsdDataFactory from MediaWikiServices (preferably injected)
-	 *
-	 * @since 1.25
-	 * @return IBufferingStatsdDataFactory
-	 */
-	public function getStats();
-
-	/**
 	 * @since 1.27
 	 * @return Timing
 	 */
@@ -128,6 +154,7 @@ interface IContextSource extends MessageLocalizer {
 
 	/**
 	 * Export the resolved user IP, HTTP headers, user ID, and session ID.
+	 *
 	 * The result will be reasonably sized to allow for serialization.
 	 *
 	 * @return array
@@ -135,3 +162,6 @@ interface IContextSource extends MessageLocalizer {
 	 */
 	public function exportSession();
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( IContextSource::class, 'IContextSource' );

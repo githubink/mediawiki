@@ -1,39 +1,40 @@
 <?php
 
+namespace MediaWiki\Tests\SpecialPage;
+
+use MediaWiki\Context\DerivativeContext;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\Html\FormOptions;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Output\OutputPage;
+use MediaWiki\SpecialPage\ChangesListSpecialPage;
+use MediaWikiIntegrationTestCase;
+
 /**
  * Abstract base class for shared logic when testing ChangesListSpecialPage
  * and subclasses
  *
  * @group Database
  */
-abstract class AbstractChangesListSpecialPageTestCase extends MediaWikiTestCase {
+abstract class AbstractChangesListSpecialPageTestCase extends MediaWikiIntegrationTestCase {
 	// Must be initialized by subclass
 	/**
 	 * @var ChangesListSpecialPage
 	 */
 	protected $changesListSpecialPage;
 
-	protected $oldPatrollersGroup;
-
-	protected function setUp() {
-		global $wgGroupPermissions;
-
+	protected function setUp(): void {
 		parent::setUp();
-		$this->setMwGlobals( [
-			'wgRCWatchCategoryMembership' => true,
-			'wgUseRCPatrol' => true,
+		$this->overrideConfigValues( [
+			MainConfigNames::RCWatchCategoryMembership => true,
+			MainConfigNames::UseRCPatrol => true,
 		] );
 
-		if ( isset( $wgGroupPermissions['patrollers'] ) ) {
-			$this->oldPatrollersGroup = $wgGroupPermissions['patrollers'];
-		}
-
-		$wgGroupPermissions['patrollers'] = [
-			'patrol' => true,
-		];
+		$this->setGroupPermissions( 'patrollers', 'patrol', true );
 
 		# setup the ChangesListSpecialPage (or subclass) object
-		$this->changesListSpecialPage = $this->getPage();
+		$this->changesListSpecialPage = $this->getPageAccessWrapper();
 		$context = $this->changesListSpecialPage->getContext();
 		$context = new DerivativeContext( $context );
 		$context->setUser( $this->getTestUser( [ 'patrollers' ] )->getUser() );
@@ -41,17 +42,10 @@ abstract class AbstractChangesListSpecialPageTestCase extends MediaWikiTestCase 
 		$this->changesListSpecialPage->registerFilters();
 	}
 
-	abstract protected function getPage();
-
-	protected function tearDown() {
-		global $wgGroupPermissions;
-
-		parent::tearDown();
-
-		if ( $this->oldPatrollersGroup !== null ) {
-			$wgGroupPermissions['patrollers'] = $this->oldPatrollersGroup;
-		}
-	}
+	/**
+	 * @return ChangesListSpecialPage
+	 */
+	abstract protected function getPageAccessWrapper();
 
 	abstract public function provideParseParameters();
 
@@ -98,26 +92,29 @@ abstract class AbstractChangesListSpecialPageTestCase extends MediaWikiTestCase 
 			->disableOriginalConstructor()
 			->getMock();
 		$output->method( 'redirect' )->willReturnCallback(
-			function ( $url ) use ( &$redirectQuery, &$redirected ) {
-				$urlParts = wfParseUrl( $url );
-				$query = $urlParts[ 'query' ] ?? '';
+			static function ( $url ) use ( &$redirectQuery, &$redirected ) {
+				$query = parse_url( $url, PHP_URL_QUERY ) ?? '';
 				parse_str( $query, $redirectQuery );
 				$redirected = true;
 			}
 		);
-		$ctx = new RequestContext();
-
-		// Give users patrol permissions so we can test that.
-		$user = $this->getTestSysop()->getUser();
-		$user->setOption( 'rcenhancedfilters-disable', $rcfilters ? 0 : 1 );
-		$ctx->setUser( $user );
 
 		// Disable this hook or it could break changeType
 		// depending on which other extensions are running.
 		$this->setTemporaryHook(
 			'ChangesListSpecialPageStructuredFilters',
-			null
+			HookContainer::NOOP
 		);
+
+		// Give users patrol permissions so we can test that.
+		$user = $this->getTestSysop()->getUser();
+		$this->getServiceContainer()->getUserOptionsManager()->setOption(
+			$user,
+			'rcenhancedfilters-disable',
+			$rcfilters ? 0 : 1
+		);
+		$ctx = new RequestContext();
+		$ctx->setUser( $user );
 
 		$ctx->setOutput( $output );
 		$clsp = $this->changesListSpecialPage;
@@ -130,7 +127,7 @@ abstract class AbstractChangesListSpecialPageTestCase extends MediaWikiTestCase 
 
 		$clsp->validateOptions( $opts );
 
-		$this->assertEquals( $expectedRedirect, $redirected, 'redirection' );
+		$this->assertEquals( $expectedRedirect, $redirected, 'redirection - ' . print_r( $optionsToSet, true ) );
 
 		if ( $expectedRedirect ) {
 			if ( count( $expectedRedirectOptions ) > 0 ) {
@@ -148,4 +145,6 @@ abstract class AbstractChangesListSpecialPageTestCase extends MediaWikiTestCase 
 			);
 		}
 	}
+
+	abstract public function validateOptionsProvider();
 }

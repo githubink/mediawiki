@@ -1,6 +1,6 @@
 {
 	"prefix": "oo-ui-icon",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"images": {
 		"article": {
 			"file": {
@@ -38,11 +38,20 @@
 		"articleSearch": {
 			"file": "../wikimediaui/images/icons/articleSearch.svg"
 		},
+		"articlesSearch": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/articlesSearch-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/articlesSearch-rtl.svg"
+			}
+		},
 		"articleRedirect": {
 			"file": {
 				"ltr": "../wikimediaui/images/icons/articleRedirect-ltr.svg",
 				"rtl": "../wikimediaui/images/icons/articleRedirect-rtl.svg"
 			}
+		},
+		"database": {
+			"file": "../wikimediaui/images/icons/database.svg"
 		},
 		"die": {
 			"file": "../wikimediaui/images/icons/die.svg"
@@ -75,8 +84,20 @@
 				}
 			}
 		},
+		"qrCode": {
+			"file": "../wikimediaui/images/icons/qrCode.svg"
+		},
 		"robot": {
 			"file": "../wikimediaui/images/icons/robot.svg"
+		},
+		"share": {
+			"file": "../wikimediaui/images/icons/share.svg"
+		},
+		"specialPages": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/specialPages-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/specialPages-rtl.svg"
+			}
 		},
 		"tag": {
 			"file": {

@@ -2,10 +2,12 @@
 
 namespace MediaWiki\Tests\Rest;
 
+use InvalidArgumentException;
 use MediaWiki\Rest\StringStream;
+use MediaWikiUnitTestCase;
 
 /** @covers \MediaWiki\Rest\StringStream */
-class StringStreamTest extends \MediaWikiUnitTestCase {
+class StringStreamTest extends MediaWikiUnitTestCase {
 	public static function provideSeekGetContents() {
 		return [
 			[ 'abcde', 0, SEEK_SET, 'abcde' ],
@@ -40,12 +42,12 @@ class StringStreamTest extends \MediaWikiUnitTestCase {
 
 	public function testTell() {
 		$ss = new StringStream;
-		$this->assertSame( $ss->tell(), 0 );
+		$this->assertSame( 0, $ss->tell() );
 		$ss->write( "abc" );
-		$this->assertSame( $ss->tell(), 3 );
+		$this->assertSame( 3, $ss->tell() );
 		$ss->seek( 0 );
 		$ss->read( 1 );
-		$this->assertSame( $ss->tell(), 1 );
+		$this->assertSame( 1, $ss->tell() );
 	}
 
 	public function testEof() {
@@ -116,15 +118,15 @@ class StringStreamTest extends \MediaWikiUnitTestCase {
 		$this->assertSame( $expected, $ss->read( $length ) );
 	}
 
-	/** @expectedException \InvalidArgumentException */
 	public function testReadBeyondEnd() {
 		$ss = new StringStream( 'abc' );
+		$this->expectException( InvalidArgumentException::class );
 		$ss->seek( 1, SEEK_END );
 	}
 
-	/** @expectedException \InvalidArgumentException */
 	public function testReadBeforeStart() {
 		$ss = new StringStream( 'abc' );
+		$this->expectException( InvalidArgumentException::class );
 		$ss->seek( -1 );
 	}
 }

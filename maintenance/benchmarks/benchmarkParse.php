@@ -22,9 +22,17 @@
  * @ingroup Benchmark
  */
 
-require __DIR__ . '/../Maintenance.php';
+// @codeCoverageIgnoreStart
+require_once __DIR__ . '/../Maintenance.php';
+// @codeCoverageIgnoreEnd
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Cache\LinkCache;
+use MediaWiki\Linker\LinkTarget;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Revision\RevisionRecord;
+use MediaWiki\Revision\SlotRecord;
+use MediaWiki\Title\Title;
+use Wikimedia\Rdbms\SelectQueryBuilder;
 
 /**
  * Maintenance script to benchmark how long it takes to parse a given title at an optionally
@@ -36,6 +44,7 @@ class BenchmarkParse extends Maintenance {
 	/** @var string MediaWiki concatenated string timestamp (YYYYMMDDHHMMSS) */
 	private $templateTimestamp = null;
 
+	/** @var bool */
 	private $clearLinkCache = false;
 
 	/**
@@ -46,7 +55,7 @@ class BenchmarkParse extends Maintenance {
 	/** @var array Cache that maps a Title DB key to revision ID for the requested timestamp */
 	private $idCache = [];
 
-	function __construct() {
+	public function __construct() {
 		parent::__construct();
 		$this->addDescription( 'Benchmark parse operation' );
 		$this->addArg( 'title', 'The name of the page to parse' );
@@ -65,38 +74,37 @@ class BenchmarkParse extends Maintenance {
 			false, false );
 	}
 
-	function execute() {
+	public function execute() {
 		if ( $this->hasOption( 'tpl-time' ) ) {
 			$this->templateTimestamp = wfTimestamp( TS_MW, strtotime( $this->getOption( 'tpl-time' ) ) );
-			Hooks::register( 'BeforeParserFetchTemplateAndtitle', [ $this, 'onFetchTemplate' ] );
+			$hookContainer = $this->getHookContainer();
+			$hookContainer->register( 'BeforeParserFetchTemplateRevisionRecord', [ $this, 'onFetchTemplate' ] );
 		}
 
 		$this->clearLinkCache = $this->hasOption( 'reset-linkcache' );
 		// Set as a member variable to avoid function calls when we're timing the parse
-		$this->linkCache = MediaWikiServices::getInstance()->getLinkCache();
+		$this->linkCache = $this->getServiceContainer()->getLinkCache();
 
 		$title = Title::newFromText( $this->getArg( 0 ) );
 		if ( !$title ) {
-			$this->error( "Invalid title" );
-			exit( 1 );
+			$this->fatalError( "Invalid title" );
 		}
 
+		$revLookup = $this->getServiceContainer()->getRevisionLookup();
 		if ( $this->hasOption( 'page-time' ) ) {
 			$pageTimestamp = wfTimestamp( TS_MW, strtotime( $this->getOption( 'page-time' ) ) );
 			$id = $this->getRevIdForTime( $title, $pageTimestamp );
 			if ( !$id ) {
-				$this->error( "The page did not exist at that time" );
-				exit( 1 );
+				$this->fatalError( "The page did not exist at that time" );
 			}
 
-			$revision = Revision::newFromId( $id );
+			$revision = $revLookup->getRevisionById( (int)$id );
 		} else {
-			$revision = Revision::newFromTitle( $title );
+			$revision = $revLookup->getRevisionByTitle( $title );
 		}
 
 		if ( !$revision ) {
-			$this->error( "Unable to load revision, incorrect title?" );
-			exit( 1 );
+			$this->fatalError( "Unable to load revision, incorrect title?" );
 		}
 
 		$warmup = $this->getOption( 'warmup', 1 );
@@ -132,33 +140,29 @@ class BenchmarkParse extends Maintenance {
 	 * @param string $timestamp
 	 * @return bool|string Revision ID, or false if not found or error
 	 */
-	function getRevIdForTime( Title $title, $timestamp ) {
-		$dbr = $this->getDB( DB_REPLICA );
+	private function getRevIdForTime( Title $title, $timestamp ) {
+		$dbr = $this->getReplicaDB();
 
-		$id = $dbr->selectField(
-			[ 'revision', 'page' ],
-			'rev_id',
-			[
-				'page_namespace' => $title->getNamespace(),
-				'page_title' => $title->getDBkey(),
-				'rev_timestamp <= ' . $dbr->addQuotes( $timestamp )
-			],
-			__METHOD__,
-			[ 'ORDER BY' => 'rev_timestamp DESC', 'LIMIT' => 1 ],
-			[ 'revision' => [ 'JOIN', 'rev_page=page_id' ] ]
-		);
+		$id = $dbr->newSelectQueryBuilder()
+			->select( 'rev_id' )
+			->from( 'revision' )
+			->join( 'page', null, 'rev_page=page_id' )
+			->where( [ 'page_namespace' => $title->getNamespace(), 'page_title' => $title->getDBkey() ] )
+			->andWhere( $dbr->expr( 'rev_timestamp', '<=', $timestamp ) )
+			->orderBy( 'rev_timestamp', SelectQueryBuilder::SORT_DESC )
+			->caller( __METHOD__ )->fetchField();
 
 		return $id;
 	}
 
 	/**
-	 * Parse the text from a given Revision
-	 *
-	 * @param Revision $revision
+	 * Parse the text from a given RevisionRecord
 	 */
-	function runParser( Revision $revision ) {
-		$content = $revision->getContent();
-		$content->getParserOutput( $revision->getTitle(), $revision->getId() );
+	private function runParser( RevisionRecord $revision ) {
+		$content = $revision->getContent( SlotRecord::MAIN );
+		$contentRenderer = $this->getServiceContainer()->getContentRenderer();
+		// @phan-suppress-next-line PhanTypeMismatchArgumentNullable getId does not return null here
+		$contentRenderer->getParserOutput( $content, $revision->getPage(), $revision->getId() );
 		if ( $this->clearLinkCache ) {
 			$this->linkCache->clear();
 		}
@@ -168,25 +172,35 @@ class BenchmarkParse extends Maintenance {
 	 * Hook into the parser's revision ID fetcher. Make sure that the parser only
 	 * uses revisions around the specified timestamp.
 	 *
-	 * @param Parser $parser
-	 * @param Title $title
+	 * @param ?LinkTarget $contextTitle
+	 * @param LinkTarget $titleTarget
 	 * @param bool &$skip
-	 * @param string|bool &$id
+	 * @param ?RevisionRecord &$revRecord
 	 * @return bool
 	 */
-	function onFetchTemplate( Parser $parser, Title $title, &$skip, &$id ) {
+	private function onFetchTemplate(
+		?LinkTarget $contextTitle,
+		LinkTarget $titleTarget,
+		bool &$skip,
+		?RevisionRecord &$revRecord
+	): bool {
+		$title = Title::newFromLinkTarget( $titleTarget );
+
 		$pdbk = $title->getPrefixedDBkey();
 		if ( !isset( $this->idCache[$pdbk] ) ) {
 			$proposedId = $this->getRevIdForTime( $title, $this->templateTimestamp );
 			$this->idCache[$pdbk] = $proposedId;
 		}
 		if ( $this->idCache[$pdbk] !== false ) {
-			$id = $this->idCache[$pdbk];
+			$revLookup = $this->getServiceContainer()->getRevisionLookup();
+			$revRecord = $revLookup->getRevisionById( $this->idCache[$pdbk] );
 		}
 
 		return true;
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = BenchmarkParse::class;
-require RUN_MAINTENANCE_IF_MAIN;
+require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

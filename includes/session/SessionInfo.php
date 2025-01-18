@@ -23,20 +23,26 @@
 
 namespace MediaWiki\Session;
 
+use InvalidArgumentException;
+use Stringable;
+
 /**
  * Value object returned by SessionProvider
  *
  * This holds the data necessary to construct a Session.
+ * May require services to be injected into the constructor.
+ *
+ * @newable
  *
  * @ingroup Session
  * @since 1.27
  */
-class SessionInfo {
+class SessionInfo implements Stringable {
 	/** Minimum allowed priority */
-	const MIN_PRIORITY = 1;
+	public const MIN_PRIORITY = 1;
 
 	/** Maximum allowed priority */
-	const MAX_PRIORITY = 100;
+	public const MAX_PRIORITY = 100;
 
 	/** @var SessionProvider|null */
 	private $provider;
@@ -69,6 +75,8 @@ class SessionInfo {
 	private $providerMetadata = null;
 
 	/**
+	 * @stable to call
+	 *
 	 * @param int $priority Session priority
 	 * @param array $data
 	 *  - provider: (SessionProvider|null) If not given, the provider will be
@@ -80,7 +88,8 @@ class SessionInfo {
 	 *  - persisted: (bool) Whether this session was persisted
 	 *  - remembered: (bool) Whether the verified user was remembered.
 	 *    Defaults to true.
-	 *  - forceHTTPS: (bool) Whether to force HTTPS for this session
+	 *  - forceHTTPS: (bool) Whether to force HTTPS for this session. This is
+	 *    ignored if $wgForceHTTPS is true.
 	 *  - metadata: (array) Provider metadata, to be returned by
 	 *    Session::getProviderMetadata(). See SessionProvider::mergeMetadata()
 	 *    and SessionProvider::refreshSessionInfo().
@@ -95,13 +104,13 @@ class SessionInfo {
 	 */
 	public function __construct( $priority, array $data ) {
 		if ( $priority < self::MIN_PRIORITY || $priority > self::MAX_PRIORITY ) {
-			throw new \InvalidArgumentException( 'Invalid priority' );
+			throw new InvalidArgumentException( 'Invalid priority' );
 		}
 
 		if ( isset( $data['copyFrom'] ) ) {
 			$from = $data['copyFrom'];
 			if ( !$from instanceof SessionInfo ) {
-				throw new \InvalidArgumentException( 'Invalid copyFrom' );
+				throw new InvalidArgumentException( 'Invalid copyFrom' );
 			}
 			$data += [
 				'provider' => $from->provider,
@@ -133,21 +142,21 @@ class SessionInfo {
 		}
 
 		if ( $data['id'] !== null && !SessionManager::validateSessionId( $data['id'] ) ) {
-			throw new \InvalidArgumentException( 'Invalid session ID' );
+			throw new InvalidArgumentException( 'Invalid session ID' );
 		}
 
 		if ( $data['userInfo'] !== null && !$data['userInfo'] instanceof UserInfo ) {
-			throw new \InvalidArgumentException( 'Invalid userInfo' );
+			throw new InvalidArgumentException( 'Invalid userInfo' );
 		}
 
 		if ( !$data['provider'] && $data['id'] === null ) {
-			throw new \InvalidArgumentException(
+			throw new InvalidArgumentException(
 				'Must supply an ID when no provider is given'
 			);
 		}
 
 		if ( $data['metadata'] !== null && !is_array( $data['metadata'] ) ) {
-			throw new \InvalidArgumentException( 'Invalid metadata' );
+			throw new InvalidArgumentException( 'Invalid metadata' );
 		}
 
 		$this->provider = $data['provider'];
@@ -271,7 +280,9 @@ class SessionInfo {
 	}
 
 	/**
-	 * Whether this session should only be used over HTTPS
+	 * Whether this session should only be used over HTTPS. This should be
+	 * ignored if $wgForceHTTPS is true.
+	 *
 	 * @return bool
 	 */
 	final public function forceHTTPS() {

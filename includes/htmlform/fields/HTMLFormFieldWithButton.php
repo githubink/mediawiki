@@ -1,26 +1,40 @@
 <?php
+
+namespace MediaWiki\HTMLForm\Field;
+
+use MediaWiki\Html\Html;
+use MediaWiki\HTMLForm\HTMLFormField;
+
 /**
  * Enables HTMLFormField elements to be build with a button.
+ *
+ * TODO This class should be a trait
+ *
+ * @stable to extend
  */
 class HTMLFormFieldWithButton extends HTMLFormField {
-	/** @var string $mButtonClass CSS class for the button in this field */
+	/** @var string CSS class for the button in this field */
 	protected $mButtonClass = '';
 
-	/** @var string|int $mButtonId Element ID for the button in this field */
+	/** @var string|int Element ID for the button in this field */
 	protected $mButtonId = '';
 
-	/** @var string $mButtonName Name the button in this field */
+	/** @var string Name the button in this field */
 	protected $mButtonName = '';
 
-	/** @var string $mButtonType Type of the button in this field (e.g. button or submit) */
+	/** @var string Type of the button in this field (e.g. button or submit) */
 	protected $mButtonType = 'submit';
 
-	/** @var string $mButtonType Value for the button in this field */
+	/** @var string Value for the button in this field */
 	protected $mButtonValue;
 
-	/** @var string[] $mButtonType Value for the button in this field */
+	/** @var string[] Value for the button in this field */
 	protected $mButtonFlags = [ 'progressive' ];
 
+	/**
+	 * @stable to call
+	 * @inheritDoc
+	 */
 	public function __construct( $info ) {
 		if ( isset( $info['buttonclass'] ) ) {
 			$this->mButtonClass = $info['buttonclass'];
@@ -53,14 +67,14 @@ class HTMLFormFieldWithButton extends HTMLFormField {
 	}
 
 	public function getInputOOUI( $value ) {
-		return new OOUI\ButtonInputWidget( [
+		return new \OOUI\ButtonInputWidget( [
 			'name' => $this->mButtonName,
 			'value' => $this->mButtonValue,
 			'type' => $this->mButtonType,
 			'label' => $this->mButtonValue,
 			'flags' => $this->mButtonFlags,
 			'id' => $this->mButtonId ?: null,
-		] + OOUI\Element::configFromHtmlAttributes(
+		] + \OOUI\Element::configFromHtmlAttributes(
 			$this->getAttributes( [ 'disabled', 'tabindex' ] )
 		) );
 	}
@@ -74,3 +88,6 @@ class HTMLFormFieldWithButton extends HTMLFormField {
 		return $element . "\u{00A0}" . $this->getInputHTML( '' );
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( HTMLFormFieldWithButton::class, 'HTMLFormFieldWithButton' );

@@ -1,6 +1,10 @@
 <?php
 
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Permissions\Authority;
+use MediaWiki\User\User;
+use MediaWiki\User\UserIdentity;
+use MediaWiki\User\UserIdentityValue;
 
 /**
  * Wraps the user object, so we can also retain full access to properties
@@ -24,10 +28,11 @@ class TestUser {
 
 	private function assertNotReal() {
 		global $wgDBprefix;
-		if ( $wgDBprefix !== MediaWikiTestCase::DB_PREFIX &&
-			$wgDBprefix !== MediaWikiTestCase::ORA_DB_PREFIX
+		if (
+			$wgDBprefix !== MediaWikiIntegrationTestCase::DB_PREFIX &&
+			$wgDBprefix !== ParserTestRunner::DB_PREFIX
 		) {
-			throw new MWException( "Can't create user on real database" );
+			throw new RuntimeException( "Can't create user on real database" );
 		}
 	}
 
@@ -46,7 +51,7 @@ class TestUser {
 		// But for now, we just need to create or update the user with the desired properties.
 		// we particularly need the new password, since we just generated it randomly.
 		// In core MediaWiki, there is no functionality to delete users, so this is the best we can do.
-		if ( !$this->user->isLoggedIn() ) {
+		if ( !$this->user->isRegistered() ) {
 			// create the user
 			$this->user = User::createNew(
 				$this->username, [
@@ -56,7 +61,7 @@ class TestUser {
 			);
 
 			if ( !$this->user ) {
-				throw new MWException( "Error creating TestUser " . $username );
+				throw new RuntimeException( "Error creating TestUser " . $username );
 			}
 		}
 
@@ -66,12 +71,11 @@ class TestUser {
 			$this->setRealName( $realname );
 
 		// Adjust groups by adding any missing ones and removing any extras
-		$currentGroups = $this->user->getGroups();
-		foreach ( array_diff( $groups, $currentGroups ) as $group ) {
-			$this->user->addGroup( $group );
-		}
+		$userGroupManager = MediaWikiServices::getInstance()->getUserGroupManager();
+		$currentGroups = $userGroupManager->getUserGroups( $this->user );
+		$userGroupManager->addUserToMultipleGroups( $this->user, array_diff( $groups, $currentGroups ) );
 		foreach ( array_diff( $currentGroups, $groups ) as $group ) {
-			$this->user->removeGroup( $group );
+			$userGroupManager->removeUserFromGroup( $this->user, $group );
 		}
 		if ( $change ) {
 			// Disable CAS check before saving. The User object may have been initialized from cached
@@ -101,7 +105,7 @@ class TestUser {
 	 * @param string $email
 	 * @return bool
 	 */
-	private function setEmail( $email ) {
+	private function setEmail( string $email ) {
 		if ( $this->user->getEmail() !== $email ) {
 			$this->user->setEmail( $email );
 			return true;
@@ -128,29 +132,29 @@ class TestUser {
 	 */
 	public static function setPasswordForUser( User $user, $password ) {
 		if ( !$user->getId() ) {
-			throw new MWException( "Passed User has not been added to the database yet!" );
+			throw new InvalidArgumentException( "Passed User has not been added to the database yet!" );
 		}
 
-		$dbw = wfGetDB( DB_MASTER );
-		$row = $dbw->selectRow(
-			'user',
-			[ 'user_password' ],
-			[ 'user_id' => $user->getId() ],
-			__METHOD__
-		);
+		$services = MediaWikiServices::getInstance();
+
+		$dbw = $services->getConnectionProvider()->getPrimaryDatabase();
+		$row = $dbw->newSelectQueryBuilder()
+			->select( [ 'user_password' ] )
+			->from( 'user' )
+			->where( [ 'user_id' => $user->getId() ] )
+			->caller( __METHOD__ )->fetchRow();
 		if ( !$row ) {
-			throw new MWException( "Passed User has an ID but is not in the database?" );
+			throw new RuntimeException( "Passed User has an ID but is not in the database?" );
 		}
 
-		$passwordFactory = MediaWikiServices::getInstance()->getPasswordFactory();
+		$passwordFactory = $services->getPasswordFactory();
 		if ( !$passwordFactory->newFromCiphertext( $row->user_password )->verify( $password ) ) {
 			$passwordHash = $passwordFactory->newFromPlaintext( $password );
-			$dbw->update(
-				'user',
-				[ 'user_password' => $passwordHash->toString() ],
-				[ 'user_id' => $user->getId() ],
-				__METHOD__
-			);
+			$dbw->newUpdateQueryBuilder()
+				->update( 'user' )
+				->set( [ 'user_password' => $passwordHash->toString() ] )
+				->where( [ 'user_id' => $user->getId() ] )
+				->caller( __METHOD__ )->execute();
 		}
 	}
 
@@ -160,6 +164,22 @@ class TestUser {
 	 */
 	public function getUser() {
 		return $this->user;
+	}
+
+	/**
+	 * @since 1.39
+	 * @return Authority
+	 */
+	public function getAuthority(): Authority {
+		return $this->user;
+	}
+
+	/**
+	 * @since 1.36
+	 * @return UserIdentity
+	 */
+	public function getUserIdentity(): UserIdentity {
+		return new UserIdentityValue( $this->user->getId(), $this->user->getName() );
 	}
 
 	/**

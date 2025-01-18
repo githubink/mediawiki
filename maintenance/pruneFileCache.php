@@ -21,7 +21,11 @@
  * @ingroup Maintenance
  */
 
+use MediaWiki\Maintenance\Maintenance;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that prunes file cache for pages, objects, resources, etc.
@@ -30,11 +34,12 @@ require_once __DIR__ . '/Maintenance.php';
  */
 class PruneFileCache extends Maintenance {
 
+	/** @var int */
 	protected $minSurviveTimestamp;
 
 	public function __construct() {
 		parent::__construct();
-		$this->addDescription( 'Build file cache for content pages' );
+		$this->addDescription( 'Delete file cache files older than "agedays"' );
 		$this->addOption( 'agedays', 'How many days old files must be in order to delete', true, true );
 		$this->addOption( 'subdir', 'Prune one $wgFileCacheDirectory subdirectory name', false, true );
 	}
@@ -81,10 +86,12 @@ class PruneFileCache extends Maintenance {
 	protected function prune_directory( $dir, $report = false ) {
 		$tsNow = time();
 		$dirHandle = opendir( $dir );
+		// phpcs:ignore Generic.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
 		while ( ( $file = readdir( $dirHandle ) ) !== false ) {
 			// Skip ".", "..", and also any dirs or files like ".svn" or ".htaccess"
 			if ( $file[0] != "." ) {
-				$path = $dir . '/' . $file; // absolute
+				// absolute
+				$path = $dir . '/' . $file;
 				if ( is_dir( $path ) ) {
 					if ( $report === 'report' ) {
 						$this->output( "Scanning `$path`...\n" );
@@ -92,7 +99,7 @@ class PruneFileCache extends Maintenance {
 					$this->prune_directory( $path );
 				} else {
 					$mts = filemtime( $path );
-					// Sanity check the file extension against known cache types
+					// Check the file extension against known cache types
 					if ( $mts < $this->minSurviveTimestamp
 						&& preg_match( '/\.(?:html|cache)(?:\.gz)?$/', $file )
 						&& unlink( $path )
@@ -107,5 +114,7 @@ class PruneFileCache extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = PruneFileCache::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

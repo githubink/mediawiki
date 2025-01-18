@@ -1,20 +1,30 @@
 <?php
 
+use MediaWiki\Config\HashConfig;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Password\InvalidPassword;
+use MediaWiki\Password\MWOldPassword;
+use MediaWiki\Password\MWSaltedPassword;
+use MediaWiki\Password\PasswordError;
+use MediaWiki\Password\PasswordFactory;
+
 /**
- * @covers PasswordFactory
+ * @covers \MediaWiki\Password\PasswordFactory
  */
 class PasswordFactoryTest extends MediaWikiUnitTestCase {
 	public function testConstruct() {
 		$pf = new PasswordFactory();
 		$this->assertEquals( [ '' ], array_keys( $pf->getTypes() ) );
-		$this->assertEquals( '', $pf->getDefaultType() );
+		$this->assertSame( '', $pf->getDefaultType() );
 
 		$pf = new PasswordFactory( [
 			'foo' => [ 'class' => 'FooPassword' ],
 			'bar' => [ 'class' => 'BarPassword', 'baz' => 'boom' ],
 		], 'foo' );
 		$this->assertEquals( [ '', 'foo', 'bar' ], array_keys( $pf->getTypes() ) );
-		$this->assertArraySubset( [ 'class' => 'BarPassword', 'baz' => 'boom' ], $pf->getTypes()['bar'] );
+		$bar = $pf->getTypes()['bar'];
+		$expected = [ 'class' => 'BarPassword', 'baz' => 'boom' ];
+		$this->assertArrayEquals( $expected, array_intersect( $bar, $expected ) );
 		$this->assertEquals( 'foo', $pf->getDefaultType() );
 	}
 
@@ -34,20 +44,19 @@ class PasswordFactoryTest extends MediaWikiUnitTestCase {
 		$this->assertSame( '2', $pf->getDefaultType() );
 	}
 
-	/**
-	 * @expectedException Exception
-	 */
 	public function testSetDefaultTypeError() {
 		$pf = new PasswordFactory;
+		$this->expectException( Exception::class );
 		$pf->setDefaultType( 'bogus' );
 	}
 
 	public function testInit() {
+		$this->expectDeprecationAndContinue( '/deprecated in MediaWiki 1.32/' );
 		$config = new HashConfig( [
-			'PasswordConfig' => [
+			MainConfigNames::PasswordConfig => [
 				'foo' => [ 'class' => InvalidPassword::class ],
 			],
-			'PasswordDefault' => 'foo'
+			MainConfigNames::PasswordDefault => 'foo'
 		] );
 		$pf = new PasswordFactory;
 		$pf->init( $config );
@@ -62,17 +71,17 @@ class PasswordFactoryTest extends MediaWikiUnitTestCase {
 		$this->assertInstanceOf( MWSaltedPassword::class, $pw );
 	}
 
-	public function provideNewFromCiphertextErrors() {
+	public static function provideNewFromCiphertextErrors() {
 		return [ [ 'blah' ], [ ':blah:' ] ];
 	}
 
 	/**
 	 * @dataProvider provideNewFromCiphertextErrors
-	 * @expectedException PasswordError
 	 */
 	public function testNewFromCiphertextErrors( $hash ) {
 		$pf = new PasswordFactory;
 		$pf->register( 'B', [ 'class' => MWSaltedPassword::class ] );
+		$this->expectException( PasswordError::class );
 		$pf->newFromCiphertext( $hash );
 	}
 
@@ -83,12 +92,10 @@ class PasswordFactoryTest extends MediaWikiUnitTestCase {
 		$this->assertInstanceOf( MWSaltedPassword::class, $pw );
 	}
 
-	/**
-	 * @expectedException PasswordError
-	 */
 	public function testNewFromTypeError() {
 		$pf = new PasswordFactory;
 		$pf->register( 'B', [ 'class' => MWSaltedPassword::class ] );
+		$this->expectException( PasswordError::class );
 		$pf->newFromType( 'bogus' );
 	}
 

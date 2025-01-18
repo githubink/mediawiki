@@ -28,7 +28,15 @@
  * @ingroup Maintenance
  */
 
+use MediaWiki\Content\WikitextContent;
+use MediaWiki\Parser\ParserOptions;
+use MediaWiki\User\User;
+use Wikimedia\Diff\Diff;
+use Wikimedia\Diff\UnifiedDiffFormatter;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/dumpIterator.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script to take page text out of an XML dump file and render
@@ -38,15 +46,26 @@ require_once __DIR__ . '/dumpIterator.php';
  */
 class CompareParsers extends DumpIterator {
 
+	/** @var int */
 	private $count = 0;
+	/** @var string|false */
+	private $saveFailed = false;
+	/** @var bool */
+	private $stripParametersEnabled;
+	/** @var bool */
+	private $showParsedOutput;
+	/** @var bool */
+	private $showDiff;
+	/** @var ParserOptions */
+	private $options;
+	/** @var int */
+	private $failed;
 
 	public function __construct() {
 		parent::__construct();
-		$this->saveFailed = false;
 		$this->addDescription( 'Run a file or dump with several parsers' );
 		$this->addOption( 'parser1', 'The first parser to compare.', true, true );
 		$this->addOption( 'parser2', 'The second parser to compare.', true, true );
-		$this->addOption( 'tidy', 'Run tidy on the articles.', false, false );
 		$this->addOption(
 			'save-failed',
 			'Folder in which articles which differ will be stored.',
@@ -94,13 +113,6 @@ class CompareParsers extends DumpIterator {
 		$user = new User();
 		$this->options = ParserOptions::newFromUser( $user );
 
-		if ( $this->hasOption( 'tidy' ) ) {
-			if ( !MWTidy::isEnabled() ) {
-				$this->fatalError( 'Tidy was requested but $wgTidyConfig is not set in LocalSettings.php' );
-			}
-			$this->options->setTidy( true );
-		}
-
 		$this->failed = 0;
 	}
 
@@ -111,7 +123,7 @@ class CompareParsers extends DumpIterator {
 		}
 	}
 
-	function stripParameters( $text ) {
+	private function stripParameters( $text ) {
 		if ( !$this->stripParametersEnabled ) {
 			return $text;
 		}
@@ -121,9 +133,8 @@ class CompareParsers extends DumpIterator {
 
 	/**
 	 * Callback function for each revision, parse with both parsers and compare
-	 * @param Revision $rev
 	 */
-	public function processRevision( $rev ) {
+	public function processRevision( WikiRevision $rev ) {
 		$title = $rev->getTitle();
 
 		$parser1Name = $this->getOption( 'parser1' );
@@ -144,6 +155,8 @@ class CompareParsers extends DumpIterator {
 			return;
 		}
 
+		/** @var WikitextContent $content */
+		'@phan-var WikitextContent $content';
 		$text = strval( $content->getText() );
 
 		$output1 = $parser1->parse( $text, $title, $this->options );
@@ -160,11 +173,14 @@ class CompareParsers extends DumpIterator {
 				);
 			}
 			if ( $this->showDiff ) {
-				$this->output( wfDiff(
-					$this->stripParameters( $output1->getText() ),
-					$this->stripParameters( $output2->getText() ),
-					''
-				) );
+				$diffs = new Diff(
+					explode( "\n", $this->stripParameters( $output1->getText() ) ),
+					explode( "\n", $this->stripParameters( $output2->getText() ) )
+				);
+				$formatter = new UnifiedDiffFormatter();
+				$unifiedDiff = $formatter->format( $diffs );
+
+				$this->output( $unifiedDiff );
 			}
 		} else {
 			$this->output( $title->getPrefixedText() . "\tOK\n" );
@@ -176,7 +192,7 @@ class CompareParsers extends DumpIterator {
 	}
 
 	private static function checkParserLocally( $parserName ) {
-		/* Look for the parser in a file appropiately named in the current folder */
+		/* Look for the parser in a file appropriately named in the current folder */
 		if ( !class_exists( $parserName ) && file_exists( "$parserName.php" ) ) {
 			global $wgAutoloadClasses;
 			$wgAutoloadClasses[$parserName] = realpath( '.' ) . "/$parserName.php";
@@ -184,5 +200,7 @@ class CompareParsers extends DumpIterator {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = CompareParsers::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

@@ -1,5 +1,8 @@
 <?php
 
+use MediaWiki\Content\WikitextContent;
+use MediaWiki\Title\Title;
+
 /**
  * @group Database
  */
@@ -10,36 +13,34 @@ class ArticleTablesTest extends MediaWikiLangTestCase {
 	 * templatelinks based on the user language when {{int:}} is used, only the
 	 * content language.
 	 *
-	 * @covers Title::getTemplateLinksFrom
-	 * @covers Title::getLinksFrom
+	 * @covers \MediaWiki\Title\Title::getTemplateLinksFrom
+	 * @covers \MediaWiki\Title\Title::getLinksFrom
 	 */
 	public function testTemplatelinksUsesContentLanguage() {
-		$title = Title::newFromText( 'T16404' );
-		$page = WikiPage::factory( $title );
-		$user = new User();
+		$title = Title::makeTitle( NS_MAIN, 'T16404' );
+		$wikiPageFactory = $this->getServiceContainer()->getWikiPageFactory();
+		$page = $wikiPageFactory->newFromTitle( $title );
+		$user = $this->getTestUser()->getUser();
 		$this->overrideUserPermissions( $user, [ 'createpage', 'edit', 'purge' ] );
 		$this->setContentLang( 'es' );
 		$this->setUserLang( 'fr' );
 
-		$page->doEditContent(
+		$page->doUserEditContent(
 			new WikitextContent( '{{:{{int:history}}}}' ),
-			'Test code for T16404',
-			0,
-			false,
-			$user
+			$user,
+			'Test code for T16404'
 		);
 		$templates1 = $title->getTemplateLinksFrom();
 
 		$this->setUserLang( 'de' );
-		$page = WikiPage::factory( $title ); // In order to force the re-rendering of the same wikitext
+		$page = $wikiPageFactory->newFromTitle( $title ); // In order to force the re-rendering of the same wikitext
 
 		// We need an edit, a purge is not enough to regenerate the tables
-		$page->doEditContent(
+		$page->doUserEditContent(
 			new WikitextContent( '{{:{{int:history}}}}' ),
+			$user,
 			'Test code for T16404',
-			EDIT_UPDATE,
-			false,
-			$user
+			EDIT_UPDATE
 		);
 		$templates2 = $title->getTemplateLinksFrom();
 
@@ -48,6 +49,6 @@ class ArticleTablesTest extends MediaWikiLangTestCase {
 		 * @var Title[] $templates2
 		 */
 		$this->assertEquals( $templates1, $templates2 );
-		$this->assertEquals( $templates1[0]->getFullText(), 'Historial' );
+		$this->assertSame( 'Historial', $templates1[0]->getFullText() );
 	}
 }

@@ -1,7 +1,7 @@
 <?php
 /**
  * Take page text out of an XML dump file and perform some operation on it.
- * Used as a base class for CompareParsers and PreprocessDump.
+ * Used as a base class for CompareParsers.
  * We implement below the simple task of searching inside a dump.
  *
  * Copyright © 2011 Platonides
@@ -26,17 +26,31 @@
  * @ingroup Maintenance
  */
 
+use MediaWiki\Content\ContentHandler;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Permissions\UltimateAuthority;
+use MediaWiki\Revision\SlotRecord;
+use MediaWiki\Settings\SettingsBuilder;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
- * Base class for interating over a dump.
+ * Base class for iterating over a dump.
  *
  * @ingroup Maintenance
  */
 abstract class DumpIterator extends Maintenance {
-
+	/** @var int */
 	private $count = 0;
+	/** @var float */
 	private $startTime;
+	/** @var string|null|false */
+	private $from;
 
 	public function __construct() {
 		parent::__construct();
@@ -47,19 +61,22 @@ abstract class DumpIterator extends Maintenance {
 	}
 
 	public function execute() {
-		if ( !( $this->hasOption( 'file' ) ^ $this->hasOption( 'dump' ) ) ) {
+		if ( !( $this->hasOption( 'file' ) xor $this->hasOption( 'dump' ) ) ) {
 			$this->fatalError( "You must provide a file or dump" );
 		}
 
 		$this->checkOptions();
 
 		if ( $this->hasOption( 'file' ) ) {
-			$revision = new WikiRevision( $this->getConfig() );
+			$file = $this->getOption( 'file' );
+			$revision = new WikiRevision();
+			$text = file_get_contents( $file );
+			$title = Title::newFromText( rawurldecode( basename( $file, '.txt' ) ) );
+			$revision->setTitle( $title );
+			$content = ContentHandler::makeContent( $text, $title );
+			$revision->setContent( SlotRecord::MAIN, $content );
 
-			$revision->setText( file_get_contents( $this->getOption( 'file' ) ) );
-			$revision->setTitle( Title::newFromText(
-				rawurldecode( basename( $this->getOption( 'file' ), '.txt' ) )
-			) );
+			$this->from = false;
 			$this->handleRevision( $revision );
 
 			return;
@@ -73,11 +90,16 @@ abstract class DumpIterator extends Maintenance {
 			$this->fatalError( "Sorry, I don't support dump filenames yet. "
 				. "Use - and provide it on stdin on the meantime." );
 		}
-		$importer = new WikiImporter( $source, $this->getConfig() );
+
+		$user = User::newSystemUser( User::MAINTENANCE_SCRIPT_USER, [ 'steal' => true ] );
+
+		$importer = $this->getServiceContainer()
+			->getWikiImporterFactory()
+			->getWikiImporter( $source, new UltimateAuthority( $user ) );
 
 		$importer->setRevisionCallback(
 			[ $this, 'handleRevision' ] );
-		$importer->setNoticeCallback( function ( $msg, $params ) {
+		$importer->setNoticeCallback( static function ( $msg, $params ) {
 			echo wfMessage( $msg, $params )->text() . "\n";
 		} );
 
@@ -99,18 +121,24 @@ abstract class DumpIterator extends Maintenance {
 		$this->error( "Memory peak usage of " . memory_get_peak_usage() . " bytes\n" );
 	}
 
-	public function finalSetup() {
-		parent::finalSetup();
+	public function finalSetup( SettingsBuilder $settingsBuilder ) {
+		parent::finalSetup( $settingsBuilder );
 
 		if ( $this->getDbType() == Maintenance::DB_NONE ) {
-			global $wgUseDatabaseMessages, $wgLocalisationCacheConf, $wgHooks;
-			$wgUseDatabaseMessages = false;
-			$wgLocalisationCacheConf['storeClass'] = LCStoreNull::class;
+			// TODO: Allow hooks to be registered via SettingsBuilder as well!
+			//       This matches the idea of unifying SettingsBuilder with ExtensionRegistry.
+			// phpcs:disable MediaWiki.Usage.DeprecatedGlobalVariables.Deprecated$wgHooks
+			global $wgHooks;
 			$wgHooks['InterwikiLoadPrefix'][] = 'DumpIterator::disableInterwikis';
+
+			$settingsBuilder->putConfigValues( [
+				MainConfigNames::UseDatabaseMessages => false,
+				MainConfigNames::LocalisationCacheConf => [ 'storeClass' => LCStoreNull::class ],
+			] );
 		}
 	}
 
-	static function disableInterwikis( $prefix, &$data ) {
+	public static function disableInterwikis( $prefix, &$data ) {
 		# Title::newFromText will check on each namespaced article if it's an interwiki.
 		# We always answer that it is not.
 
@@ -131,7 +159,7 @@ abstract class DumpIterator extends Maintenance {
 		}
 
 		$this->count++;
-		if ( isset( $this->from ) ) {
+		if ( $this->from !== false ) {
 			if ( $this->from != $title ) {
 				return;
 			}
@@ -144,16 +172,22 @@ abstract class DumpIterator extends Maintenance {
 		$this->processRevision( $rev );
 	}
 
-	/* Stub function for processing additional options */
+	/**
+	 * Stub function for processing additional options
+	 */
 	public function checkOptions() {
 	}
 
-	/* Stub function for giving data about what was computed */
+	/**
+	 * Stub function for giving data about what was computed
+	 */
 	public function conclusions() {
 	}
 
-	/* Core function which does whatever the maintenance script is designed to do */
-	abstract public function processRevision( $rev );
+	/**
+	 * Core function which does whatever the maintenance script is designed to do
+	 */
+	abstract public function processRevision( WikiRevision $rev );
 }
 
 /**
@@ -173,15 +207,14 @@ class SearchDump extends DumpIterator {
 		return Maintenance::DB_NONE;
 	}
 
-	/**
-	 * @param Revision $rev
-	 */
-	public function processRevision( $rev ) {
+	public function processRevision( WikiRevision $rev ) {
 		if ( preg_match( $this->getOption( 'regex' ), $rev->getContent()->getTextForSearchIndex() ) ) {
 			$this->output( $rev->getTitle() . " matches at edit from " . $rev->getTimestamp() . "\n" );
 		}
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = SearchDump::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

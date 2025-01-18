@@ -1,7 +1,16 @@
 <?php
 
+use MediaWiki\Context\DerivativeContext;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\LinkedData\PageDataRequestHandler;
+use MediaWiki\Output\OutputPage;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Request\FauxResponse;
+use MediaWiki\Title\Title;
+use MediaWiki\Title\TitleFactory;
+
 /**
- * @covers PageDataRequestHandler
+ * @covers \MediaWiki\LinkedData\PageDataRequestHandler
  * @group PageData
  */
 class PageDataRequestHandlerTest extends \MediaWikiLangTestCase {
@@ -16,28 +25,29 @@ class PageDataRequestHandlerTest extends \MediaWikiLangTestCase {
 	 */
 	private $obLevel;
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
 		$this->interfaceTitle = Title::newFromText( __CLASS__ );
+		// Force the content model to avoid DB queries.
+		$this->interfaceTitle->setContentModel( CONTENT_MODEL_WIKITEXT );
 		$this->obLevel = ob_get_level();
-
-		$this->setMwGlobals( 'wgArticlePath', '/wiki/$1' );
 	}
 
-	protected function tearDown() {
+	protected function assertPostConditions(): void {
 		$obLevel = ob_get_level();
-
-		while ( ob_get_level() > $this->obLevel ) {
-			ob_end_clean();
-		}
-
 		if ( $obLevel !== $this->obLevel ) {
 			$this->fail( "Test changed output buffer level: was {$this->obLevel}" .
 				"before test, but $obLevel after test."
 			);
 		}
+		parent::assertPostConditions();
+	}
 
+	protected function tearDown(): void {
+		while ( ob_get_level() > $this->obLevel ) {
+			ob_end_clean();
+		}
 		parent::tearDown();
 	}
 
@@ -74,7 +84,7 @@ class PageDataRequestHandlerTest extends \MediaWikiLangTestCase {
 		return $output;
 	}
 
-	public function handleRequestProvider() {
+	public static function handleRequestProvider() {
 		$cases = [];
 
 		$cases[] = [ '', [], [], 'Invalid title', 400 ];
@@ -200,8 +210,8 @@ class PageDataRequestHandlerTest extends \MediaWikiLangTestCase {
 	 * @dataProvider handleRequestProvider
 	 *
 	 * @param string $subpage The subpage to request (or '')
-	 * @param array  $params  Request parameters
-	 * @param array  $headers  Request headers
+	 * @param array $params Request parameters
+	 * @param array $headers Request headers
 	 * @param string $expectedOutput
 	 * @param int $expectedStatusCode Expected HTTP status code.
 	 * @param string[] $expectedHeaders Expected HTTP response headers.
@@ -214,10 +224,18 @@ class PageDataRequestHandlerTest extends \MediaWikiLangTestCase {
 		$expectedStatusCode = 200,
 		array $expectedHeaders = []
 	) {
+		$titleFactory = $this->createMock( TitleFactory::class );
+		$titleFactory->method( 'newFromTextThrow' )->willReturnCallback( static function ( $text, $ns ) {
+			// Force the content model to avoid DB queries.
+			$ret = Title::newFromTextThrow( $text, $ns );
+			$ret->setContentModel( CONTENT_MODEL_WIKITEXT );
+			return $ret;
+		} );
+		$this->setService( 'TitleFactory', $titleFactory );
 		$output = $this->makeOutputPage( $params, $headers );
 		$request = $output->getRequest();
 
-		/* @var FauxResponse $response */
+		/** @var FauxResponse $response */
 		$response = $request->response();
 
 		// construct handler
@@ -240,21 +258,23 @@ class PageDataRequestHandlerTest extends \MediaWikiLangTestCase {
 			foreach ( $expectedHeaders as $name => $exp ) {
 				$value = $response->getHeader( $name );
 				$this->assertNotNull( $value, "header: $name" );
-				$this->assertInternalType( 'string', $value, "header: $name" );
+				$this->assertIsString( $value, "header: $name" );
 				$this->assertStringEndsWith( $exp, $value, "header: $name" );
 			}
 		} catch ( HttpError $e ) {
 			ob_end_clean();
 			$this->assertEquals( $expectedStatusCode, $e->getStatusCode(), 'status code' );
-			$this->assertContains( $expectedOutput, $e->getHTML(), 'error output' );
+			$this->assertStringContainsString( $expectedOutput, $e->getHTML(), 'error output' );
 		}
 
 		// We always set "Access-Control-Allow-Origin: *"
 		$this->assertSame( '*', $response->getHeader( 'Access-Control-Allow-Origin' ) );
 	}
 
-	public function provideHttpContentNegotiation() {
-		$helsinki = Title::newFromText( 'Helsinki' );
+	public static function provideHttpContentNegotiation() {
+		$helsinki = Title::makeTitle( NS_MAIN, 'Helsinki' );
+		// Force the content model to avoid DB queries.
+		$helsinki->setContentModel( CONTENT_MODEL_WIKITEXT );
 		return [
 			'Accept Header of HTML' => [
 				$helsinki,
@@ -290,15 +310,13 @@ class PageDataRequestHandlerTest extends \MediaWikiLangTestCase {
 	 * @param Title $title
 	 * @param array $headers Request headers
 	 * @param string $expectedRedirectSuffix Expected suffix of the HTTP Location header.
-	 *
-	 * @throws HttpError
 	 */
 	public function testHttpContentNegotiation(
 		Title $title,
 		array $headers,
 		$expectedRedirectSuffix
 	) {
-		/* @var FauxResponse $response */
+		/** @var FauxResponse $response */
 		$output = $this->makeOutputPage( [], $headers );
 		$request = $output->getRequest();
 

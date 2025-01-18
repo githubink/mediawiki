@@ -22,17 +22,20 @@
 
 /**
  * Diff-based history compression
- * Requires xdiff 1.5+ and zlib
+ * Requires xdiff and zlib
+ *
+ * WARNING: Objects of this class are serialized and permanently stored in the DB.
+ * Do not change the name or visibility of any property!
  */
 class DiffHistoryBlob implements HistoryBlob {
-	/** @var array Uncompressed item cache */
+	/** @var string[] Uncompressed item cache */
 	public $mItems = [];
 
 	/** @var int Total uncompressed size */
 	public $mSize = 0;
 
 	/**
-	 * @var array Array of diffs. If a diff D from A to B is notated D = B - A,
+	 * @var array|null Array of diffs. If a diff D from A to B is notated D = B - A,
 	 * and Z is an empty string:
 	 *
 	 *              { item[map[i]] - item[map[i-1]]   where i > 0
@@ -44,11 +47,11 @@ class DiffHistoryBlob implements HistoryBlob {
 	/** @var array The diff map, see above */
 	public $mDiffMap;
 
-	/** @var int The key for getText()
+	/** @var string|null The key for getText()
 	 */
 	public $mDefaultKey;
 
-	/** @var string Compressed storage */
+	/** @var string|null Compressed storage */
 	public $mCompressed;
 
 	/** @var bool True if the object is locked against further writes */
@@ -58,68 +61,64 @@ class DiffHistoryBlob implements HistoryBlob {
 	 * @var int The maximum uncompressed size before the object becomes sad
 	 * Should be less than max_allowed_packet
 	 */
-	public $mMaxSize = 10000000;
+	public $mMaxSize = 10_000_000;
 
 	/** @var int The maximum number of text items before the object becomes sad */
 	public $mMaxCount = 100;
 
 	/** Constants from xdiff.h */
-	const XDL_BDOP_INS = 1;
-	const XDL_BDOP_CPY = 2;
-	const XDL_BDOP_INSB = 3;
+	private const XDL_BDOP_INS = 1;
+	private const XDL_BDOP_CPY = 2;
+	private const XDL_BDOP_INSB = 3;
 
-	function __construct() {
+	public function __construct() {
 		if ( !function_exists( 'gzdeflate' ) ) {
-			throw new MWException( "Need zlib support to read or write DiffHistoryBlob\n" );
+			throw new RuntimeException( "Need zlib support to read or write DiffHistoryBlob\n" );
 		}
 	}
 
 	/**
-	 * @throws MWException
 	 * @param string $text
-	 * @return int
+	 * @return string
 	 */
-	function addItem( $text ) {
+	public function addItem( $text ) {
 		if ( $this->mFrozen ) {
-			throw new MWException( __METHOD__ . ": Cannot add more items after sleep/wakeup" );
+			throw new BadMethodCallException( __METHOD__ . ": Cannot add more items after sleep/wakeup" );
 		}
 
 		$this->mItems[] = $text;
 		$this->mSize += strlen( $text );
 		$this->mDiffs = null; // later
-		return count( $this->mItems ) - 1;
+		return (string)( count( $this->mItems ) - 1 );
 	}
 
 	/**
 	 * @param string $key
 	 * @return string
 	 */
-	function getItem( $key ) {
-		return $this->mItems[$key];
+	public function getItem( $key ) {
+		return $this->mItems[(int)$key];
 	}
 
 	/**
 	 * @param string $text
 	 */
-	function setText( $text ) {
+	public function setText( $text ) {
 		$this->mDefaultKey = $this->addItem( $text );
 	}
 
 	/**
 	 * @return string
 	 */
-	function getText() {
+	public function getText() {
 		return $this->getItem( $this->mDefaultKey );
 	}
 
-	/**
-	 * @throws MWException
-	 */
-	function compress() {
+	private function compress() {
 		if ( !function_exists( 'xdiff_string_rabdiff' ) ) {
-			throw new MWException( "Need xdiff 1.5+ support to write DiffHistoryBlob\n" );
+			throw new RuntimeException( "Need xdiff support to write DiffHistoryBlob\n" );
 		}
-		if ( isset( $this->mDiffs ) ) {
+		if ( $this->mDiffs !== null ) {
 			// Already compressed
 			return;
 		}
@@ -155,14 +154,13 @@ class DiffHistoryBlob implements HistoryBlob {
 					$seqName = 'main';
 				}
 			}
-			$seq =& $sequences[$seqName];
-			$tail = $seq['tail'];
+
+			$tail = $sequences[$seqName]['tail'];
 			$diff = $this->diff( $tail, $text );
-			$seq['diffs'][] = $diff;
-			$seq['map'][] = $i;
-			$seq['tail'] = $text;
+			$sequences[$seqName]['diffs'][] = $diff;
+			$sequences[$seqName]['map'][] = $i;
+			$sequences[$seqName]['tail'] = $text;
 		}
-		unset( $seq ); // unlink dangerous alias
 
 		// Knit the sequences together
 		$tail = '';
@@ -193,13 +191,8 @@ class DiffHistoryBlob implements HistoryBlob {
 	 * @param string $t2
 	 * @return string
 	 */
-	function diff( $t1, $t2 ) {
-		# Need to do a null concatenation with warnings off, due to bugs in the current version of xdiff
-		# "String is not zero-terminated"
-		Wikimedia\suppressWarnings();
-		$diff = xdiff_string_rabdiff( $t1, $t2 ) . '';
-		Wikimedia\restoreWarnings();
-		return $diff;
+	private function diff( $t1, $t2 ) {
+		return xdiff_string_rabdiff( $t1, $t2 );
 	}
 
 	/**
@@ -207,26 +200,23 @@ class DiffHistoryBlob implements HistoryBlob {
 	 * @param string $diff
 	 * @return bool|string
 	 */
-	function patch( $base, $diff ) {
+	private function patch( $base, $diff ) {
 		if ( function_exists( 'xdiff_string_bpatch' ) ) {
-			Wikimedia\suppressWarnings();
-			$text = xdiff_string_bpatch( $base, $diff ) . '';
-			Wikimedia\restoreWarnings();
-			return $text;
+			return xdiff_string_bpatch( $base, $diff );
 		}
 
 		# Pure PHP implementation
 
 		$header = unpack( 'Vofp/Vcsize', substr( $diff, 0, 8 ) );
 
-		# Check the checksum if hash extension is available
+		# Check the checksum
 		$ofp = $this->xdiffAdler32( $base );
-		if ( $ofp !== false && $ofp !== substr( $diff, 0, 4 ) ) {
-			wfDebug( __METHOD__ . ": incorrect base checksum\n" );
+		if ( $ofp !== substr( $diff, 0, 4 ) ) {
+			wfDebug( __METHOD__ . ": incorrect base checksum" );
 			return false;
 		}
 		if ( $header['csize'] != strlen( $base ) ) {
-			wfDebug( __METHOD__ . ": incorrect base length\n" );
+			wfDebug( __METHOD__ . ": incorrect base length" );
 			return false;
 		}
 
@@ -255,7 +245,7 @@ class DiffHistoryBlob implements HistoryBlob {
 					$out .= substr( $base, $x['off'], $x['csize'] );
 					break;
 				default:
-					wfDebug( __METHOD__ . ": invalid op\n" );
+					wfDebug( __METHOD__ . ": invalid op" );
 					return false;
 			}
 		}
@@ -267,17 +257,11 @@ class DiffHistoryBlob implements HistoryBlob {
 	 * the bytes backwards and initialised with 0 instead of 1. See T36428.
 	 *
 	 * @param string $s
-	 * @return string|bool False if the hash extension is not available
+	 * @return string
 	 */
-	function xdiffAdler32( $s ) {
-		if ( !function_exists( 'hash' ) ) {
-			return false;
-		}
-
-		static $init;
-		if ( $init === null ) {
-			$init = str_repeat( "\xf0", 205 ) . "\xee" . str_repeat( "\xf0", 67 ) . "\x02";
-		}
+	public function xdiffAdler32( $s ) {
+		static $init = null;
+		$init ??= str_repeat( "\xf0", 205 ) . "\xee" . str_repeat( "\xf0", 67 ) . "\x02";
 
 		// The real Adler-32 checksum of $init is zero, so it initialises the
 		// state to zero, as it is at the start of LibXDiff's checksum
@@ -285,7 +269,7 @@ class DiffHistoryBlob implements HistoryBlob {
 		return strrev( hash( 'adler32', $init . $s, true ) );
 	}
 
-	function uncompress() {
+	private function uncompress() {
 		if ( !$this->mDiffs ) {
 			return;
 		}
@@ -302,7 +286,7 @@ class DiffHistoryBlob implements HistoryBlob {
 	/**
 	 * @return array
 	 */
-	function __sleep() {
+	public function __sleep() {
 		$this->compress();
 		if ( $this->mItems === [] ) {
 			$info = false;
@@ -322,18 +306,18 @@ class DiffHistoryBlob implements HistoryBlob {
 				'map' => $map
 			];
 		}
-		if ( isset( $this->mDefaultKey ) ) {
+		if ( $this->mDefaultKey !== null ) {
 			$info['default'] = $this->mDefaultKey;
 		}
 		$this->mCompressed = gzdeflate( serialize( $info ) );
 		return [ 'mCompressed' ];
 	}
 
-	function __wakeup() {
+	public function __wakeup() {
 		// addItem() doesn't work if mItems is partially filled from mDiffs
 		$this->mFrozen = true;
-		$info = unserialize( gzinflate( $this->mCompressed ) );
-		unset( $this->mCompressed );
+		$info = HistoryBlobUtils::unserializeArray( gzinflate( $this->mCompressed ) );
+		$this->mCompressed = null;
 
 		if ( !$info ) {
 			// Empty object
@@ -369,7 +353,7 @@ class DiffHistoryBlob implements HistoryBlob {
 	 *
 	 * @return bool
 	 */
-	function isHappy() {
+	public function isHappy() {
 		return $this->mSize < $this->mMaxSize
 			&& count( $this->mItems ) < $this->mMaxCount;
 	}

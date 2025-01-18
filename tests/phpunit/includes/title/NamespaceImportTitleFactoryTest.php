@@ -19,20 +19,26 @@
  * @author This, that and the other
  */
 
+use MediaWiki\Title\ForeignTitle;
+use MediaWiki\Title\NamespaceImportTitleFactory;
+use MediaWiki\Title\Title;
+
 /**
- * @covers NamespaceImportTitleFactory
+ * @covers \MediaWiki\Title\NamespaceImportTitleFactory
  *
  * @group Title
+ *
+ * TODO convert to unit tests
  */
-class NamespaceImportTitleFactoryTest extends MediaWikiTestCase {
+class NamespaceImportTitleFactoryTest extends MediaWikiIntegrationTestCase {
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
 		$this->setContentLang( 'en' );
 	}
 
-	public function basicProvider() {
+	public static function basicProvider() {
 		return [
 			[
 				new ForeignTitle( 0, '', 'MainNamespaceArticle' ),
@@ -66,7 +72,11 @@ class NamespaceImportTitleFactoryTest extends MediaWikiTestCase {
 	 * @dataProvider basicProvider
 	 */
 	public function testBasic( ForeignTitle $foreignTitle, $ns, $titleText ) {
-		$factory = new NamespaceImportTitleFactory( $ns );
+		$factory = new NamespaceImportTitleFactory(
+			$this->getServiceContainer()->getNamespaceInfo(),
+			$this->getServiceContainer()->getTitleFactory(),
+			$ns
+		);
 		$testTitle = $factory->createTitleFromForeignTitle( $foreignTitle );
 		$title = Title::newFromText( $titleText );
 

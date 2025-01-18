@@ -19,6 +19,8 @@
  * http://www.gnu.org/copyleft/gpl.html
  */
 
+use MediaWiki\Title\Title;
+
 /**
  * A set of search suggestions.
  * The set is always ordered by score, with the best match first.
@@ -30,7 +32,6 @@ class SearchSuggestionSet {
 	private $suggestions = [];
 
 	/**
-	 *
 	 * @var array
 	 */
 	private $pageMap = [];
@@ -103,8 +104,6 @@ class SearchSuggestionSet {
 	 * Add a new suggestion at the end.
 	 * If the score of the new suggestion is greater than the worst one,
 	 * the new suggestion score will be updated (worst - 1).
-	 *
-	 * @param SearchSuggestion $suggestion
 	 */
 	public function append( SearchSuggestion $suggestion ) {
 		$pageID = $suggestion->getSuggestedTitleID();
@@ -122,7 +121,6 @@ class SearchSuggestionSet {
 
 	/**
 	 * Add suggestion set to the end of the current one.
-	 * @param SearchSuggestionSet $set
 	 */
 	public function appendAll( SearchSuggestionSet $set ) {
 		foreach ( $set->getSuggestions() as $sugg ) {
@@ -132,7 +130,7 @@ class SearchSuggestionSet {
 
 	/**
 	 * Move the suggestion at index $key to the first position
-	 * @param string $key
+	 * @param int $key
 	 */
 	public function rescore( $key ) {
 		$removed = array_splice( $this->suggestions, $key, 1 );
@@ -143,7 +141,6 @@ class SearchSuggestionSet {
 	/**
 	 * Add a new suggestion at the top. If the new suggestion score
 	 * is lower than the best one its score will be updated (best + 1)
-	 * @param SearchSuggestion $suggestion
 	 */
 	public function prepend( SearchSuggestion $suggestion ) {
 		$pageID = $suggestion->getSuggestedTitleID();
@@ -153,17 +150,37 @@ class SearchSuggestionSet {
 		if ( $this->getSize() > 0 && $suggestion->getScore() <= $this->getBestScore() ) {
 			$suggestion->setScore( $this->getBestScore() + 1 );
 		}
-		array_unshift( $this->suggestions,  $suggestion );
+		array_unshift( $this->suggestions, $suggestion );
 		if ( $pageID ) {
 			$this->pageMap[$pageID] = true;
 		}
 	}
 
 	/**
+	 * Remove a suggestion from the set.
+	 * Removes the first suggestion that has the same article id or the same suggestion text.
+	 * @param SearchSuggestion $suggestion
+	 * @return bool true if something was removed
+	 */
+	public function remove( SearchSuggestion $suggestion ): bool {
+		foreach ( $this->suggestions as $k => $s ) {
+			$titleId = $s->getSuggestedTitleID();
+			if ( ( $titleId != null && $titleId === $suggestion->getSuggestedTitleID() )
+				|| $s->getText() === $suggestion->getText()
+			) {
+				array_splice( $this->suggestions, $k, 1 );
+				unset( $this->pageMap[$s->getSuggestedTitleID()] );
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
 	 * @return float the best score in this suggestion set
 	 */
 	public function getBestScore() {
-		if ( empty( $this->suggestions ) ) {
+		if ( !$this->suggestions ) {
 			return 0;
 		}
 		return $this->suggestions[0]->getScore();
@@ -173,7 +190,7 @@ class SearchSuggestionSet {
 	 * @return float the worst score in this set
 	 */
 	public function getWorstScore() {
-		if ( empty( $this->suggestions ) ) {
+		if ( !$this->suggestions ) {
 			return 0;
 		}
 		return end( $this->suggestions )->getScore();
@@ -193,8 +210,26 @@ class SearchSuggestionSet {
 	public function shrink( $limit ) {
 		if ( count( $this->suggestions ) > $limit ) {
 			$this->suggestions = array_slice( $this->suggestions, 0, $limit );
+			$this->pageMap = self::buildPageMap( $this->suggestions );
 			$this->hasMoreResults = true;
 		}
+	}
+
+	/**
+	 * Build an array of true with the page ids present in $suggestion as keys.
+	 *
+	 * @param array $suggestions
+	 * @return array<int,bool>
+	 */
+	private static function buildPageMap( array $suggestions ): array {
+		$pageMap = [];
+		foreach ( $suggestions as $suggestion ) {
+			$pageID = $suggestion->getSuggestedTitleID();
+			if ( $pageID ) {
+				$pageMap[$pageID] = true;
+			}
+		}
+		return $pageMap;
 	}
 
 	/**
@@ -209,7 +244,7 @@ class SearchSuggestionSet {
 	 */
 	public static function fromTitles( array $titles, $hasMoreResults = false ) {
 		$score = count( $titles );
-		$suggestions = array_map( function ( $title ) use ( &$score ) {
+		$suggestions = array_map( static function ( $title ) use ( &$score ) {
 			return SearchSuggestion::fromTitle( $score--, $title );
 		}, $titles );
 		return new SearchSuggestionSet( $suggestions, $hasMoreResults );
@@ -226,7 +261,7 @@ class SearchSuggestionSet {
 	 */
 	public static function fromStrings( array $titles, $hasMoreResults = false ) {
 		$score = count( $titles );
-		$suggestions = array_map( function ( $title ) use ( &$score ) {
+		$suggestions = array_map( static function ( $title ) use ( &$score ) {
 			return SearchSuggestion::fromText( $score--, $title );
 		}, $titles );
 		return new SearchSuggestionSet( $suggestions, $hasMoreResults );

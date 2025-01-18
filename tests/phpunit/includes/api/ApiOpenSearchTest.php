@@ -1,20 +1,42 @@
 <?php
 
+namespace MediaWiki\Tests\Api;
+
+use MediaWiki\Api\ApiMain;
+use MediaWiki\Api\ApiOpenSearch;
+use MediaWiki\Context\RequestContext;
+use MediaWikiIntegrationTestCase;
+use SearchEngine;
+use SearchEngineConfig;
+use SearchEngineFactory;
+use Wikimedia\ParamValidator\ParamValidator;
+
 /**
- * @covers ApiOpenSearch
+ * TODO convert to unit test, no integration is needed
+ *
+ * @covers \MediaWiki\Api\ApiOpenSearch
  */
-class ApiOpenSearchTest extends MediaWikiTestCase {
+class ApiOpenSearchTest extends MediaWikiIntegrationTestCase {
 	public function testGetAllowedParams() {
 		$config = $this->replaceSearchEngineConfig();
-		$config->expects( $this->any() )
-			->method( 'getSearchTypes' )
-			->will( $this->returnValue( [ 'the one ring' ] ) );
+		$config->method( 'getSearchTypes' )
+			->willReturn( [ 'the one ring' ] );
 
-		$api = $this->createApi();
-		$engine = $this->replaceSearchEngine();
-		$engine->expects( $this->any() )
-			->method( 'getProfiles' )
-			->will( $this->returnValueMap( [
+		[ $engine, $engineFactory ] = $this->replaceSearchEngine();
+
+		$ctx = new RequestContext();
+		$apiMain = new ApiMain( $ctx );
+		$api = new ApiOpenSearch(
+			$apiMain,
+			'opensearch',
+			$this->getServiceContainer()->getLinkBatchFactory(),
+			$config,
+			$engineFactory,
+			$this->getServiceContainer()->getUrlUtils()
+		);
+
+		$engine->method( 'getProfiles' )
+			->willReturnMap( [
 				[ SearchEngine::COMPLETION_PROFILE_TYPE, $api->getUser(), [
 					[
 						'name' => 'normal',
@@ -26,42 +48,29 @@ class ApiOpenSearchTest extends MediaWikiTestCase {
 						'desc-message' => 'strict-message',
 					],
 				] ],
-			] ) );
+			] );
 
 		$params = $api->getAllowedParams();
 
 		$this->assertArrayNotHasKey( 'offset', $params );
 		$this->assertArrayHasKey( 'profile', $params, print_r( $params, true ) );
-		$this->assertEquals( 'normal', $params['profile'][ApiBase::PARAM_DFLT] );
+		$this->assertEquals( 'normal', $params['profile'][ParamValidator::PARAM_DEFAULT] );
 	}
 
 	private function replaceSearchEngineConfig() {
-		$config = $this->getMockBuilder( SearchEngineConfig::class )
-			->disableOriginalConstructor()
-			->getMock();
+		$config = $this->createMock( SearchEngineConfig::class );
 		$this->setService( 'SearchEngineConfig', $config );
 
 		return $config;
 	}
 
 	private function replaceSearchEngine() {
-		$engine = $this->getMockBuilder( SearchEngine::class )
-			->disableOriginalConstructor()
-			->getMock();
-		$engineFactory = $this->getMockBuilder( SearchEngineFactory::class )
-			->disableOriginalConstructor()
-			->getMock();
-		$engineFactory->expects( $this->any() )
-			->method( 'create' )
-			->will( $this->returnValue( $engine ) );
+		$engine = $this->createMock( SearchEngine::class );
+		$engineFactory = $this->createMock( SearchEngineFactory::class );
+		$engineFactory->method( 'create' )
+			->willReturn( $engine );
 		$this->setService( 'SearchEngineFactory', $engineFactory );
 
-		return $engine;
-	}
-
-	private function createApi() {
-		$ctx = new RequestContext();
-		$apiMain = new ApiMain( $ctx );
-		return new ApiOpenSearch( $apiMain, 'opensearch', '' );
+		return [ $engine, $engineFactory ];
 	}
 }

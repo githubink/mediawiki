@@ -1,23 +1,14 @@
 <?php
 
+use MediaWiki\Content\WikitextContent;
+use MediaWiki\Content\WikiTextStructure;
+use MediaWiki\Title\Title;
+
 /**
- * @covers WikiTextStructure
+ * @group Database
+ * @covers \MediaWiki\Content\WikiTextStructure
  */
 class WikitextStructureTest extends MediaWikiLangTestCase {
-
-	private function getMockTitle() {
-		return Title::newFromText( "TestTitle" );
-	}
-
-	/**
-	 * Get parser output for Wiki text
-	 * @param string $text
-	 * @return ParserOutput
-	 */
-	private function getParserOutput( $text ) {
-		$content = new WikitextContent( $text );
-		return $content->getParserOutput( $this->getMockTitle() );
-	}
 
 	/**
 	 * Get WikitextStructure for given text
@@ -25,7 +16,10 @@ class WikitextStructureTest extends MediaWikiLangTestCase {
 	 * @return WikiTextStructure
 	 */
 	private function getStructure( $text ) {
-		return new WikiTextStructure( $this->getParserOutput( $text ) );
+		$content = new WikitextContent( $text );
+		$contentRenderer = $this->getServiceContainer()->getContentRenderer();
+		$parserOutput = $contentRenderer->getParserOutput( $content, Title::makeTitle( NS_MAIN, 'TestTitle' ) );
+		return new WikiTextStructure( $parserOutput );
 	}
 
 	public function testHeadings() {
@@ -88,7 +82,7 @@ END;
 	public function testTexts() {
 		$text = <<<END
 Opening text is opening.
-== Then comes header ==
+<h2 class="hello">Then comes header</h2>
 Then we got more<br>text
 === And more headers ===
 {| class="wikitable"

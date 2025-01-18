@@ -1,42 +1,67 @@
 <?php
 
-namespace MediaWiki\Session;
+namespace MediaWiki\Tests\Session;
 
-use MediaWikiTestCase;
+use DummySessionProvider;
+use InvalidArgumentException;
+use MediaWiki\Config\HashConfig;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Request\ProxyLookup;
+use MediaWiki\Session\CookieSessionProvider;
+use MediaWiki\Session\MetadataMergeException;
+use MediaWiki\Session\PHPSessionHandler;
+use MediaWiki\Session\Session;
+use MediaWiki\Session\SessionInfo;
+use MediaWiki\Session\SessionManager;
+use MediaWiki\Session\SessionOverflowException;
+use MediaWiki\Session\SessionProvider;
+use MediaWiki\Session\UserInfo;
+use MediaWiki\Utils\MWTimestamp;
+use MediaWikiIntegrationTestCase;
+use Psr\Log\LoggerInterface;
 use Psr\Log\LogLevel;
-use User;
+use Psr\Log\NullLogger;
+use ReflectionClass;
+use stdClass;
+use TestLogger;
+use UnexpectedValueException;
+use Wikimedia\ScopedCallback;
 use Wikimedia\TestingAccessWrapper;
 
 /**
  * @group Session
  * @group Database
- * @covers MediaWiki\Session\SessionManager
+ * @covers \MediaWiki\Session\SessionManager
  */
-class SessionManagerTest extends MediaWikiTestCase {
+class SessionManagerTest extends MediaWikiIntegrationTestCase {
+	use SessionProviderTestTrait;
 
-	/** @var \HashConfig */
-	private $config;
-
-	/** @var \TestLogger */
-	private $logger;
-
-	/** @var TestBagOStuff */
-	private $store;
+	private HashConfig $config;
+	private TestLogger $logger;
+	private TestBagOStuff $store;
 
 	protected function getManager() {
-		\ObjectCache::$instances['testSessionStore'] = new TestBagOStuff();
-		$this->config = new \HashConfig( [
-			'LanguageCode' => 'en',
-			'SessionCacheType' => 'testSessionStore',
-			'ObjectCacheSessionExpiry' => 100,
-			'SessionProviders' => [
-				[ 'class' => \DummySessionProvider::class ],
+		$this->store = new TestBagOStuff();
+		$cacheType = $this->setMainCache( $this->store );
+
+		$this->config = new HashConfig( [
+			MainConfigNames::LanguageCode => 'en',
+			MainConfigNames::SessionCacheType => $cacheType,
+			MainConfigNames::ObjectCacheSessionExpiry => 100,
+			MainConfigNames::SessionProviders => [
+				[ 'class' => DummySessionProvider::class ],
 			]
 		] );
-		$this->logger = new \TestLogger( false, function ( $m ) {
-			return substr( $m, 0, 15 ) === 'SessionBackend ' ? null : $m;
+		$this->logger = new TestLogger( false, static function ( $m ) {
+			return ( str_starts_with( $m, 'SessionBackend ' )
+				|| str_starts_with( $m, 'SessionManager using store ' )
+				// These were added for T264793 and behave somewhat erratically, not worth testing
+				|| str_starts_with( $m, 'Failed to load session, unpersisting' )
+				|| preg_match( '/^(Persisting|Unpersisting) session (for|due to)/', $m )
+			) ? null : $m;
 		} );
-		$this->store = new TestBagOStuff();
 
 		return new SessionManager( [
 			'config' => $this->config,
@@ -46,7 +71,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 	}
 
 	protected function objectCacheDef( $object ) {
-		return [ 'factory' => function () use ( $object ) {
+		return [ 'factory' => static function () use ( $object ) {
 			return $object;
 		} ];
 	}
@@ -60,16 +85,15 @@ class SessionManagerTest extends MediaWikiTestCase {
 	}
 
 	public function testGetGlobalSession() {
-		$context = \RequestContext::getMain();
+		$context = RequestContext::getMain();
 
 		if ( !PHPSessionHandler::isInstalled() ) {
 			PHPSessionHandler::install( SessionManager::singleton() );
 		}
-		$rProp = new \ReflectionProperty( PHPSessionHandler::class, 'instance' );
-		$rProp->setAccessible( true );
-		$handler = TestingAccessWrapper::newFromObject( $rProp->getValue() );
+		$staticAccess = TestingAccessWrapper::newFromClass( PHPSessionHandler::class );
+		$handler = TestingAccessWrapper::newFromObject( $staticAccess->instance );
 		$oldEnable = $handler->enable;
-		$reset[] = new \Wikimedia\ScopedCallback( function () use ( $handler, $oldEnable ) {
+		$reset[] = new ScopedCallback( static function () use ( $handler, $oldEnable ) {
 			if ( $handler->enable ) {
 				session_write_close();
 			}
@@ -78,7 +102,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		$reset[] = TestUtils::setSessionManagerSingleton( $this->getManager() );
 
 		$handler->enable = true;
-		$request = new \FauxRequest();
+		$request = new FauxRequest();
 		$context->setRequest( $request );
 		$id = $request->getSession()->getId();
 
@@ -94,7 +118,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 
 		session_write_close();
 		$handler->enable = false;
-		$request = new \FauxRequest();
+		$request = new FauxRequest();
 		$context->setRequest( $request );
 		$id = $request->getSession()->getId();
 
@@ -115,12 +139,13 @@ class SessionManagerTest extends MediaWikiTestCase {
 		$this->assertSame( $this->store, $manager->store );
 
 		$manager = TestingAccessWrapper::newFromObject( new SessionManager() );
-		$this->assertSame( \RequestContext::getMain()->getConfig(), $manager->config );
+		$this->assertSame( $this->getServiceContainer()->getMainConfig(), $manager->config );
 
 		$manager = TestingAccessWrapper::newFromObject( new SessionManager( [
 			'config' => $this->config,
+			'store' => $this->store,
 		] ) );
-		$this->assertSame( \ObjectCache::$instances['testSessionStore'], $manager->store );
+		$this->assertSame( $this->store, $manager->store );
 
 		foreach ( [
 			'config' => '$options[\'config\'] must be an instance of Config',
@@ -128,9 +153,9 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'store' => '$options[\'store\'] must be an instance of BagOStuff',
 		] as $key => $error ) {
 			try {
-				new SessionManager( [ $key => new \stdClass ] );
+				new SessionManager( [ $key => new stdClass ] );
 				$this->fail( 'Expected exception not thrown' );
-			} catch ( \InvalidArgumentException $ex ) {
+			} catch ( InvalidArgumentException $ex ) {
 				$this->assertSame( $error, $ex->getMessage() );
 			}
 		}
@@ -138,80 +163,80 @@ class SessionManagerTest extends MediaWikiTestCase {
 
 	public function testGetSessionForRequest() {
 		$manager = $this->getManager();
-		$request = new \FauxRequest();
-		$request->unpersist1 = false;
-		$request->unpersist2 = false;
+		$request = new FauxRequest();
+		$requestUnpersist1 = false;
+		$requestUnpersist2 = false;
+		$requestInfo1 = null;
+		$requestInfo2 = null;
 
 		$id1 = '';
 		$id2 = '';
 		$idEmpty = 'empty-session-------------------';
 
-		$providerBuilder = $this->getMockBuilder( \DummySessionProvider::class )
-			->setMethods(
+		$providerBuilder = $this->getMockBuilder( DummySessionProvider::class )
+			->onlyMethods(
 				[ 'provideSessionInfo', 'newSessionInfo', '__toString', 'describe', 'unpersistSession' ]
 			);
 
 		$provider1 = $providerBuilder->getMock();
-		$provider1->expects( $this->any() )->method( 'provideSessionInfo' )
+		$provider1->method( 'provideSessionInfo' )
 			->with( $this->identicalTo( $request ) )
-			->will( $this->returnCallback( function ( $request ) {
-				return $request->info1;
-			} ) );
-		$provider1->expects( $this->any() )->method( 'newSessionInfo' )
-			->will( $this->returnCallback( function () use ( $idEmpty, $provider1 ) {
+			->willReturnCallback( static function ( $request ) use ( &$requestInfo1 ) {
+				return $requestInfo1;
+			} );
+		$provider1->method( 'newSessionInfo' )
+			->willReturnCallback( static function () use ( $idEmpty, $provider1 ) {
 				return new SessionInfo( SessionInfo::MIN_PRIORITY, [
 					'provider' => $provider1,
 					'id' => $idEmpty,
 					'persisted' => true,
 					'idIsSafe' => true,
 				] );
-			} ) );
-		$provider1->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'Provider1' ) );
-		$provider1->expects( $this->any() )->method( 'describe' )
-			->will( $this->returnValue( '#1 sessions' ) );
-		$provider1->expects( $this->any() )->method( 'unpersistSession' )
-			->will( $this->returnCallback( function ( $request ) {
-				$request->unpersist1 = true;
-			} ) );
+			} );
+		$provider1->method( '__toString' )
+			->willReturn( 'Provider1' );
+		$provider1->method( 'describe' )
+			->willReturn( '#1 sessions' );
+		$provider1->method( 'unpersistSession' )
+			->willReturnCallback( static function ( $request ) use ( &$requestUnpersist1 ) {
+				$requestUnpersist1 = true;
+			} );
 
 		$provider2 = $providerBuilder->getMock();
-		$provider2->expects( $this->any() )->method( 'provideSessionInfo' )
+		$provider2->method( 'provideSessionInfo' )
 			->with( $this->identicalTo( $request ) )
-			->will( $this->returnCallback( function ( $request ) {
-				return $request->info2;
-			} ) );
-		$provider2->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'Provider2' ) );
-		$provider2->expects( $this->any() )->method( 'describe' )
-			->will( $this->returnValue( '#2 sessions' ) );
-		$provider2->expects( $this->any() )->method( 'unpersistSession' )
-			->will( $this->returnCallback( function ( $request ) {
-				$request->unpersist2 = true;
-			} ) );
+			->willReturnCallback( static function ( $request ) use ( &$requestInfo2 ) {
+				return $requestInfo2;
+			} );
+		$provider2->method( '__toString' )
+			->willReturn( 'Provider2' );
+		$provider2->method( 'describe' )
+			->willReturn( '#2 sessions' );
+		$provider2->method( 'unpersistSession' )
+			->willReturnCallback( static function ( $request ) use ( &$requestUnpersist2 ) {
+				$requestUnpersist2 = true;
+			} );
 
-		$this->config->set( 'SessionProviders', [
+		$this->config->set( MainConfigNames::SessionProviders, [
 			$this->objectCacheDef( $provider1 ),
 			$this->objectCacheDef( $provider2 ),
 		] );
 
 		// No provider returns info
-		$request->info1 = null;
-		$request->info2 = null;
 		$session = $manager->getSessionForRequest( $request );
 		$this->assertInstanceOf( Session::class, $session );
 		$this->assertSame( $idEmpty, $session->getId() );
-		$this->assertFalse( $request->unpersist1 );
-		$this->assertFalse( $request->unpersist2 );
+		$this->assertFalse( $requestUnpersist1 );
+		$this->assertFalse( $requestUnpersist2 );
 
 		// Both providers return info, picks best one
-		$request->info1 = new SessionInfo( SessionInfo::MIN_PRIORITY + 1, [
+		$requestInfo1 = new SessionInfo( SessionInfo::MIN_PRIORITY + 1, [
 			'provider' => $provider1,
 			'id' => ( $id1 = $manager->generateSessionId() ),
 			'persisted' => true,
 			'idIsSafe' => true,
 		] );
-		$request->info2 = new SessionInfo( SessionInfo::MIN_PRIORITY + 2, [
+		$requestInfo2 = new SessionInfo( SessionInfo::MIN_PRIORITY + 2, [
 			'provider' => $provider2,
 			'id' => ( $id2 = $manager->generateSessionId() ),
 			'persisted' => true,
@@ -220,16 +245,16 @@ class SessionManagerTest extends MediaWikiTestCase {
 		$session = $manager->getSessionForRequest( $request );
 		$this->assertInstanceOf( Session::class, $session );
 		$this->assertSame( $id2, $session->getId() );
-		$this->assertFalse( $request->unpersist1 );
-		$this->assertFalse( $request->unpersist2 );
+		$this->assertFalse( $requestUnpersist1 );
+		$this->assertFalse( $requestUnpersist2 );
 
-		$request->info1 = new SessionInfo( SessionInfo::MIN_PRIORITY + 2, [
+		$requestInfo1 = new SessionInfo( SessionInfo::MIN_PRIORITY + 2, [
 			'provider' => $provider1,
 			'id' => ( $id1 = $manager->generateSessionId() ),
 			'persisted' => true,
 			'idIsSafe' => true,
 		] );
-		$request->info2 = new SessionInfo( SessionInfo::MIN_PRIORITY + 1, [
+		$requestInfo2 = new SessionInfo( SessionInfo::MIN_PRIORITY + 1, [
 			'provider' => $provider2,
 			'id' => ( $id2 = $manager->generateSessionId() ),
 			'persisted' => true,
@@ -238,18 +263,18 @@ class SessionManagerTest extends MediaWikiTestCase {
 		$session = $manager->getSessionForRequest( $request );
 		$this->assertInstanceOf( Session::class, $session );
 		$this->assertSame( $id1, $session->getId() );
-		$this->assertFalse( $request->unpersist1 );
-		$this->assertFalse( $request->unpersist2 );
+		$this->assertFalse( $requestUnpersist1 );
+		$this->assertFalse( $requestUnpersist2 );
 
 		// Tied priorities
-		$request->info1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
+		$requestInfo1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
 			'provider' => $provider1,
 			'id' => ( $id1 = $manager->generateSessionId() ),
 			'persisted' => true,
 			'userInfo' => UserInfo::newAnonymous(),
 			'idIsSafe' => true,
 		] );
-		$request->info2 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
+		$requestInfo2 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
 			'provider' => $provider2,
 			'id' => ( $id2 = $manager->generateSessionId() ),
 			'persisted' => true,
@@ -259,48 +284,48 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$manager->getSessionForRequest( $request );
 			$this->fail( 'Expcected exception not thrown' );
-		} catch ( \OverflowException $ex ) {
+		} catch ( SessionOverflowException $ex ) {
 			$this->assertStringStartsWith(
 				'Multiple sessions for this request tied for top priority: ',
 				$ex->getMessage()
 			);
-			$this->assertCount( 2, $ex->sessionInfos );
-			$this->assertContains( $request->info1, $ex->sessionInfos );
-			$this->assertContains( $request->info2, $ex->sessionInfos );
+			$this->assertCount( 2, $ex->getSessionInfos() );
+			$this->assertContains( $requestInfo1, $ex->getSessionInfos() );
+			$this->assertContains( $requestInfo2, $ex->getSessionInfos() );
 		}
-		$this->assertFalse( $request->unpersist1 );
-		$this->assertFalse( $request->unpersist2 );
+		$this->assertFalse( $requestUnpersist1 );
+		$this->assertFalse( $requestUnpersist2 );
 
 		// Bad provider
-		$request->info1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
+		$requestInfo1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
 			'provider' => $provider2,
 			'id' => ( $id1 = $manager->generateSessionId() ),
 			'persisted' => true,
 			'idIsSafe' => true,
 		] );
-		$request->info2 = null;
+		$requestInfo2 = null;
 		try {
 			$manager->getSessionForRequest( $request );
 			$this->fail( 'Expcected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertSame(
-				'Provider1 returned session info for a different provider: ' . $request->info1,
+				'Provider1 returned session info for a different provider: ' . $requestInfo1,
 				$ex->getMessage()
 			);
 		}
-		$this->assertFalse( $request->unpersist1 );
-		$this->assertFalse( $request->unpersist2 );
+		$this->assertFalse( $requestUnpersist1 );
+		$this->assertFalse( $requestUnpersist2 );
 
 		// Unusable session info
 		$this->logger->setCollect( true );
-		$request->info1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
+		$requestInfo1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
 			'provider' => $provider1,
 			'id' => ( $id1 = $manager->generateSessionId() ),
 			'persisted' => true,
-			'userInfo' => UserInfo::newFromName( 'UTSysop', false ),
+			'userInfo' => UserInfo::newFromName( 'TestGetSessionForRequest', false ),
 			'idIsSafe' => true,
 		] );
-		$request->info2 = new SessionInfo( SessionInfo::MIN_PRIORITY, [
+		$requestInfo2 = new SessionInfo( SessionInfo::MIN_PRIORITY, [
 			'provider' => $provider2,
 			'id' => ( $id2 = $manager->generateSessionId() ),
 			'persisted' => true,
@@ -310,48 +335,48 @@ class SessionManagerTest extends MediaWikiTestCase {
 		$this->assertInstanceOf( Session::class, $session );
 		$this->assertSame( $id2, $session->getId() );
 		$this->logger->setCollect( false );
-		$this->assertTrue( $request->unpersist1 );
-		$this->assertFalse( $request->unpersist2 );
-		$request->unpersist1 = false;
+		$this->assertTrue( $requestUnpersist1 );
+		$this->assertFalse( $requestUnpersist2 );
+		$requestUnpersist1 = false;
 
 		$this->logger->setCollect( true );
-		$request->info1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
+		$requestInfo1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
 			'provider' => $provider1,
 			'id' => ( $id1 = $manager->generateSessionId() ),
 			'persisted' => true,
 			'idIsSafe' => true,
 		] );
-		$request->info2 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
+		$requestInfo2 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
 			'provider' => $provider2,
 			'id' => ( $id2 = $manager->generateSessionId() ),
 			'persisted' => true,
-			'userInfo' => UserInfo::newFromName( 'UTSysop', false ),
+			'userInfo' => UserInfo::newFromName( 'TestGetSessionForRequest', false ),
 			'idIsSafe' => true,
 		] );
 		$session = $manager->getSessionForRequest( $request );
 		$this->assertInstanceOf( Session::class, $session );
 		$this->assertSame( $id1, $session->getId() );
 		$this->logger->setCollect( false );
-		$this->assertFalse( $request->unpersist1 );
-		$this->assertTrue( $request->unpersist2 );
-		$request->unpersist2 = false;
+		$this->assertFalse( $requestUnpersist1 );
+		$this->assertTrue( $requestUnpersist2 );
+		$requestUnpersist2 = false;
 
 		// Unpersisted session ID
-		$request->info1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
+		$requestInfo1 = new SessionInfo( SessionInfo::MAX_PRIORITY, [
 			'provider' => $provider1,
 			'id' => ( $id1 = $manager->generateSessionId() ),
 			'persisted' => false,
-			'userInfo' => UserInfo::newFromName( 'UTSysop', true ),
+			'userInfo' => UserInfo::newFromName( 'TestGetSessionForRequest', true ),
 			'idIsSafe' => true,
 		] );
-		$request->info2 = null;
+		$requestInfo2 = null;
 		$session = $manager->getSessionForRequest( $request );
 		$this->assertInstanceOf( Session::class, $session );
 		$this->assertSame( $id1, $session->getId() );
-		$this->assertTrue( $request->unpersist1 ); // The saving of the session does it
-		$this->assertFalse( $request->unpersist2 );
+		$this->assertTrue( $requestUnpersist1 ); // The saving of the session does it
+		$this->assertFalse( $requestUnpersist2 );
 		$session->persist();
-		$this->assertTrue( $session->isPersistent(), 'sanity check' );
+		$this->assertTrue( $session->isPersistent() );
 	}
 
 	public function testGetSessionById() {
@@ -359,7 +384,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$manager->getSessionById( 'bad' );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame( 'Invalid session ID', $ex->getMessage() );
 		}
 
@@ -372,11 +397,12 @@ class SessionManagerTest extends MediaWikiTestCase {
 		$id = $manager->generateSessionId();
 		$this->assertNull( $manager->getSessionById( $id, false ) );
 
+		$userIdentity = $this->getTestSysop()->getUserIdentity();
 		// Known but unloadable session ID
 		$this->logger->setCollect( true );
 		$id = $manager->generateSessionId();
 		$this->store->setSession( $id, [ 'metadata' => [
-			'userId' => User::idFromName( 'UTSysop' ),
+			'userId' => $userIdentity->getId(),
 			'userToken' => 'bad',
 		] ] );
 
@@ -392,7 +418,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 
 		// Store isn't checked if the session is already loaded
 		$this->store->setSession( $id, [ 'metadata' => [
-			'userId' => User::idFromName( 'UTSysop' ),
+			'userId' => $userIdentity->getId(),
 			'userToken' => 'bad',
 		] ] );
 		$session2 = $manager->getSessionById( $id, false );
@@ -405,16 +431,16 @@ class SessionManagerTest extends MediaWikiTestCase {
 
 		// Failure to create an empty session
 		$manager = $this->getManager();
-		$provider = $this->getMockBuilder( \DummySessionProvider::class )
-			->setMethods( [ 'provideSessionInfo', 'newSessionInfo', '__toString' ] )
+		$provider = $this->getMockBuilder( DummySessionProvider::class )
+			->onlyMethods( [ 'provideSessionInfo', 'newSessionInfo', '__toString' ] )
 			->getMock();
-		$provider->expects( $this->any() )->method( 'provideSessionInfo' )
-			->will( $this->returnValue( null ) );
-		$provider->expects( $this->any() )->method( 'newSessionInfo' )
-			->will( $this->returnValue( null ) );
-		$provider->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider' ) );
-		$this->config->set( 'SessionProviders', [
+		$provider->method( 'provideSessionInfo' )
+			->willReturn( null );
+		$provider->method( 'newSessionInfo' )
+			->willReturn( null );
+		$provider->method( '__toString' )
+			->willReturn( 'MockProvider' );
+		$this->config->set( MainConfigNames::SessionProviders, [
 			$this->objectCacheDef( $provider ),
 		] );
 		$this->logger->setCollect( true );
@@ -428,42 +454,41 @@ class SessionManagerTest extends MediaWikiTestCase {
 	public function testGetEmptySession() {
 		$manager = $this->getManager();
 		$pmanager = TestingAccessWrapper::newFromObject( $manager );
-		$request = new \FauxRequest();
 
-		$providerBuilder = $this->getMockBuilder( \DummySessionProvider::class )
-			->setMethods( [ 'provideSessionInfo', 'newSessionInfo', '__toString' ] );
+		$providerBuilder = $this->getMockBuilder( DummySessionProvider::class )
+			->onlyMethods( [ 'provideSessionInfo', 'newSessionInfo', '__toString' ] );
 
 		$expectId = null;
 		$info1 = null;
 		$info2 = null;
 
 		$provider1 = $providerBuilder->getMock();
-		$provider1->expects( $this->any() )->method( 'provideSessionInfo' )
-			->will( $this->returnValue( null ) );
-		$provider1->expects( $this->any() )->method( 'newSessionInfo' )
-			->with( $this->callback( function ( $id ) use ( &$expectId ) {
+		$provider1->method( 'provideSessionInfo' )
+			->willReturn( null );
+		$provider1->method( 'newSessionInfo' )
+			->with( $this->callback( static function ( $id ) use ( &$expectId ) {
 				return $id === $expectId;
 			} ) )
-			->will( $this->returnCallback( function () use ( &$info1 ) {
+			->willReturnCallback( static function () use ( &$info1 ) {
 				return $info1;
-			} ) );
-		$provider1->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider1' ) );
+			} );
+		$provider1->method( '__toString' )
+			->willReturn( 'MockProvider1' );
 
 		$provider2 = $providerBuilder->getMock();
-		$provider2->expects( $this->any() )->method( 'provideSessionInfo' )
-			->will( $this->returnValue( null ) );
-		$provider2->expects( $this->any() )->method( 'newSessionInfo' )
-			->with( $this->callback( function ( $id ) use ( &$expectId ) {
+		$provider2->method( 'provideSessionInfo' )
+			->willReturn( null );
+		$provider2->method( 'newSessionInfo' )
+			->with( $this->callback( static function ( $id ) use ( &$expectId ) {
 				return $id === $expectId;
 			} ) )
-			->will( $this->returnCallback( function () use ( &$info2 ) {
+			->willReturnCallback( static function () use ( &$info2 ) {
 				return $info2;
-			} ) );
-		$provider1->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider2' ) );
+			} );
+		$provider1->method( '__toString' )
+			->willReturn( 'MockProvider2' );
 
-		$this->config->set( 'SessionProviders', [
+		$this->config->set( MainConfigNames::SessionProviders, [
 			$this->objectCacheDef( $provider1 ),
 			$this->objectCacheDef( $provider2 ),
 		] );
@@ -475,7 +500,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$manager->getEmptySession();
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertSame(
 				'No provider could provide an empty session!',
 				$ex->getMessage()
@@ -520,7 +545,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$pmanager->getEmptySessionInternal( null, $expectId );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertSame(
 				'MockProvider1 returned empty session info with a wrong id: ' .
 					"un$expectId != $expectId",
@@ -539,7 +564,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$pmanager->getEmptySessionInternal( null, $expectId );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertSame(
 				'MockProvider1 returned empty session info with id flagged unsafe',
 				$ex->getMessage()
@@ -558,7 +583,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$manager->getEmptySession();
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertSame(
 				'MockProvider1 returned an empty session info for a different provider: ' . $info1,
 				$ex->getMessage()
@@ -619,7 +644,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$manager->getEmptySession();
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertStringStartsWith(
 				'Multiple empty sessions tied for top priority: ',
 				$ex->getMessage()
@@ -630,7 +655,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$pmanager->getEmptySessionInternal( null, 'bad' );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame( 'Invalid session ID', $ex->getMessage() );
 		}
 
@@ -645,31 +670,31 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$pmanager->getEmptySessionInternal( null, $expectId );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame( 'Session ID already exists', $ex->getMessage() );
 		}
 	}
 
 	public function testInvalidateSessionsForUser() {
-		$user = User::newFromName( 'UTSysop' );
+		$user = $this->getTestSysop()->getUser();
 		$manager = $this->getManager();
 
-		$providerBuilder = $this->getMockBuilder( \DummySessionProvider::class )
-			->setMethods( [ 'invalidateSessionsForUser', '__toString' ] );
+		$providerBuilder = $this->getMockBuilder( DummySessionProvider::class )
+			->onlyMethods( [ 'invalidateSessionsForUser', '__toString' ] );
 
 		$provider1 = $providerBuilder->getMock();
 		$provider1->expects( $this->once() )->method( 'invalidateSessionsForUser' )
 			->with( $this->identicalTo( $user ) );
-		$provider1->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider1' ) );
+		$provider1->method( '__toString' )
+			->willReturn( 'MockProvider1' );
 
 		$provider2 = $providerBuilder->getMock();
 		$provider2->expects( $this->once() )->method( 'invalidateSessionsForUser' )
 			->with( $this->identicalTo( $user ) );
-		$provider2->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider2' ) );
+		$provider2->method( '__toString' )
+			->willReturn( 'MockProvider2' );
 
-		$this->config->set( 'SessionProviders', [
+		$this->config->set( MainConfigNames::SessionProviders, [
 			$this->objectCacheDef( $provider1 ),
 			$this->objectCacheDef( $provider2 ),
 		] );
@@ -682,30 +707,30 @@ class SessionManagerTest extends MediaWikiTestCase {
 	public function testGetVaryHeaders() {
 		$manager = $this->getManager();
 
-		$providerBuilder = $this->getMockBuilder( \DummySessionProvider::class )
-			->setMethods( [ 'getVaryHeaders', '__toString' ] );
+		$providerBuilder = $this->getMockBuilder( DummySessionProvider::class )
+			->onlyMethods( [ 'getVaryHeaders', '__toString' ] );
 
 		$provider1 = $providerBuilder->getMock();
 		$provider1->expects( $this->once() )->method( 'getVaryHeaders' )
-			->will( $this->returnValue( [
+			->willReturn( [
 				'Foo' => null,
 				'Bar' => [ 'X', 'Bar1' ],
 				'Quux' => null,
-			] ) );
-		$provider1->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider1' ) );
+			] );
+		$provider1->method( '__toString' )
+			->willReturn( 'MockProvider1' );
 
 		$provider2 = $providerBuilder->getMock();
 		$provider2->expects( $this->once() )->method( 'getVaryHeaders' )
-			->will( $this->returnValue( [
+			->willReturn( [
 				'Baz' => null,
 				'Bar' => [ 'X', 'Bar2' ],
 				'Quux' => [ 'Quux' ],
-			] ) );
-		$provider2->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider2' ) );
+			] );
+		$provider2->method( '__toString' )
+			->willReturn( 'MockProvider2' );
 
-		$this->config->set( 'SessionProviders', [
+		$this->config->set( MainConfigNames::SessionProviders, [
 			$this->objectCacheDef( $provider1 ),
 			$this->objectCacheDef( $provider2 ),
 		] );
@@ -726,22 +751,22 @@ class SessionManagerTest extends MediaWikiTestCase {
 	public function testGetVaryCookies() {
 		$manager = $this->getManager();
 
-		$providerBuilder = $this->getMockBuilder( \DummySessionProvider::class )
-			->setMethods( [ 'getVaryCookies', '__toString' ] );
+		$providerBuilder = $this->getMockBuilder( DummySessionProvider::class )
+			->onlyMethods( [ 'getVaryCookies', '__toString' ] );
 
 		$provider1 = $providerBuilder->getMock();
 		$provider1->expects( $this->once() )->method( 'getVaryCookies' )
-			->will( $this->returnValue( [ 'Foo', 'Bar' ] ) );
-		$provider1->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider1' ) );
+			->willReturn( [ 'Foo', 'Bar' ] );
+		$provider1->method( '__toString' )
+			->willReturn( 'MockProvider1' );
 
 		$provider2 = $providerBuilder->getMock();
 		$provider2->expects( $this->once() )->method( 'getVaryCookies' )
-			->will( $this->returnValue( [ 'Foo', 'Baz' ] ) );
-		$provider2->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider2' ) );
+			->willReturn( [ 'Foo', 'Baz' ] );
+		$provider2->method( '__toString' )
+			->willReturn( 'MockProvider2' );
 
-		$this->config->set( 'SessionProviders', [
+		$this->config->set( MainConfigNames::SessionProviders, [
 			$this->objectCacheDef( $provider1 ),
 			$this->objectCacheDef( $provider2 ),
 		] );
@@ -758,25 +783,25 @@ class SessionManagerTest extends MediaWikiTestCase {
 		$realManager = $this->getManager();
 		$manager = TestingAccessWrapper::newFromObject( $realManager );
 
-		$this->config->set( 'SessionProviders', [
-			[ 'class' => \DummySessionProvider::class ],
+		$this->config->set( MainConfigNames::SessionProviders, [
+			[ 'class' => DummySessionProvider::class ],
 		] );
 		$providers = $manager->getProviders();
 		$this->assertArrayHasKey( 'DummySessionProvider', $providers );
 		$provider = TestingAccessWrapper::newFromObject( $providers['DummySessionProvider'] );
 		$this->assertSame( $manager->logger, $provider->logger );
-		$this->assertSame( $manager->config, $provider->config );
+		$this->assertSame( $manager->config, $provider->getConfig() );
 		$this->assertSame( $realManager, $provider->getManager() );
 
-		$this->config->set( 'SessionProviders', [
-			[ 'class' => \DummySessionProvider::class ],
-			[ 'class' => \DummySessionProvider::class ],
+		$this->config->set( MainConfigNames::SessionProviders, [
+			[ 'class' => DummySessionProvider::class ],
+			[ 'class' => DummySessionProvider::class ],
 		] );
 		$manager->sessionProviders = null;
 		try {
 			$manager->getProviders();
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \UnexpectedValueException $ex ) {
+		} catch ( UnexpectedValueException $ex ) {
 			$this->assertSame(
 				'Duplicate provider name "DummySessionProvider"',
 				$ex->getMessage()
@@ -786,10 +811,10 @@ class SessionManagerTest extends MediaWikiTestCase {
 
 	public function testShutdown() {
 		$manager = TestingAccessWrapper::newFromObject( $this->getManager() );
-		$manager->setLogger( new \Psr\Log\NullLogger() );
+		$manager->setLogger( new NullLogger() );
 
 		$mock = $this->getMockBuilder( stdClass::class )
-			->setMethods( [ 'shutdown' ] )->getMock();
+			->addMethods( [ 'shutdown' ] )->getMock();
 		$mock->expects( $this->once() )->method( 'shutdown' );
 
 		$manager->allSessionBackends = [ $mock ];
@@ -798,7 +823,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 
 	public function testGetSessionFromInfo() {
 		$manager = TestingAccessWrapper::newFromObject( $this->getManager() );
-		$request = new \FauxRequest();
+		$request = new FauxRequest();
 
 		$id = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 
@@ -806,7 +831,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'provider' => $manager->getProvider( 'DummySessionProvider' ),
 			'id' => $id,
 			'persisted' => true,
-			'userInfo' => UserInfo::newFromName( 'UTSysop', true ),
+			'userInfo' => UserInfo::newFromName( 'TestGetSessionFromInfo', true ),
 			'idIsSafe' => true,
 		] );
 		TestingAccessWrapper::newFromObject( $info )->idIsSafe = true;
@@ -830,7 +855,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 	public function testBackendRegistration() {
 		$manager = $this->getManager();
 
-		$session = $manager->getSessionForRequest( new \FauxRequest );
+		$session = $manager->getSessionForRequest( new FauxRequest );
 		$backend = TestingAccessWrapper::newFromObject( $session )->backend;
 		$sessionId = $session->getSessionId();
 		$id = (string)$sessionId;
@@ -850,7 +875,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$manager->changeBackendId( $backend );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame(
 				'Backend was not registered with this SessionManager', $ex->getMessage()
 			);
@@ -859,7 +884,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 		try {
 			$manager->deregisterSessionBackend( $backend );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame(
 				'Backend was not registered with this SessionManager', $ex->getMessage()
 			);
@@ -879,40 +904,42 @@ class SessionManagerTest extends MediaWikiTestCase {
 	public function testPreventSessionsForUser() {
 		$manager = $this->getManager();
 
-		$providerBuilder = $this->getMockBuilder( \DummySessionProvider::class )
-			->setMethods( [ 'preventSessionsForUser', '__toString' ] );
+		$providerBuilder = $this->getMockBuilder( DummySessionProvider::class )
+			->onlyMethods( [ 'preventSessionsForUser', '__toString' ] );
 
+		$username = 'TestPreventSessionsForUser';
 		$provider1 = $providerBuilder->getMock();
 		$provider1->expects( $this->once() )->method( 'preventSessionsForUser' )
-			->with( $this->equalTo( 'UTSysop' ) );
-		$provider1->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'MockProvider1' ) );
+			->with( $username );
+		$provider1->method( '__toString' )
+			->willReturn( 'MockProvider1' );
 
-		$this->config->set( 'SessionProviders', [
+		$this->config->set( MainConfigNames::SessionProviders, [
 			$this->objectCacheDef( $provider1 ),
 		] );
 
-		$this->assertFalse( $manager->isUserSessionPrevented( 'UTSysop' ) );
-		$manager->preventSessionsForUser( 'UTSysop' );
-		$this->assertTrue( $manager->isUserSessionPrevented( 'UTSysop' ) );
+		$this->assertFalse( $manager->isUserSessionPrevented( $username ) );
+		$manager->preventSessionsForUser( $username );
+		$this->assertTrue( $manager->isUserSessionPrevented( $username ) );
 	}
 
 	public function testLoadSessionInfoFromStore() {
 		$manager = $this->getManager();
-		$logger = new \TestLogger( true );
+		$logger = new TestLogger( true );
 		$manager->setLogger( $logger );
-		$request = new \FauxRequest();
+		$request = new FauxRequest();
 
 		// TestingAccessWrapper can't handle methods with reference arguments, sigh.
-		$rClass = new \ReflectionClass( $manager );
+		$rClass = new ReflectionClass( $manager );
 		$rMethod = $rClass->getMethod( 'loadSessionInfoFromStore' );
 		$rMethod->setAccessible( true );
-		$loadSessionInfoFromStore = function ( &$info ) use ( $rMethod, $manager, $request ) {
+		$loadSessionInfoFromStore = static function ( &$info ) use ( $rMethod, $manager, $request ) {
 			return $rMethod->invokeArgs( $manager, [ &$info, $request ] );
 		};
 
-		$userInfo = UserInfo::newFromName( 'UTSysop', true );
-		$unverifiedUserInfo = UserInfo::newFromName( 'UTSysop', false );
+		$username = $this->getTestSysop()->getUserIdentity()->getName();
+		$userInfo = UserInfo::newFromName( $username, true );
+		$unverifiedUserInfo = UserInfo::newFromName( $username, false );
 
 		$id = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 		$metadata = [
@@ -923,50 +950,50 @@ class SessionManagerTest extends MediaWikiTestCase {
 		];
 
 		$builder = $this->getMockBuilder( SessionProvider::class )
-			->setMethods( [ '__toString', 'mergeMetadata', 'refreshSessionInfo' ] );
+			->onlyMethods( [ '__toString', 'mergeMetadata', 'refreshSessionInfo' ] );
 
 		$provider = $builder->getMockForAbstractClass();
-		$provider->setManager( $manager );
-		$provider->expects( $this->any() )->method( 'persistsSessionId' )
-			->will( $this->returnValue( true ) );
-		$provider->expects( $this->any() )->method( 'canChangeUser' )
-			->will( $this->returnValue( true ) );
-		$provider->expects( $this->any() )->method( 'refreshSessionInfo' )
-			->will( $this->returnValue( true ) );
-		$provider->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'Mock' ) );
-		$provider->expects( $this->any() )->method( 'mergeMetadata' )
-			->will( $this->returnCallback( function ( $a, $b ) {
+		$this->initProvider( $provider, null, null, $manager );
+		$provider->method( 'persistsSessionId' )
+			->willReturn( true );
+		$provider->method( 'canChangeUser' )
+			->willReturn( true );
+		$provider->method( 'refreshSessionInfo' )
+			->willReturn( true );
+		$provider->method( '__toString' )
+			->willReturn( 'Mock' );
+		$provider->method( 'mergeMetadata' )
+			->willReturnCallback( static function ( $a, $b ) {
 				if ( $b === [ 'Throw' ] ) {
 					throw new MetadataMergeException( 'no merge!' );
 				}
 				return [ 'Merged' ];
-			} ) );
+			} );
 
 		$provider2 = $builder->getMockForAbstractClass();
-		$provider2->setManager( $manager );
-		$provider2->expects( $this->any() )->method( 'persistsSessionId' )
-			->will( $this->returnValue( false ) );
-		$provider2->expects( $this->any() )->method( 'canChangeUser' )
-			->will( $this->returnValue( false ) );
-		$provider2->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'Mock2' ) );
-		$provider2->expects( $this->any() )->method( 'refreshSessionInfo' )
-			->will( $this->returnCallback( function ( $info, $request, &$metadata ) {
+		$this->initProvider( $provider2, null, null, $manager );
+		$provider2->method( 'persistsSessionId' )
+			->willReturn( false );
+		$provider2->method( 'canChangeUser' )
+			->willReturn( false );
+		$provider2->method( '__toString' )
+			->willReturn( 'Mock2' );
+		$provider2->method( 'refreshSessionInfo' )
+			->willReturnCallback( static function ( $info, $request, &$metadata ) {
 				$metadata['changed'] = true;
 				return true;
-			} ) );
+			} );
 
 		$provider3 = $builder->getMockForAbstractClass();
-		$provider3->setManager( $manager );
-		$provider3->expects( $this->any() )->method( 'persistsSessionId' )
-			->will( $this->returnValue( true ) );
-		$provider3->expects( $this->any() )->method( 'canChangeUser' )
-			->will( $this->returnValue( true ) );
+		$this->initProvider( $provider3, null, null, $manager );
+		$provider3->method( 'persistsSessionId' )
+			->willReturn( true );
+		$provider3->method( 'canChangeUser' )
+			->willReturn( true );
 		$provider3->expects( $this->once() )->method( 'refreshSessionInfo' )
-			->will( $this->returnValue( false ) );
-		$provider3->expects( $this->any() )->method( '__toString' )
-			->will( $this->returnValue( 'Mock3' ) );
+			->willReturn( false );
+		$provider3->method( '__toString' )
+			->willReturn( 'Mock3' );
 
 		TestingAccessWrapper::newFromObject( $manager )->sessionProviders = [
 			(string)$provider => $provider,
@@ -980,7 +1007,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'id' => $id,
 			'userInfo' => $userInfo
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertFalse( $info->isIdSafe() );
 		$this->assertSame( [], $logger->getBuffer() );
@@ -989,7 +1016,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'provider' => $provider,
 			'userInfo' => $userInfo
 		] );
-		$this->assertTrue( $info->isIdSafe(), 'sanity check' );
+		$this->assertTrue( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertTrue( $info->isIdSafe() );
 		$this->assertSame( [], $logger->getBuffer() );
@@ -999,7 +1026,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'id' => $id,
 			'userInfo' => $userInfo
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertTrue( $info->isIdSafe() );
 		$this->assertSame( [], $logger->getBuffer() );
@@ -1035,7 +1062,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'provider' => $provider,
 			'id' => $id,
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertInstanceOf( UserInfo::class, $info->getUserInfo() );
 		$this->assertTrue( $info->getUserInfo()->isVerified() );
@@ -1047,7 +1074,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'provider' => $provider2,
 			'id' => $id,
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertFalse( $loadSessionInfoFromStore( $info ) );
 		$this->assertSame( [
 			[ LogLevel::INFO, 'Session "{session}": No user provided and provider cannot set user' ]
@@ -1109,7 +1136,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'id' => $id,
 			'userInfo' => $userInfo
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertTrue( $info->isIdSafe() );
 		$this->assertSame( [], $logger->getBuffer() );
@@ -1145,7 +1172,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'id' => $id,
 			'userInfo' => $userInfo
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertTrue( $info->isIdSafe() );
 		$this->assertSame( [], $logger->getBuffer() );
@@ -1236,8 +1263,8 @@ class SessionManagerTest extends MediaWikiTestCase {
 		$this->assertSame( [
 			[
 				LogLevel::WARNING,
-				'Session "{session}": Metadata has an anonymous user, ' .
-				'but a non-anon user was provided',
+				'Session "{session}": the session store entry is for an anonymous user, ' .
+					'but the session metadata indicates a non-anonynmous user',
 			],
 		], $logger->getBuffer() );
 		$logger->clearBuffer();
@@ -1248,7 +1275,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'provider' => $provider,
 			'id' => $id,
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertSame( $userInfo->getId(), $info->getUserInfo()->getId() );
 		$this->assertTrue( $info->isIdSafe() );
@@ -1256,13 +1283,13 @@ class SessionManagerTest extends MediaWikiTestCase {
 
 		// Lookup user by name
 		$this->store->setSessionMeta(
-			$id, [ 'userId' => 0, 'userName' => 'UTSysop', 'userToken' => null ] + $metadata
+			$id, [ 'userId' => 0, 'userName' => $username, 'userToken' => null ] + $metadata
 		);
 		$info = new SessionInfo( SessionInfo::MIN_PRIORITY, [
 			'provider' => $provider,
 			'id' => $id,
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertSame( $userInfo->getId(), $info->getUserInfo()->getId() );
 		$this->assertTrue( $info->isIdSafe() );
@@ -1276,7 +1303,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'provider' => $provider,
 			'id' => $id,
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertTrue( $info->getUserInfo()->isAnon() );
 		$this->assertTrue( $info->isIdSafe() );
@@ -1289,7 +1316,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'id' => $id,
 			'userInfo' => $unverifiedUserInfo
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertTrue( $info->getUserInfo()->isVerified() );
 		$this->assertSame( $unverifiedUserInfo->getId(), $info->getUserInfo()->getId() );
@@ -1304,7 +1331,7 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'id' => $id,
 			'userInfo' => $unverifiedUserInfo
 		] );
-		$this->assertFalse( $info->isIdSafe(), 'sanity check' );
+		$this->assertFalse( $info->isIdSafe() );
 		$this->assertTrue( $loadSessionInfoFromStore( $info ) );
 		$this->assertTrue( $info->getUserInfo()->isVerified() );
 		$this->assertSame( $unverifiedUserInfo->getId(), $info->getUserInfo()->getId() );
@@ -1481,8 +1508,8 @@ class SessionManagerTest extends MediaWikiTestCase {
 			'id' => $id,
 			'userInfo' => $userInfo
 		] );
-		$this->mergeMwGlobalArrayValue( 'wgHooks', [
-			'SessionCheckInfo' => [ function ( &$reason, $i, $r, $m, $d ) use (
+		$manager->setHookContainer( $this->createHookContainer( [
+			'SessionCheckInfo' => function ( &$reason, $i, $r, $m, $d ) use (
 				$info, $metadata, $data, $request, &$called
 			) {
 				$this->assertSame( $info->getId(), $i->getId() );
@@ -1493,15 +1520,15 @@ class SessionManagerTest extends MediaWikiTestCase {
 				$this->assertEquals( $data, $d );
 				$called = true;
 				return false;
-			} ]
-		] );
+			}
+		] ) );
 		$this->assertFalse( $loadSessionInfoFromStore( $info ) );
 		$this->assertTrue( $called );
 		$this->assertSame( [
 			[ LogLevel::WARNING, 'Session "{session}": Hook aborted' ],
 		], $logger->getBuffer() );
 		$logger->clearBuffer();
-		$this->mergeMwGlobalArrayValue( 'wgHooks', [ 'SessionCheckInfo' => [] ] );
+		$manager->setHookContainer( $this->createHookContainer() );
 
 		// forceUse deletes bad backend data
 		$this->store->setSessionMeta( $id, [ 'userToken' => 'Bad' ] + $metadata );
@@ -1517,5 +1544,131 @@ class SessionManagerTest extends MediaWikiTestCase {
 			[ LogLevel::WARNING, 'Session "{session}": User token mismatch' ],
 		], $logger->getBuffer() );
 		$logger->clearBuffer();
+	}
+
+	/**
+	 * @dataProvider provideLogPotentialSessionLeakage
+	 */
+	public function testLogPotentialSessionLeakage(
+		$ip, $mwuser, $sessionData, $expectedSessionData, $expectedLogLevel
+	) {
+		MWTimestamp::setFakeTime( 1234567 );
+		$this->overrideConfigValue( MainConfigNames::SuspiciousIpExpiry, 600 );
+		$manager = new SessionManager();
+		$logger = $this->createMock( LoggerInterface::class );
+		$this->setLogger( 'session-ip', $logger );
+		$request = new FauxRequest();
+		$request->setIP( $ip );
+		$request->setCookie( 'mwuser-sessionId', $mwuser );
+
+		$proxyLookup = $this->createMock( ProxyLookup::class );
+		$proxyLookup->method( 'isConfiguredProxy' )->willReturnCallback( static function ( $ip ) {
+			return $ip === '11.22.33.44';
+		} );
+		$this->setService( 'ProxyLookup', $proxyLookup );
+
+		$session = $this->createMock( Session::class );
+		$session->method( 'isPersistent' )->willReturn( true );
+		$session->method( 'getUser' )->willReturn( $this->getTestSysop()->getUser() );
+		$session->method( 'getRequest' )->willReturn( $request );
+		$session->method( 'getProvider' )->willReturn(
+			$this->createMock( CookieSessionProvider::class ) );
+		$session->method( 'get' )
+			->with( 'SessionManager-logPotentialSessionLeakage' )
+			->willReturn( $sessionData );
+		$session->expects( $this->exactly( isset( $expectedSessionData ) ) )->method( 'set' )
+			->with( 'SessionManager-logPotentialSessionLeakage', $expectedSessionData );
+
+		$logger->expects( $this->exactly( isset( $expectedLogLevel ) ) )->method( 'log' )
+			->with( $expectedLogLevel );
+
+		$manager->logPotentialSessionLeakage( $session );
+	}
+
+	public static function provideLogPotentialSessionLeakage() {
+		$now = 1234567;
+		$valid = $now - 100;
+		$expired = $now - 1000;
+		return [
+			'no log for new IP' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => null,
+				'sessionData' => [],
+				'expectedSessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => null, 'timestamp' => $now ],
+				'expectedLogLevel' => null,
+			],
+			'no log for same IP' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => null,
+				'sessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => null, 'timestamp' => $valid ],
+				'expectedSessionData' => null,
+				'expectedLogLevel' => null,
+			],
+			'no log for expired IP' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => null,
+				'sessionData' => [ 'ip' => '10.20.30.40', 'mwuser' => null, 'timestamp' => $expired ],
+				'expectedSessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => null, 'timestamp' => $now ],
+				'expectedLogLevel' => null,
+			],
+			'INFO log for changed IP' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => null,
+				'sessionData' => [ 'ip' => '10.20.30.40', 'mwuser' => null, 'timestamp' => $valid ],
+				'expectedSessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => null, 'timestamp' => $now ],
+				'expectedLogLevel' => LogLevel::INFO,
+			],
+
+			'no log for new mwuser' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => 'new',
+				'sessionData' => [],
+				'expectedSessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => 'new', 'timestamp' => $now ],
+				'expectedLogLevel' => null,
+			],
+			'no log for same mwuser' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => 'old',
+				'sessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => 'old', 'timestamp' => $valid ],
+				'expectedSessionData' => null,
+				'expectedLogLevel' => null,
+			],
+			'NOTICE log for changed mwuser' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => 'new',
+				'sessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => 'old', 'timestamp' => $valid ],
+				'expectedSessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => 'new', 'timestamp' => $now ],
+				'expectedLogLevel' => LogLevel::NOTICE,
+			],
+			'no expiration for mwuser' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => 'new',
+				'sessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => 'old', 'timestamp' => $expired ],
+				'expectedSessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => 'new', 'timestamp' => $now ],
+				'expectedLogLevel' => LogLevel::NOTICE,
+			],
+			'WARNING log for changed IP + mwuser' => [
+				'ip' => '1.2.3.4',
+				'mwuser' => 'new',
+				'sessionData' => [ 'ip' => '10.20.30.40', 'mwuser' => 'old', 'timestamp' => $valid ],
+				'expectedSessionData' => [ 'ip' => '1.2.3.4', 'mwuser' => 'new', 'timestamp' => $now ],
+				'expectedLogLevel' => LogLevel::WARNING,
+			],
+
+			'special IPs are ignored (1)' => [
+				'ip' => '127.0.0.1',
+				'mwuser' => 'new',
+				'sessionData' => [ 'ip' => '10.20.30.40', 'mwuser' => 'old', 'timestamp' => $valid ],
+				'expectedSessionData' => null,
+				'expectedLogLevel' => null,
+			],
+			'special IPs are ignored (2)' => [
+				'ip' => '11.22.33.44',
+				'mwuser' => 'new',
+				'sessionData' => [ 'ip' => '10.20.30.40', 'mwuser' => 'old', 'timestamp' => $valid ],
+				'expectedSessionData' => null,
+				'expectedLogLevel' => null,
+			],
+		];
 	}
 }

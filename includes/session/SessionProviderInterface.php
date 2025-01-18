@@ -23,8 +23,8 @@
 
 namespace MediaWiki\Session;
 
-use Language;
-use Message;
+use MediaWiki\Language\Language;
+use MediaWiki\Message\Message;
 
 /**
  * This exists to make IDEs happy, so they don't see the
@@ -52,4 +52,18 @@ interface SessionProviderInterface {
 	 */
 	public function whyNoSession();
 
+	/**
+	 * Returns true if this provider is safe against csrf attacks, or false otherwise
+	 *
+	 * @return bool
+	 */
+	public function safeAgainstCsrf();
+
+	/**
+	 * Returns true if this provider is exempt from autocreate user permissions check.
+	 *
+	 * @return bool
+	 * @since 1.42
+	 */
+	public function canAlwaysAutocreate(): bool;
 }

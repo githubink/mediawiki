@@ -20,7 +20,10 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
 use MediaWiki\Auth\AuthManager;
+use MediaWiki\MainConfigNames;
 
 /**
  * Change authentication data with AuthManager
@@ -28,18 +31,23 @@ use MediaWiki\Auth\AuthManager;
  * @ingroup API
  */
 class ApiChangeAuthenticationData extends ApiBase {
+	private AuthManager $authManager;
 
-	public function __construct( ApiMain $main, $action ) {
+	public function __construct(
+		ApiMain $main,
+		string $action,
+		AuthManager $authManager
+	) {
 		parent::__construct( $main, $action, 'changeauth' );
+		$this->authManager = $authManager;
 	}
 
 	public function execute() {
-		if ( !$this->getUser()->isLoggedIn() ) {
+		if ( !$this->getUser()->isNamed() ) {
 			$this->dieWithError( 'apierror-mustbeloggedin-changeauthenticationdata', 'notloggedin' );
 		}
 
-		$helper = new ApiAuthManagerHelper( $this );
-		$manager = AuthManager::singleton();
+		$helper = new ApiAuthManagerHelper( $this, $this->authManager );
 
 		// Check security-sensitive operation status
 		$helper->securitySensitiveOperation( 'ChangeCredentials' );
@@ -47,7 +55,7 @@ class ApiChangeAuthenticationData extends ApiBase {
 		// Fetch the request
 		$reqs = ApiAuthManagerHelper::blacklistAuthenticationRequests(
 			$helper->loadAuthenticationRequests( AuthManager::ACTION_CHANGE ),
-			$this->getConfig()->get( 'ChangeCredentialsBlacklist' )
+			$this->getConfig()->get( MainConfigNames::ChangeCredentialsBlacklist )
 		);
 		if ( count( $reqs ) !== 1 ) {
 			$this->dieWithError( 'apierror-changeauth-norequest', 'badrequest' );
@@ -55,12 +63,12 @@ class ApiChangeAuthenticationData extends ApiBase {
 		$req = reset( $reqs );
 
 		// Make the change
-		$status = $manager->allowsAuthenticationDataChange( $req, true );
-		Hooks::run( 'ChangeAuthenticationDataAudit', [ $req, $status ] );
+		$status = $this->authManager->allowsAuthenticationDataChange( $req, true );
+		$this->getHookRunner()->onChangeAuthenticationDataAudit( $req, $status );
 		if ( !$status->isGood() ) {
 			$this->dieStatus( $status );
 		}
-		$manager->changeAuthenticationData( $req );
+		$this->authManager->changeAuthenticationData( $req );
 
 		$this->getResult()->addValue( null, 'changeauthenticationdata', [ 'status' => 'success' ] );
 	}
@@ -96,3 +104,6 @@ class ApiChangeAuthenticationData extends ApiBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Manage_authentication_data';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiChangeAuthenticationData::class, 'ApiChangeAuthenticationData' );

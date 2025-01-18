@@ -37,14 +37,32 @@ use Psr\Http\Message\UriInterface;
  * A request interface similar to PSR-7's ServerRequestInterface
  */
 interface RequestInterface {
-	// RequestInterface
+	/** @var string[] HTTP request methods that we expect never to have a payload */
+	public const NO_BODY_METHODS = [ 'GET', 'HEAD' ];
+
+	/** @var string[] HTTP request methods that we expect always to have a payload */
+	public const BODY_METHODS = [ 'POST', 'PUT' ];
+
+	// NOTE: per RFC 7231 (https://www.rfc-editor.org/rfc/rfc7231#section-4.3.5), sending a body
+	// with the DELETE method "has no defined semantics". We allow it, as it is useful for
+	// passing the csrf token required by some authentication methods.
+
+	public const JSON_CONTENT_TYPE = 'application/json';
+	public const MULTIPART_FORM_DATA_CONTENT_TYPE = 'multipart/form-data';
+	public const FORM_URLENCODED_CONTENT_TYPE = 'application/x-www-form-urlencoded';
+
+	/** @var string[] Content types handled via $_POST */
+	public const FORM_DATA_CONTENT_TYPES = [
+		self::FORM_URLENCODED_CONTENT_TYPE,
+		self::MULTIPART_FORM_DATA_CONTENT_TYPE,
+	];
 
 	/**
 	 * Retrieves the HTTP method of the request.
 	 *
 	 * @return string Returns the request method.
 	 */
-	function getMethod();
+	public function getMethod();
 
 	/**
 	 * Retrieves the URI instance.
@@ -55,7 +73,7 @@ interface RequestInterface {
 	 * @return UriInterface Returns a UriInterface instance
 	 *     representing the URI of the request.
 	 */
-	function getUri();
+	public function getUri();
 
 	// MessageInterface
 
@@ -66,7 +84,7 @@ interface RequestInterface {
 	 *
 	 * @return string HTTP protocol version.
 	 */
-	function getProtocolVersion();
+	public function getProtocolVersion();
 
 	/**
 	 * Retrieves all message header values.
@@ -97,7 +115,7 @@ interface RequestInterface {
 	 *     key MUST be a header name, and each value MUST be an array of strings
 	 *     for that header.
 	 */
-	function getHeaders();
+	public function getHeaders();
 
 	/**
 	 * Retrieves a message header value by the given case-insensitive name.
@@ -117,7 +135,7 @@ interface RequestInterface {
 	 *    header. If the header does not appear in the message, this method MUST
 	 *    return an empty array.
 	 */
-	function getHeader( $name );
+	public function getHeader( $name );
 
 	/**
 	 * Checks if a header exists by the given case-insensitive name.
@@ -127,7 +145,7 @@ interface RequestInterface {
 	 *     name using a case-insensitive string comparison. Returns false if
 	 *     no matching header name is found in the message.
 	 */
-	function hasHeader( $name );
+	public function hasHeader( $name );
 
 	/**
 	 * Retrieves a comma-separated string of the values for a single header.
@@ -148,14 +166,14 @@ interface RequestInterface {
 	 *    concatenated together using a comma. If the header does not appear in
 	 *    the message, this method MUST return an empty string.
 	 */
-	function getHeaderLine( $name );
+	public function getHeaderLine( $name );
 
 	/**
 	 * Gets the body of the message.
 	 *
 	 * @return StreamInterface Returns the body as a stream.
 	 */
-	function getBody();
+	public function getBody();
 
 	// ServerRequestInterface
 
@@ -168,7 +186,7 @@ interface RequestInterface {
 	 *
 	 * @return array
 	 */
-	function getServerParams();
+	public function getServerParams();
 
 	/**
 	 * Retrieve cookies.
@@ -180,7 +198,7 @@ interface RequestInterface {
 	 *
 	 * @return array
 	 */
-	function getCookieParams();
+	public function getCookieParams();
 
 	/**
 	 * Retrieve query string arguments.
@@ -194,7 +212,7 @@ interface RequestInterface {
 	 *
 	 * @return array
 	 */
-	function getQueryParams();
+	public function getQueryParams();
 
 	/**
 	 * Retrieve normalized file upload data.
@@ -205,7 +223,7 @@ interface RequestInterface {
 	 * @return array An array tree of UploadedFileInterface instances; an empty
 	 *     array MUST be returned if no data is present.
 	 */
-	function getUploadedFiles();
+	public function getUploadedFiles();
 
 	// MediaWiki extensions to PSR-7
 
@@ -214,7 +232,7 @@ interface RequestInterface {
 	 *
 	 * @return string[]
 	 */
-	function getPathParams();
+	public function getPathParams();
 
 	/**
 	 * Retrieve a single path parameter.
@@ -226,7 +244,7 @@ interface RequestInterface {
 	 * @param string $name The parameter name.
 	 * @return string|null
 	 */
-	function getPathParam( $name );
+	public function getPathParam( $name );
 
 	/**
 	 * Erase all path parameters from the object and set the parameter array
@@ -234,14 +252,14 @@ interface RequestInterface {
 	 *
 	 * @param string[] $params
 	 */
-	function setPathParams( $params );
+	public function setPathParams( $params );
 
 	/**
 	 * Get the current cookie prefix
 	 *
 	 * @return string
 	 */
-	function getCookiePrefix();
+	public function getCookiePrefix();
 
 	/**
 	 * Add the cookie prefix to a specified cookie name and get the value of
@@ -252,7 +270,7 @@ interface RequestInterface {
 	 * @param mixed|null $default
 	 * @return mixed The cookie value as a string, or $default
 	 */
-	function getCookie( $name, $default = null );
+	public function getCookie( $name, $default = null );
 
 	/**
 	 * Retrieve POST form parameters.
@@ -261,5 +279,56 @@ interface RequestInterface {
 	 *
 	 * @return array The deserialized POST parameters
 	 */
-	function getPostParams();
+	public function getPostParams();
+
+	/**
+	 * Returns the parsed body as an associative array.
+	 *
+	 * If setParsedBody() was called on a given RequestInterface object,
+	 * this method must return the data passed to that call.
+	 *
+	 * If setParsedBody() was not called, implementations may return body data
+	 * they get from the runtime environment, or null.
+	 *
+	 * @since 1.42
+	 *
+	 * @return array|null
+	 */
+	public function getParsedBody(): ?array;
+
+	/**
+	 * Specify the data that subsequent calls to getParsedBody() should return.
+	 *
+	 * This is intended for use by the framework to make a parsed representation
+	 * of the body data known to request handlers.
+	 *
+	 * @since 1.42
+	 *
+	 * @param array|null $data The body data.
+	 */
+	public function setParsedBody( ?array $data );
+
+	/**
+	 * Returns the MIME type of the request body, according to the
+	 * content-type header. The value returned by this method must be
+	 * a lower-case string with no whitespace and no additional information
+	 * beyond the mime type. In particular, any "parameters" must be stripped
+	 * from the value of the content-type header. See RFC 9110 section 8.3.1.
+	 *
+	 * @since 1.42
+	 *
+	 * @return string|null The request body's mime type, or null if there is
+	 *         no request body or there the type was not specified.
+	 */
+	public function getBodyType(): ?string;
+
+	/**
+	 * Determines whether the request has body data associated with it.
+	 * Note that this method may return true even if the body is empty.
+	 *
+	 * @since 1.42
+	 *
+	 * @return bool
+	 */
+	public function hasBody(): bool;
 }

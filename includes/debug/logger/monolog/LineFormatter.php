@@ -21,7 +21,6 @@
 namespace MediaWiki\Logger\Monolog;
 
 use Error;
-use Exception;
 use Monolog\Formatter\LineFormatter as MonologLineFormatter;
 use MWExceptionHandler;
 use Throwable;
@@ -39,6 +38,7 @@ use Throwable;
  * will be used to redact the trace information.
  *
  * @since 1.26
+ * @ingroup Debug
  * @copyright © 2015 Wikimedia Foundation and contributors
  */
 class LineFormatter extends MonologLineFormatter {
@@ -64,20 +64,20 @@ class LineFormatter extends MonologLineFormatter {
 	/**
 	 * @inheritDoc
 	 */
-	public function format( array $record ) {
+	public function format( array $record ): string {
 		// Drop the 'private' flag from the context
 		unset( $record['context']['private'] );
 
-		// Handle exceptions specially: pretty format and remove from context
+		// Handle throwables specially: pretty format and remove from context
 		// Will be output for a '%exception%' placeholder in format
 		$prettyException = '';
 		if ( isset( $record['context']['exception'] ) &&
-			strpos( $this->format, '%exception%' ) !== false
+			str_contains( $this->format, '%exception%' )
 		) {
 			$e = $record['context']['exception'];
 			unset( $record['context']['exception'] );
 
-			if ( $e instanceof Throwable || $e instanceof Exception ) {
+			if ( $e instanceof Throwable ) {
 				$prettyException = $this->normalizeException( $e );
 			} elseif ( is_array( $e ) ) {
 				$prettyException = $this->normalizeExceptionArray( $e );
@@ -88,7 +88,7 @@ class LineFormatter extends MonologLineFormatter {
 
 		$output = parent::format( $record );
 
-		if ( strpos( $output, '%exception%' ) !== false ) {
+		if ( str_contains( $output, '%exception%' ) ) {
 			$output = str_replace( '%exception%', $prettyException, $output );
 		}
 		return $output;
@@ -97,20 +97,22 @@ class LineFormatter extends MonologLineFormatter {
 	/**
 	 * Convert a Throwable to a string.
 	 *
-	 * @param Exception|Throwable $e
+	 * @param Throwable $e
+	 * @param int $depth
 	 * @return string
 	 */
-	protected function normalizeException( $e ) {
+	protected function normalizeException( Throwable $e, int $depth = 0 ): string {
+		// Can't use typehint. Must match Monolog\Formatter\LineFormatter::normalizeException($e)
 		return $this->normalizeExceptionArray( $this->exceptionAsArray( $e ) );
 	}
 
 	/**
 	 * Convert a throwable to an array of structured data.
 	 *
-	 * @param Exception|Throwable $e
+	 * @param Throwable $e
 	 * @return array
 	 */
-	protected function exceptionAsArray( $e ) {
+	protected function exceptionAsArray( Throwable $e ) {
 		$out = [
 			'class' => get_class( $e ),
 			'message' => $e->getMessage(),
@@ -144,12 +146,14 @@ class LineFormatter extends MonologLineFormatter {
 		];
 		$e = array_merge( $defaults, $e );
 
+		// @phan-suppress-next-line PhanTypeMismatchArgumentNullableInternal class is always set
 		$which = is_a( $e['class'], Error::class, true ) ? 'Error' : 'Exception';
 		$str = "\n[$which {$e['class']}] (" .
 			"{$e['file']}:{$e['line']}) {$e['message']}";
 
 		if ( $this->includeStacktraces && $e['trace'] ) {
 			$str .= "\n" .
+				// @phan-suppress-next-line PhanTypeMismatchArgumentNullable trace is always set
 				MWExceptionHandler::prettyPrintTrace( $e['trace'], '  ' );
 		}
 

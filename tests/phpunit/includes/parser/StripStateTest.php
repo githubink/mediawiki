@@ -1,10 +1,16 @@
 <?php
 
+namespace MediaWiki\Tests\Parser;
+
+use MediaWiki\Parser\Parser;
+use MediaWiki\Parser\StripState;
+use MediaWikiIntegrationTestCase;
+
 /**
- * @covers StripState
+ * @covers \MediaWiki\Parser\StripState
  */
-class StripStateTest extends MediaWikiTestCase {
-	public function setUp() {
+class StripStateTest extends MediaWikiIntegrationTestCase {
+	protected function setUp(): void {
 		parent::setUp();
 		$this->setContentLang( 'qqx' );
 	}
@@ -103,7 +109,7 @@ class StripStateTest extends MediaWikiTestCase {
 		$this->assertSame( $expected, $text );
 	}
 
-	public function provideGetLimitReport() {
+	public static function provideGetLimitReport() {
 		for ( $i = 1; $i < 4; $i++ ) {
 			yield [ $i ];
 		}
@@ -122,7 +128,7 @@ class StripStateTest extends MediaWikiTestCase {
 		$text = $ss->unstripNoWiki( $text );
 		$report = $ss->getLimitReport();
 		$messages = [];
-		foreach ( $report as list( $msg, $params ) ) {
+		foreach ( $report as [ $msg, $params ] ) {
 			$messages[$msg] = $params;
 		}
 		$this->assertSame( [ $depth - 1, 5 ], $messages['limitreport-unstrip-depth'] );
@@ -132,5 +138,45 @@ class StripStateTest extends MediaWikiTestCase {
 				$sizeLimit
 			],
 			$messages['limitreport-unstrip-size' ] );
+	}
+
+	public function testReplaceNowikis() {
+		$ss = new StripState();
+
+		// Note that unlike other uses of addNowiki, these add the original source
+		// with the nowiki wrappers. When wikitext is being processed, the parser
+		// uses strip markers in this fashion.
+		$s1 = "[[Foo]]";
+		$nowikiS1 = "<nowiki>$s1</nowiki>";
+		$m1 = $this->getMarker();
+		$ss->addNoWiki( $m1, $nowikiS1 );
+
+		$s2 = "[[Foo]]";
+		$nowikiS2 = "<nowiki>$s2</nowiki>";
+		$m2 = $this->getMarker();
+		$ss->addNoWiki( $m2, $nowikiS2 );
+
+		$s3 = "";
+		$nowikiS3 = "<nowiki />";
+		$m3 = $this->getMarker();
+		$ss->addNoWiki( $m3, $nowikiS3 );
+
+		$text = "$s1; $s2; $s3";
+		$strippedText = "$m1; $m2; $m3";
+		$unstrippedText = "$nowikiS1; $nowikiS2; $nowikiS3";
+
+		$this->assertSame( $ss->unstripGeneral( $strippedText ), $strippedText );
+		$this->assertSame( $ss->unstripNoWiki( $strippedText ), $unstrippedText );
+
+		$out1 = $ss->replaceNoWikis( $strippedText, static function ( $s ) {
+			return $s;
+		} );
+		$this->assertSame( $out1, $unstrippedText );
+
+		// Simulate Scribunto lua modules use of unstripNowiki
+		$out2 = $ss->replaceNoWikis( $strippedText, static function ( $s ) {
+			return preg_replace( "#</?nowiki[^>]*>#", '', $s );
+		} );
+		$this->assertSame( $out2, $text );
 	}
 }

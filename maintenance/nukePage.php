@@ -23,7 +23,13 @@
  * @author Rob Church <robchur@gmail.com>
  */
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
+
+use MediaWiki\Deferred\SiteStatsUpdate;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Title\Title;
 
 /**
  * Maintenance script that erases a page record from the database.
@@ -42,12 +48,8 @@ class NukePage extends Maintenance {
 		$name = $this->getArg( 0 );
 		$delete = $this->hasOption( 'delete' );
 
-		$dbw = $this->getDB( DB_MASTER );
+		$dbw = $this->getPrimaryDB();
 		$this->beginTransaction( $dbw, __METHOD__ );
-
-		$tbl_pag = $dbw->tableName( 'page' );
-		$tbl_rec = $dbw->tableName( 'recentchanges' );
-		$tbl_rev = $dbw->tableName( 'revision' );
 
 		# Get page ID
 		$this->output( "Searching for \"$name\"..." );
@@ -60,21 +62,28 @@ class NukePage extends Maintenance {
 
 			# Get corresponding revisions
 			$this->output( "Searching for revisions..." );
-			$res = $dbw->query( "SELECT rev_id FROM $tbl_rev WHERE rev_page = $id" );
-			$revs = [];
-			foreach ( $res as $row ) {
-				$revs[] = $row->rev_id;
-			}
+
+			$revs = $dbw->newSelectQueryBuilder()
+				->select( 'rev_id' )
+				->from( 'revision' )
+				->where( [ 'rev_page' => $id ] )
+				->caller( __METHOD__ )->fetchFieldValues();
 			$count = count( $revs );
 			$this->output( "found $count.\n" );
 
 			# Delete the page record and associated recent changes entries
 			if ( $delete ) {
 				$this->output( "Deleting page record..." );
-				$dbw->query( "DELETE FROM $tbl_pag WHERE page_id = $id" );
+				$dbw->newDeleteQueryBuilder()
+					->deleteFrom( 'page' )
+					->where( [ 'page_id' => $id ] )
+					->caller( __METHOD__ )->execute();
 				$this->output( "done.\n" );
 				$this->output( "Cleaning up recent changes..." );
-				$dbw->query( "DELETE FROM $tbl_rec WHERE rc_cur_id = $id" );
+				$dbw->newDeleteQueryBuilder()
+					->deleteFrom( 'recentchanges' )
+					->where( [ 'rc_cur_id' => $id ] )
+					->caller( __METHOD__ )->execute();
 				$this->output( "done.\n" );
 			}
 
@@ -91,7 +100,8 @@ class NukePage extends Maintenance {
 			# Update stats as appropriate
 			if ( $delete ) {
 				$this->output( "Updating site stats..." );
-				$ga = $isGoodArticle ? -1 : 0; // if it was good, decrement that too
+				// if it was good, decrement that too
+				$ga = $isGoodArticle ? -1 : 0;
 				$stats = SiteStatsUpdate::factory( [
 					'edits' => -$count,
 					'articles' => $ga,
@@ -107,17 +117,19 @@ class NukePage extends Maintenance {
 	}
 
 	public function deleteRevisions( $ids ) {
-		$dbw = $this->getDB( DB_MASTER );
+		$dbw = $this->getPrimaryDB();
 		$this->beginTransaction( $dbw, __METHOD__ );
 
-		$tbl_rev = $dbw->tableName( 'revision' );
-
-		$set = implode( ', ', $ids );
-		$dbw->query( "DELETE FROM $tbl_rev WHERE rev_id IN ( $set )" );
+		$dbw->newDeleteQueryBuilder()
+			->deleteFrom( 'revision' )
+			->where( [ 'rev_id' => $ids ] )
+			->caller( __METHOD__ )->execute();
 
 		$this->commitTransaction( $dbw, __METHOD__ );
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = NukePage::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

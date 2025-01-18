@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Location holder of files stored temporarily
  *
@@ -21,6 +22,13 @@
  * @ingroup FileBackend
  */
 
+namespace Wikimedia\FileBackend\FSFile;
+
+use MediaWiki\FileBackend\FSFile\TempFSFileFactory;
+use RuntimeException;
+use WeakMap;
+use Wikimedia\AtEase\AtEase;
+
 /**
  * This class is used to hold the location and do limited manipulation
  * of files stored temporarily (this will be whatever wfTempDir() returns)
@@ -34,12 +42,27 @@ class TempFSFile extends FSFile {
 	/** @var array Map of (path => 1) for paths to delete on shutdown */
 	protected static $pathsCollect = null;
 
+	/**
+	 * A WeakMap where the key is an object which depends on the file, and the
+	 * value is a TempFSFile responsible for deleting the file. This keeps each
+	 * TempFSFile alive until all associated objects have been destroyed.
+	 * @var WeakMap|null
+	 */
+	private static $references;
+
+	/**
+	 * Do not call directly. Use TempFSFileFactory
+	 *
+	 * @param string $path
+	 */
 	public function __construct( $path ) {
 		parent::__construct( $path );
 
 		if ( self::$pathsCollect === null ) {
+			// @codeCoverageIgnoreStart
 			self::$pathsCollect = [];
 			register_shutdown_function( [ __CLASS__, 'purgeAllOnShutdown' ] );
+			// @codeCoverageIgnoreEnd
 		}
 	}
 
@@ -47,40 +70,23 @@ class TempFSFile extends FSFile {
 	 * Make a new temporary file on the file system.
 	 * Temporary files may be purged when the file object falls out of scope.
 	 *
+	 * @deprecated since 1.34, use TempFSFileFactory directly
+	 *
 	 * @param string $prefix
 	 * @param string $extension Optional file extension
 	 * @param string|null $tmpDirectory Optional parent directory
 	 * @return TempFSFile|null
 	 */
 	public static function factory( $prefix, $extension = '', $tmpDirectory = null ) {
-		$ext = ( $extension != '' ) ? ".{$extension}" : '';
-
-		$attempts = 5;
-		while ( $attempts-- ) {
-			$hex = sprintf( '%06x%06x', mt_rand( 0, 0xffffff ), mt_rand( 0, 0xffffff ) );
-			if ( !is_string( $tmpDirectory ) ) {
-				$tmpDirectory = self::getUsableTempDirectory();
-			}
-			$path = $tmpDirectory . '/' . $prefix . $hex . $ext;
-			Wikimedia\suppressWarnings();
-			$newFileHandle = fopen( $path, 'x' );
-			Wikimedia\restoreWarnings();
-			if ( $newFileHandle ) {
-				fclose( $newFileHandle );
-				$tmpFile = new self( $path );
-				$tmpFile->autocollect();
-				// Safely instantiated, end loop.
-				return $tmpFile;
-			}
-		}
-
-		// Give up
-		return null;
+		return ( new TempFSFileFactory( $tmpDirectory ) )->newTempFSFile( $prefix, $extension );
 	}
 
 	/**
+	 * @todo Is there any useful way to test this? Would it be useful to make this non-static on
+	 * TempFSFileFactory?
+	 *
 	 * @return string Filesystem path to a temporary directory
-	 * @throws RuntimeException
+	 * @throws RuntimeException if no writable temporary directory can be found
 	 */
 	public static function getUsableTempDirectory() {
 		$tmpDir = array_map( 'getenv', [ 'TMPDIR', 'TMP', 'TEMP' ] );
@@ -97,9 +103,9 @@ class TempFSFile extends FSFile {
 		// the current process.
 		// The user is included as if various scripts are run by different users they will likely
 		// not be able to access each others temporary files.
-		if ( strtoupper( substr( PHP_OS, 0, 3 ) ) === 'WIN' ) {
+		if ( PHP_OS_FAMILY === 'Windows' ) {
 			$tmp = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'mwtmp-' . get_current_user();
-			if ( !file_exists( $tmp ) ) {
+			if ( !is_dir( $tmp ) ) {
 				mkdir( $tmp );
 			}
 			if ( is_dir( $tmp ) && is_writable( $tmp ) ) {
@@ -119,9 +125,9 @@ class TempFSFile extends FSFile {
 	 */
 	public function purge() {
 		$this->canDelete = false; // done
-		Wikimedia\suppressWarnings();
+		AtEase::suppressWarnings();
 		$ok = unlink( $this->path );
-		Wikimedia\restoreWarnings();
+		AtEase::restoreWarnings();
 
 		unset( self::$pathsCollect[$this->path] );
 
@@ -131,16 +137,25 @@ class TempFSFile extends FSFile {
 	/**
 	 * Clean up the temporary file only after an object goes out of scope
 	 *
-	 * @param object $object
+	 * @param mixed $object
 	 * @return TempFSFile This object
 	 */
 	public function bind( $object ) {
 		if ( is_object( $object ) ) {
-			if ( !isset( $object->tempFSFileReferences ) ) {
-				// Init first since $object might use __get() and return only a copy variable
-				$object->tempFSFileReferences = [];
+			// Use a WeakMap on PHP >= 8.0 to avoid dynamic property creation (T324894)
+			if ( PHP_VERSION_ID >= 80000 ) {
+				if ( self::$references === null ) {
+					self::$references = new WeakMap;
+				}
+				self::$references[$object] = $this;
+			} else {
+				// PHP 7.4
+				if ( !isset( $object->tempFSFileReferences ) ) {
+					// Init first since $object might use __get() and return only a copy variable
+					$object->tempFSFileReferences = [];
+				}
+				$object->tempFSFileReferences[] = $this;
 			}
-			$object->tempFSFileReferences[] = $this;
 		}
 
 		return $this;
@@ -176,21 +191,26 @@ class TempFSFile extends FSFile {
 	 * Try to make sure that all files are purged on error
 	 *
 	 * This method should only be called internally
+	 *
+	 * @codeCoverageIgnore
 	 */
 	public static function purgeAllOnShutdown() {
 		foreach ( self::$pathsCollect as $path => $unused ) {
-			Wikimedia\suppressWarnings();
+			AtEase::suppressWarnings();
 			unlink( $path );
-			Wikimedia\restoreWarnings();
+			AtEase::restoreWarnings();
 		}
 	}
 
 	/**
 	 * Cleans up after the temporary file by deleting it
 	 */
-	function __destruct() {
+	public function __destruct() {
 		if ( $this->canDelete ) {
 			$this->purge();
 		}
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( TempFSFile::class, 'TempFSFile' );

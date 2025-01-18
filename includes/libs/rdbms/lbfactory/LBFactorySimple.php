@@ -1,7 +1,5 @@
 <?php
 /**
- * Generator of database load balancing objects.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,34 +16,41 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Database
  */
-
 namespace Wikimedia\Rdbms;
 
 use InvalidArgumentException;
 
 /**
- * A simple single-master LBFactory that gets its configuration from the b/c globals
+ * LoadBalancer manager for sites with one "main" cluster and any number of "external" clusters
+ *
+ * @see LBFactoryMulti
+ *
+ * The class allows for large site farms to split up their data in the following ways:
+ *   - Vertically shard compact site-specific data by site (e.g. page/comment metadata)
+ *   - Vertically shard compact global data by module (e.g. account/notification data)
+ *   - Horizontally shard any bulk data by blob key (e.g. page/comment content)
+ *
+ * @ingroup Database
  */
 class LBFactorySimple extends LBFactory {
 	/** @var LoadBalancer */
 	private $mainLB;
 	/** @var LoadBalancer[] */
-	private $extLBs = [];
+	private $externalLBs = [];
 
-	/** @var array[] Map of (server index => server config) */
-	private $servers = [];
-	/** @var array[] Map of (cluster => (server index => server config)) */
-	private $externalClusters = [];
+	/** @var array Configuration for the LoadMonitor to use within LoadBalancer instances */
+	private $loadMonitorConfig;
 
-	/** @var string */
-	private $loadMonitorClass;
+	/** @var array[] Map of (server index => server config map) */
+	private $mainServers;
+	/** @var array[][] Map of (cluster => server index => server config map) */
+	private $externalServersByCluster = [];
 
 	/**
 	 * @see LBFactory::__construct()
-	 * @param array $conf Parameters of LBFactory::__construct() as well as:
-	 *   - servers : list of server configuration maps to Database::factory().
+	 * @param array $conf Additional parameters include:
+	 *   - servers : list of server config maps to Database::factory().
 	 *      Additionally, the server maps should have a 'load' key, which is used to decide
 	 *      how often clients connect to one server verses the others. A 'max lag' key should
 	 *      also be set on server maps, indicating how stale the data can be before the load
@@ -53,70 +58,79 @@ class LBFactorySimple extends LBFactory {
 	 *      replication sync checks (intended for archive servers with unchanging data).
 	 *   - externalClusters : map of cluster names to server arrays. The servers arrays have the
 	 *      same format as "servers" above.
+	 *   - loadMonitor: LoadMonitor::__construct() parameters with "class" field. [optional]
 	 */
 	public function __construct( array $conf ) {
 		parent::__construct( $conf );
 
-		$this->servers = $conf['servers'] ?? [];
-		foreach ( $this->servers as $i => $server ) {
-			if ( $i == 0 ) {
-				$this->servers[$i]['master'] = true;
-			} else {
-				$this->servers[$i]['replica'] = true;
+		$this->mainServers = $conf['servers'] ?? [];
+		foreach ( ( $conf['externalClusters'] ?? [] ) as $cluster => $servers ) {
+			foreach ( $servers as $index => $server ) {
+				$this->externalServersByCluster[$cluster][$index] = $server;
 			}
 		}
 
-		$this->externalClusters = $conf['externalClusters'] ?? [];
-		$this->loadMonitorClass = $conf['loadMonitorClass'] ?? 'LoadMonitor';
-	}
-
-	public function newMainLB( $domain = false ) {
-		return $this->newLoadBalancer( $this->servers );
-	}
-
-	public function getMainLB( $domain = false ) {
-		if ( !$this->mainLB ) {
-			$this->mainLB = $this->newMainLB( $domain );
+		if ( isset( $conf['loadMonitor'] ) ) {
+			$this->loadMonitorConfig = $conf['loadMonitor'];
+		} elseif ( isset( $conf['loadMonitorClass'] ) ) { // b/c
+			$this->loadMonitorConfig = [ 'class' => $conf['loadMonitorClass'] ];
+		} else {
+			$this->loadMonitorConfig = [ 'class' => LoadMonitor::class ];
 		}
+	}
+
+	public function newMainLB( $domain = false ): ILoadBalancerForOwner {
+		return $this->newLoadBalancer(
+			self::CLUSTER_MAIN_DEFAULT,
+			$this->mainServers
+		);
+	}
+
+	public function getMainLB( $domain = false ): ILoadBalancer {
+		$this->mainLB ??= $this->newMainLB( $domain );
 
 		return $this->mainLB;
 	}
 
-	public function newExternalLB( $cluster ) {
-		if ( !isset( $this->externalClusters[$cluster] ) ) {
-			throw new InvalidArgumentException( __METHOD__ . ": Unknown cluster \"$cluster\"." );
+	public function newExternalLB( $cluster ): ILoadBalancerForOwner {
+		if ( !isset( $this->externalServersByCluster[$cluster] ) ) {
+			throw new InvalidArgumentException( "Unknown cluster '$cluster'." );
 		}
 
-		return $this->newLoadBalancer( $this->externalClusters[$cluster] );
+		return $this->newLoadBalancer(
+			$cluster,
+			$this->externalServersByCluster[$cluster]
+		);
 	}
 
-	public function getExternalLB( $cluster ) {
-		if ( !isset( $this->extLBs[$cluster] ) ) {
-			$this->extLBs[$cluster] = $this->newExternalLB( $cluster );
+	public function getExternalLB( $cluster ): ILoadBalancer {
+		if ( !isset( $this->externalLBs[$cluster] ) ) {
+			$this->externalLBs[$cluster] = $this->newExternalLB( $cluster );
 		}
 
-		return $this->extLBs[$cluster];
+		return $this->externalLBs[$cluster];
 	}
 
-	public function getAllMainLBs() {
-		return [ 'DEFAULT' => $this->getMainLB() ];
+	public function getAllMainLBs(): array {
+		return [ self::CLUSTER_MAIN_DEFAULT => $this->getMainLB() ];
 	}
 
-	public function getAllExternalLBs() {
+	public function getAllExternalLBs(): array {
 		$lbs = [];
-		foreach ( $this->externalClusters as $cluster => $unused ) {
+		foreach ( $this->externalServersByCluster as $cluster => $_ ) {
 			$lbs[$cluster] = $this->getExternalLB( $cluster );
 		}
 
 		return $lbs;
 	}
 
-	private function newLoadBalancer( array $servers ) {
+	private function newLoadBalancer( string $clusterName, array $servers ) {
 		$lb = new LoadBalancer( array_merge(
 			$this->baseLoadBalancerParams(),
 			[
 				'servers' => $servers,
-				'loadMonitor' => [ 'class' => $this->loadMonitorClass ],
+				'loadMonitor' => $this->loadMonitorConfig,
+				'clusterName' => $clusterName
 			]
 		) );
 		$this->initLoadBalancer( $lb );
@@ -124,12 +138,12 @@ class LBFactorySimple extends LBFactory {
 		return $lb;
 	}
 
-	public function forEachLB( $callback, array $params = [] ) {
-		if ( isset( $this->mainLB ) ) {
-			$callback( $this->mainLB, ...$params );
+	protected function getLBsForOwner() {
+		if ( $this->mainLB !== null ) {
+			yield $this->mainLB;
 		}
-		foreach ( $this->extLBs as $lb ) {
-			$callback( $lb, ...$params );
+		foreach ( $this->externalLBs as $lb ) {
+			yield $lb;
 		}
 	}
 }

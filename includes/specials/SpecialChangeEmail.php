@@ -1,7 +1,5 @@
 <?php
 /**
- * Implements Special:ChangeEmail
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,11 +16,21 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup SpecialPage
  */
 
+namespace MediaWiki\Specials;
+
+use ErrorPageError;
 use MediaWiki\Auth\AuthManager;
+use MediaWiki\Html\Html;
+use MediaWiki\HTMLForm\HTMLForm;
 use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\Parser\Sanitizer;
+use MediaWiki\SpecialPage\FormSpecialPage;
+use MediaWiki\Status\Status;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+use PermissionsError;
 
 /**
  * Let users change their email address.
@@ -35,8 +43,10 @@ class SpecialChangeEmail extends FormSpecialPage {
 	 */
 	private $status;
 
-	public function __construct() {
+	public function __construct( AuthManager $authManager ) {
 		parent::__construct( 'ChangeEmail', 'editmyprivateinfo' );
+
+		$this->setAuthManager( $authManager );
 	}
 
 	public function doesWrites() {
@@ -47,17 +57,17 @@ class SpecialChangeEmail extends FormSpecialPage {
 	 * @return bool
 	 */
 	public function isListed() {
-		return AuthManager::singleton()->allowsPropertyChange( 'emailaddress' );
+		return $this->getAuthManager()->allowsPropertyChange( 'emailaddress' );
 	}
 
 	/**
 	 * Main execution point
-	 * @param string $par
+	 * @param string|null $par
 	 */
-	function execute( $par ) {
+	public function execute( $par ) {
 		$out = $this->getOutput();
 		$out->disallowUserJs();
-
+		$out->addModules( 'mediawiki.special.changeemail' );
 		parent::execute( $par );
 	}
 
@@ -66,20 +76,16 @@ class SpecialChangeEmail extends FormSpecialPage {
 	}
 
 	protected function checkExecutePermissions( User $user ) {
-		if ( !AuthManager::singleton()->allowsPropertyChange( 'emailaddress' ) ) {
+		if ( !$this->getAuthManager()->allowsPropertyChange( 'emailaddress' ) ) {
 			throw new ErrorPageError( 'changeemail', 'cannotchangeemail' );
 		}
 
-		$this->requireLogin( 'changeemail-no-info' );
+		$this->requireNamedUser( 'changeemail-no-info', 'exception-nologin', true );
 
 		// This could also let someone check the current email address, so
 		// require both permissions.
-		if ( !$this->getUser()->isAllowed( 'viewmyprivateinfo' ) ) {
+		if ( !$this->getAuthority()->isAllowed( 'viewmyprivateinfo' ) ) {
 			throw new PermissionsError( 'viewmyprivateinfo' );
-		}
-
-		if ( $user->isBlockedFromEmailuser() ) {
-			throw new UserBlockedError( $user->getBlock() );
 		}
 
 		parent::checkExecutePermissions( $user );
@@ -88,7 +94,7 @@ class SpecialChangeEmail extends FormSpecialPage {
 	protected function getFormFields() {
 		$user = $this->getUser();
 
-		$fields = [
+		return [
 			'Name' => [
 				'type' => 'info',
 				'label-message' => 'username',
@@ -103,11 +109,10 @@ class SpecialChangeEmail extends FormSpecialPage {
 				'type' => 'email',
 				'label-message' => 'changeemail-newemail',
 				'autofocus' => true,
+				'maxlength' => 255,
 				'help-message' => 'changeemail-newemail-help',
 			],
 		];
-
-		return $fields;
 	}
 
 	protected function getDisplayFormat() {
@@ -120,33 +125,36 @@ class SpecialChangeEmail extends FormSpecialPage {
 		$form->setSubmitTextMsg( 'changeemail-submit' );
 		$form->addHiddenFields( $this->getRequest()->getValues( 'returnto', 'returntoquery' ) );
 
-		$form->addHeaderText( $this->msg( 'changeemail-header' )->parseAsBlock() );
+		$form->addHeaderHtml( $this->msg( 'changeemail-header' )->parseAsBlock() );
+		$form->setSubmitID( 'change_email_submit' );
 	}
 
 	public function onSubmit( array $data ) {
-		$status = $this->attemptChange( $this->getUser(), $data['NewEmail'] );
+		$this->status = $this->attemptChange( $this->getUser(), $data['NewEmail'] );
 
-		$this->status = $status;
-
-		return $status;
+		return $this->status;
 	}
 
 	public function onSuccess() {
 		$request = $this->getRequest();
 
-		$returnto = $request->getVal( 'returnto' );
-		$titleObj = $returnto !== null ? Title::newFromText( $returnto ) : null;
+		$returnTo = $request->getVal( 'returnto' );
+		$titleObj = $returnTo !== null ? Title::newFromText( $returnTo ) : null;
 		if ( !$titleObj instanceof Title ) {
 			$titleObj = Title::newMainPage();
 		}
-		$query = $request->getVal( 'returntoquery' );
+		$query = $request->getVal( 'returntoquery', '' );
 
 		if ( $this->status->value === true ) {
 			$this->getOutput()->redirect( $titleObj->getFullUrlForRedirect( $query ) );
 		} elseif ( $this->status->value === 'eauth' ) {
 			# Notify user that a confirmation email has been sent...
-			$this->getOutput()->wrapWikiMsg( "<div class='error' style='clear: both;'>\n$1\n</div>",
-				'eauthentsent', $this->getUser()->getName() );
+			$out = $this->getOutput();
+			$out->addHTML(
+				Html::warningBox(
+					$out->msg( 'eauthentsent', $this->getUser()->getName() )->parse()
+				)
+			);
 			// just show the link to go back
 			$this->getOutput()->addReturnTo( $titleObj, wfCgiToArray( $query ) );
 		}
@@ -154,41 +162,51 @@ class SpecialChangeEmail extends FormSpecialPage {
 
 	/**
 	 * @param User $user
-	 * @param string $newaddr
+	 * @param string $newAddr
+	 *
 	 * @return Status
 	 */
-	private function attemptChange( User $user, $newaddr ) {
-		if ( $newaddr != '' && !Sanitizer::validateEmail( $newaddr ) ) {
+	private function attemptChange( User $user, $newAddr ) {
+		if ( $newAddr !== '' && !Sanitizer::validateEmail( $newAddr ) ) {
 			return Status::newFatal( 'invalidemailaddress' );
 		}
 
-		if ( $newaddr === $user->getEmail() ) {
+		$oldAddr = $user->getEmail();
+		if ( $newAddr === $oldAddr ) {
 			return Status::newFatal( 'changeemail-nochange' );
+		}
+
+		if ( strlen( $newAddr ) > 255 ) {
+			return Status::newFatal( 'changeemail-maxlength' );
 		}
 
 		// To prevent spam, rate limit adding a new address, but do
 		// not rate limit removing an address.
-		if ( $newaddr !== '' && $user->pingLimiter( 'changeemail' ) ) {
-			return Status::newFatal( 'actionthrottledtext' );
+		if ( $newAddr !== '' ) {
+			// Enforce permissions, user blocks, and rate limits
+			$status = $this->authorizeAction( 'changeemail' );
+			if ( !$status->isGood() ) {
+				return Status::wrap( $status );
+			}
 		}
 
-		$oldaddr = $user->getEmail();
-		$status = $user->setEmailWithConfirmation( $newaddr );
+		$userLatest = $user->getInstanceForUpdate();
+		$status = $userLatest->setEmailWithConfirmation( $newAddr );
 		if ( !$status->isGood() ) {
 			return $status;
 		}
 
 		LoggerFactory::getInstance( 'authentication' )->info(
 			'Changing email address for {user} from {oldemail} to {newemail}', [
-				'user' => $user->getName(),
-				'oldemail' => $oldaddr,
-				'newemail' => $newaddr,
+				'user' => $userLatest->getName(),
+				'oldemail' => $oldAddr,
+				'newemail' => $newAddr,
 			]
 		);
 
-		Hooks::run( 'PrefsEmailAudit', [ $user, $oldaddr, $newaddr ] );
+		$this->getHookRunner()->onPrefsEmailAudit( $userLatest, $oldAddr, $newAddr );
 
-		$user->saveSettings();
+		$userLatest->saveSettings();
 
 		return $status;
 	}
@@ -198,6 +216,9 @@ class SpecialChangeEmail extends FormSpecialPage {
 	}
 
 	protected function getGroupName() {
-		return 'users';
+		return 'login';
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( SpecialChangeEmail::class, 'SpecialChangeEmail' );

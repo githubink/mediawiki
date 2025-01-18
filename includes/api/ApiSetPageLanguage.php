@@ -20,6 +20,16 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use ChangeTags;
+use MediaWiki\Languages\LanguageNameUtils;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Specials\SpecialPageLanguage;
+use MediaWiki\Title\Title;
+use Wikimedia\ParamValidator\ParamValidator;
+use Wikimedia\Rdbms\IConnectionProvider;
+
 /**
  * API module that facilitates changing the language of a page.
  * The API equivalent of SpecialPageLanguage.
@@ -28,9 +38,24 @@
  * @ingroup API
  */
 class ApiSetPageLanguage extends ApiBase {
+
+	private IConnectionProvider $dbProvider;
+	private LanguageNameUtils $languageNameUtils;
+
+	public function __construct(
+		ApiMain $mainModule,
+		string $moduleName,
+		IConnectionProvider $dbProvider,
+		LanguageNameUtils $languageNameUtils
+	) {
+		parent::__construct( $mainModule, $moduleName );
+		$this->dbProvider = $dbProvider;
+		$this->languageNameUtils = $languageNameUtils;
+	}
+
 	// Check if change language feature is enabled
 	protected function getExtendedDescription() {
-		if ( !$this->getConfig()->get( 'PageLanguageUseDB' ) ) {
+		if ( !$this->getConfig()->get( MainConfigNames::PageLanguageUseDB ) ) {
 			return 'apihelp-setpagelanguage-extended-description-disabled';
 		}
 		return parent::getExtendedDescription();
@@ -45,7 +70,7 @@ class ApiSetPageLanguage extends ApiBase {
 	 */
 	public function execute() {
 		// Check if change language feature is enabled
-		if ( !$this->getConfig()->get( 'PageLanguageUseDB' ) ) {
+		if ( !$this->getConfig()->get( MainConfigNames::PageLanguageUseDB ) ) {
 			$this->dieWithError( 'apierror-pagelang-disabled' );
 		}
 
@@ -57,12 +82,11 @@ class ApiSetPageLanguage extends ApiBase {
 		$params = $this->extractRequestParams();
 
 		$pageObj = $this->getTitleOrPageId( $params, 'fromdbmaster' );
+		$titleObj = $pageObj->getTitle();
+		$this->getErrorFormatter()->setContextTitle( $titleObj );
 		if ( !$pageObj->exists() ) {
 			$this->dieWithError( 'apierror-missingtitle' );
 		}
-
-		$titleObj = $pageObj->getTitle();
-		$user = $this->getUser();
 
 		// Check that the user is allowed to edit the page
 		$this->checkTitleUserPermissions( $titleObj, 'edit' );
@@ -70,7 +94,7 @@ class ApiSetPageLanguage extends ApiBase {
 		// If change tagging was requested, check that the user is allowed to tag,
 		// and the tags are valid
 		if ( $params['tags'] ) {
-			$tagStatus = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $user );
+			$tagStatus = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $this->getAuthority() );
 			if ( !$tagStatus->isOK() ) {
 				$this->dieStatus( $tagStatus );
 			}
@@ -81,7 +105,8 @@ class ApiSetPageLanguage extends ApiBase {
 			$titleObj,
 			$params['lang'],
 			$params['reason'] ?? '',
-			$params['tags'] ?: []
+			$params['tags'] ?: [],
+			$this->dbProvider->getPrimaryDatabase()
 		);
 
 		if ( !$status->isOK() ) {
@@ -109,19 +134,22 @@ class ApiSetPageLanguage extends ApiBase {
 		return [
 			'title' => null,
 			'pageid' => [
-				ApiBase::PARAM_TYPE => 'integer'
+				ParamValidator::PARAM_TYPE => 'integer'
 			],
 			'lang' => [
-				ApiBase::PARAM_TYPE => array_merge(
+				ParamValidator::PARAM_TYPE => array_merge(
 					[ 'default' ],
-					array_keys( Language::fetchLanguageNames( null, 'mwfile' ) )
+					array_keys( $this->languageNameUtils->getLanguageNames(
+						LanguageNameUtils::AUTONYMS,
+						LanguageNameUtils::SUPPORTED
+					) )
 				),
-				ApiBase::PARAM_REQUIRED => true,
+				ParamValidator::PARAM_REQUIRED => true,
 			],
 			'reason' => null,
 			'tags' => [
-				ApiBase::PARAM_TYPE => 'tags',
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => 'tags',
+				ParamValidator::PARAM_ISMULTI => true,
 			],
 		];
 	}
@@ -131,8 +159,11 @@ class ApiSetPageLanguage extends ApiBase {
 	}
 
 	protected function getExamplesMessages() {
+		$title = Title::newMainPage()->getPrefixedText();
+		$mp = rawurlencode( $title );
+
 		return [
-			'action=setpagelanguage&title=Main%20Page&lang=eu&token=123ABC'
+			"action=setpagelanguage&title={$mp}&lang=eu&token=123ABC"
 				=> 'apihelp-setpagelanguage-example-language',
 			'action=setpagelanguage&pageid=123&lang=default&token=123ABC'
 				=> 'apihelp-setpagelanguage-example-default',
@@ -143,3 +174,6 @@ class ApiSetPageLanguage extends ApiBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:SetPageLanguage';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiSetPageLanguage::class, 'ApiSetPageLanguage' );

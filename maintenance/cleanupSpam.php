@@ -21,7 +21,19 @@
  * @ingroup Maintenance
  */
 
+use MediaWiki\ExternalLinks\LinkFilter;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Permissions\Authority;
+use MediaWiki\Revision\RevisionRecord;
+use MediaWiki\Revision\SlotRecord;
+use MediaWiki\StubObject\StubGlobalUser;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+use Wikimedia\Rdbms\Database;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script to cleanup all spam from a given hostname.
@@ -42,15 +54,16 @@ class CleanupSpam extends Maintenance {
 	}
 
 	public function execute() {
-		global $IP, $wgLocalDatabases, $wgUser;
+		global $IP, $wgLocalDatabases;
 
 		$username = wfMessage( 'spambot_username' )->text();
-		$wgUser = User::newSystemUser( $username );
-		if ( !$wgUser ) {
+		$user = User::newSystemUser( $username );
+		if ( !$user ) {
 			$this->fatalError( "Invalid username specified in 'spambot_username' message: $username" );
 		}
 		// Hack: Grant bot rights so we don't flood RecentChanges
-		$wgUser->addGroup( 'bot' );
+		$this->getServiceContainer()->getUserGroupManager()->addUserToGroup( $user, 'bot' );
+		StubGlobalUser::setUser( $user );
 
 		$spec = $this->getArg( 0 );
 
@@ -67,24 +80,25 @@ class CleanupSpam extends Maintenance {
 			// Clean up spam on all wikis
 			$this->output( "Finding spam on " . count( $wgLocalDatabases ) . " wikis\n" );
 			$found = false;
-			foreach ( $wgLocalDatabases as $wikiID ) {
+			foreach ( $wgLocalDatabases as $wikiId ) {
 				/** @var Database $dbr */
-				$dbr = $this->getDB( DB_REPLICA, [], $wikiID );
+				$dbr = $this->getDB( DB_REPLICA, [], $wikiId );
 
 				foreach ( $protConds as $conds ) {
-					$count = $dbr->selectField(
-						'externallinks',
-						'COUNT(*)',
-						$conds,
-						__METHOD__
-					);
+					$count = $dbr->newSelectQueryBuilder()
+						->select( 'COUNT(*)' )
+						->from( 'externallinks' )
+						->where( $conds )
+						->caller( __METHOD__ )
+						->fetchField();
 					if ( $count ) {
 						$found = true;
 						$cmd = wfShellWikiCmd(
 							"$IP/maintenance/cleanupSpam.php",
-							[ '--wiki', $wikiID, $spec ]
+							[ '--wiki', $wikiId, $spec ]
 						);
-						passthru( "$cmd | sed 's/^/$wikiID:  /'" );
+						// phpcs:ignore MediaWiki.Usage.ForbiddenFunctions.passthru
+						passthru( "$cmd | sed 's/^/$wikiId:  /'" );
 					}
 				}
 			}
@@ -98,18 +112,26 @@ class CleanupSpam extends Maintenance {
 
 			$count = 0;
 			/** @var Database $dbr */
-			$dbr = $this->getDB( DB_REPLICA );
+			$dbr = $this->getReplicaDB();
 			foreach ( $protConds as $prot => $conds ) {
-				$res = $dbr->select(
-					'externallinks',
-					[ 'DISTINCT el_from' ],
-					$conds,
-					__METHOD__
-				);
-				$count = $dbr->numRows( $res );
-				$this->output( "Found $count articles containing $spec\n" );
+				$res = $dbr->newSelectQueryBuilder()
+					->select( 'el_from' )
+					->distinct()
+					->from( 'externallinks' )
+					->where( $conds )
+					->caller( __METHOD__ )
+					->fetchResultSet();
+				$count += $res->numRows();
+				$this->output( "Found $count articles containing $spec so far...\n" );
 				foreach ( $res as $row ) {
-					$this->cleanupArticle( $row->el_from, $spec, $prot );
+					$this->beginTransactionRound( __METHOD__ );
+					$this->cleanupArticle(
+						$row->el_from,
+						$spec,
+						$prot,
+						$user
+					);
+					$this->commitTransactionRound( __METHOD__ );
 				}
 			}
 			if ( $count ) {
@@ -122,9 +144,9 @@ class CleanupSpam extends Maintenance {
 	 * @param int $id
 	 * @param string $domain
 	 * @param string $protocol
-	 * @throws MWException
+	 * @param Authority $performer
 	 */
-	private function cleanupArticle( $id, $domain, $protocol ) {
+	private function cleanupArticle( $id, $domain, $protocol, Authority $performer ) {
 		$title = Title::newFromID( $id );
 		if ( !$title ) {
 			$this->error( "Internal error: no page for ID $id" );
@@ -133,13 +155,21 @@ class CleanupSpam extends Maintenance {
 		}
 
 		$this->output( $title->getPrefixedDBkey() . " ..." );
-		$rev = Revision::newFromTitle( $title );
+
+		$services = $this->getServiceContainer();
+		$revLookup = $services->getRevisionLookup();
+		$rev = $revLookup->getRevisionByTitle( $title );
 		$currentRevId = $rev->getId();
 
-		while ( $rev && ( $rev->isDeleted( Revision::DELETED_TEXT )
-			|| LinkFilter::matchEntry( $rev->getContent( Revision::RAW ), $domain, $protocol ) )
+		while ( $rev && ( $rev->isDeleted( RevisionRecord::DELETED_TEXT ) ||
+			LinkFilter::matchEntry(
+				// @phan-suppress-next-line PhanTypeMismatchArgumentNullable RAW never returns null
+				$rev->getContent( SlotRecord::MAIN, RevisionRecord::RAW ),
+				$domain,
+				$protocol
+			) )
 		) {
-			$rev = $rev->getPrevious();
+			$rev = $revLookup->getPreviousRevision( $rev );
 		}
 
 		if ( $rev && $rev->getId() == $currentRevId ) {
@@ -147,16 +177,16 @@ class CleanupSpam extends Maintenance {
 			// This happens e.g. when a link comes from a template rather than the page itself
 			$this->output( "False match\n" );
 		} else {
-			$dbw = $this->getDB( DB_MASTER );
-			$this->beginTransaction( $dbw, __METHOD__ );
-			$page = WikiPage::factory( $title );
+			$page = $services->getWikiPageFactory()->newFromTitle( $title );
 			if ( $rev ) {
 				// Revert to this revision
-				$content = $rev->getContent( Revision::RAW );
+				$content = $rev->getContent( SlotRecord::MAIN, RevisionRecord::RAW );
 
 				$this->output( "reverting\n" );
-				$page->doEditContent(
+				$page->doUserEditContent(
+					// @phan-suppress-next-line PhanTypeMismatchArgumentNullable RAW never returns null
 					$content,
+					$performer,
 					wfMessage( 'spam_reverting', $domain )->inContentLanguage()->text(),
 					EDIT_UPDATE | EDIT_FORCE_BOT,
 					$rev->getId()
@@ -164,25 +194,27 @@ class CleanupSpam extends Maintenance {
 			} elseif ( $this->hasOption( 'delete' ) ) {
 				// Didn't find a non-spammy revision, blank the page
 				$this->output( "deleting\n" );
-				$page->doDeleteArticle(
-					wfMessage( 'spam_deleting', $domain )->inContentLanguage()->text()
-				);
+				$deletePage = $services->getDeletePageFactory()->newDeletePage( $page, $performer );
+				$deletePage->deleteUnsafe( wfMessage( 'spam_deleting', $domain )->inContentLanguage()->text() );
 			} else {
 				// Didn't find a non-spammy revision, blank the page
-				$handler = ContentHandler::getForTitle( $title );
+				$handler = $services->getContentHandlerFactory()
+					->getContentHandler( $title->getContentModel() );
 				$content = $handler->makeEmptyContent();
 
 				$this->output( "blanking\n" );
-				$page->doEditContent(
+				$page->doUserEditContent(
 					$content,
+					$performer,
 					wfMessage( 'spam_blanking', $domain )->inContentLanguage()->text(),
 					EDIT_UPDATE | EDIT_FORCE_BOT
 				);
 			}
-			$this->commitTransaction( $dbw, __METHOD__ );
 		}
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = CleanupSpam::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

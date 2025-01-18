@@ -2,26 +2,167 @@
 
 namespace Wikimedia\ParamValidator;
 
+use Wikimedia\Message\DataMessageValue;
+use Wikimedia\Message\MessageValue;
+
 /**
  * Base definition for ParamValidator types.
  *
- * All methods in this class accept an "options array". This is just the `$options`
+ * Most methods in this class accept an "options array". This is just the `$options`
  * passed to ParamValidator::getValue(), ParamValidator::validateValue(), and the like
- * and is intended for communication of non-global state.
+ * and is intended for communication of non-global state to the Callbacks.
  *
  * @since 1.34
+ * @unstable for use in extensions. Intended to become stable to extend, at
+ *           least for use in MediaWiki, which already defines some subclasses.
  */
 abstract class TypeDef {
+
+	/**
+	 * @unstable Temporarily log warnings to detect misbehaving clients (T305973)
+	 */
+	public const OPT_LOG_BAD_TYPES = 'log-bad-types';
+
+	/**
+	 * Option that instructs TypeDefs to enforce the native type of parameter
+	 * values, instead of allowing string values as input. This is intended for
+	 * use with values coming from a JSON request body, and may accommodate for
+	 * differences between the type system of PHP and JSON.
+	 */
+	public const OPT_ENFORCE_JSON_TYPES = 'enforce-json-types';
 
 	/** @var Callbacks */
 	protected $callbacks;
 
+	/**
+	 * @stable to call
+	 *
+	 * @param Callbacks $callbacks
+	 */
 	public function __construct( Callbacks $callbacks ) {
 		$this->callbacks = $callbacks;
 	}
 
 	/**
+	 * Whether the value may be an array.
+	 * Note that this is different from multi-value.
+	 * This should only return true if each value can be an array.
+	 * @since 1.41
+	 * @stable to override
+	 * @return bool
+	 */
+	public function supportsArrays() {
+		return false;
+	}
+
+	/**
+	 * Fails if $value is not a string.
+	 *
+	 * @param string $name Parameter name being validated.
+	 * @param mixed $value Value being validated.
+	 * @param array $settings Parameter settings array.
+	 * @param array $options Options array.
+	 *
+	 * @return void
+	 */
+	protected function failIfNotString(
+		string $name,
+		$value,
+		array $settings,
+		array $options
+	): void {
+		if ( !is_string( $value ) ) {
+			$this->fatal(
+				$this->failureMessage( 'needstring' )
+					->params( gettype( $value ) ),
+				$name, $value, $settings, $options
+			);
+		}
+	}
+
+	/**
+	 * Throw a ValidationException.
+	 * This is a wrapper for failure() which explicitly declares that it
+	 * never returns, which is useful to static analysis tools like Phan.
+	 *
+	 * Note that parameters for `$name` and `$value` are always added as `$1`
+	 * and `$2`.
+	 *
+	 * @param DataMessageValue|string $failure Failure code or message.
+	 * @param string $name Parameter name being validated.
+	 * @param mixed $value Value being validated.
+	 * @param array $settings Parameter settings array.
+	 * @param array $options Options array.
+	 * @return never
+	 * @throws ValidationException always
+	 */
+	protected function fatal(
+		$failure, $name, $value, array $settings, array $options
+	) {
+		$this->failure( $failure, $name, $value, $settings, $options );
+	}
+
+	/**
+	 * Record a failure message
+	 *
+	 * Depending on `$fatal`, this will either throw a ValidationException or
+	 * call $this->callbacks->recordCondition().
+	 *
+	 * Note that parameters for `$name` and `$value` are always added as `$1`
+	 * and `$2`.
+	 *
+	 * @param DataMessageValue|string $failure Failure code or message.
+	 * @param string $name Parameter name being validated.
+	 * @param mixed $value Value being validated.
+	 * @param array $settings Parameter settings array.
+	 * @param array $options Options array.
+	 * @param bool $fatal Whether the failure is fatal
+	 */
+	protected function failure(
+		$failure, $name, $value, array $settings, array $options, $fatal = true
+	) {
+		if ( !is_string( $value ) ) {
+			$value = (string)$this->stringifyValue( $name, $value, $settings, $options );
+		}
+
+		if ( is_string( $failure ) ) {
+			$mv = $this->failureMessage( $failure )
+				->plaintextParams( $name, $value );
+		} else {
+			$mv = DataMessageValue::new( $failure->getKey(), [], $failure->getCode(), $failure->getData() )
+				->plaintextParams( $name, $value )
+				->params( ...$failure->getParams() );
+		}
+
+		if ( $fatal ) {
+			throw new ValidationException( $mv, $name, $value, $settings );
+		}
+		$this->callbacks->recordCondition( $mv, $name, $value, $settings, $options );
+	}
+
+	/**
+	 * Create a DataMessageValue representing a failure
+	 *
+	 * The message key will be "paramvalidator-$code" or "paramvalidator-$code-$suffix".
+	 *
+	 * Use DataMessageValue's param mutators to add additional MessageParams.
+	 * Note that `failure()` will prepend parameters for `$name` and `$value`.
+	 *
+	 * @param string $code Failure code.
+	 * @param array|null $data Failure data.
+	 * @param string|null $suffix Suffix to append when producing the message key
+	 * @return DataMessageValue
+	 */
+	protected function failureMessage( $code, ?array $data = null, $suffix = null ): DataMessageValue {
+		return DataMessageValue::new(
+			"paramvalidator-$code" . ( $suffix !== null ? "-$suffix" : '' ),
+			[], $code, $data
+		);
+	}
+
+	/**
 	 * Get the value from the request
+	 * @stable to override
 	 *
 	 * @note Only override this if you need to use something other than
 	 *  $this->callbacks->getValue() to fetch the value. Reformatting from a
@@ -52,6 +193,8 @@ abstract class TypeDef {
 	 * @param array $settings Parameter settings array.
 	 * @param array $options Options array. Note the following values that may be set
 	 *  by ParamValidator:
+	 *   - is-default: (bool) If present and true, the value was taken from PARAM_DEFAULT rather
+	 *     that being supplied by the client.
 	 *   - values-list: (string[]) If defined, values of a multi-valued parameter are being processed
 	 *     (and this array holds the full set of values).
 	 * @return mixed Validated value
@@ -61,6 +204,7 @@ abstract class TypeDef {
 
 	/**
 	 * Normalize a settings array
+	 * @stable to override
 	 * @param array $settings
 	 * @return array
 	 */
@@ -69,11 +213,40 @@ abstract class TypeDef {
 	}
 
 	/**
+	 * Validate a parameter settings array
+	 *
+	 * This is intended for validation of parameter settings during unit or
+	 * integration testing, and should implement strict checks.
+	 *
+	 * The rest of the code should generally be more permissive.
+	 *
+	 * @see ParamValidator::checkSettings()
+	 * @stable to override
+	 *
+	 * @param string $name Parameter name
+	 * @param array|mixed $settings Default value or an array of settings
+	 *  using PARAM_* constants.
+	 * @param array $options Options array, passed through to the TypeDef and Callbacks.
+	 * @param array $ret
+	 *  - 'issues': (string[]) Errors detected in $settings, as English text. If the settings
+	 *    are valid, this will be the empty array. Keys on input are ParamValidator constants,
+	 *    allowing the typedef to easily override core validation; this need not be preserved
+	 *    when returned.
+	 *  - 'allowedKeys': (string[]) ParamValidator keys that are allowed in `$settings`.
+	 *  - 'messages': (MessageValue[]) Messages to be checked for existence.
+	 * @return array $ret, with any relevant changes.
+	 */
+	public function checkSettings( string $name, $settings, array $options, array $ret ): array {
+		return $ret;
+	}
+
+	/**
 	 * Get the values for enum-like parameters
 	 *
 	 * This is primarily intended for documentation and implementation of
 	 * PARAM_ALL; it is the responsibility of the TypeDef to ensure that validate()
 	 * accepts the values returned here.
+	 * @stable to override
 	 *
 	 * @param string $name Parameter name being validated.
 	 * @param array $settings Parameter settings array.
@@ -101,48 +274,57 @@ abstract class TypeDef {
 	 *  reasonably satisfying the description given.
 	 */
 	public function stringifyValue( $name, $value, array $settings, array $options ) {
+		if ( is_array( $value ) ) {
+			return '(array)';
+		}
+
 		return (string)$value;
 	}
 
 	/**
-	 * "Describe" a settings array
+	 * Describe parameter settings in a machine-readable format.
 	 *
-	 * This is intended to format data about a settings array using this type
-	 * in a way that would be useful for automatically generated documentation
-	 * or a machine-readable interface specification.
+	 * Keys should be short strings using lowercase ASCII letters. Values
+	 * should generally be values that could be encoded in JSON or the like.
 	 *
-	 * Keys in the description array should follow the same guidelines as the
-	 * code described for ValidationException.
+	 * This is intended to handle PARAM constants specific to this class. It
+	 * generally shouldn't handle constants defined on ParamValidator itself.
+	 * @stable to override
 	 *
-	 * By default, each value in the description array is a single string,
-	 * integer, or array. When `$options['compact']` is supplied, each value is
-	 * instead an array of such and related values may be combined. For example,
-	 * a non-compact description for an integer type might include
-	 * `[ 'default' => 0, 'min' => 0, 'max' => 5 ]`, while in compact mode it might
-	 * instead report `[ 'default' => [ 'value' => 0 ], 'minmax' => [ 'min' => 0, 'max' => 5 ] ]`
-	 * to facilitate auto-generated documentation turning that 'minmax' into
-	 * "Value must be between 0 and 5" rather than disconnected statements
-	 * "Value must be >= 0" and "Value must be <= 5".
+	 * @param string $name Parameter name.
+	 * @param array $settings Parameter settings array.
+	 * @param array $options Options array.
+	 * @return array
+	 */
+	public function getParamInfo( $name, array $settings, array $options ) {
+		return [];
+	}
+
+	/**
+	 * Describe parameter settings in human-readable format
+	 *
+	 * Keys in the returned array should generally correspond to PARAM
+	 * constants.
+	 *
+	 * If relevant, a MessageValue describing the type itself should be
+	 * returned with key ParamValidator::PARAM_TYPE.
+	 *
+	 * The default messages for other ParamValidator-defined PARAM constants
+	 * may be suppressed by returning null as the value for those constants, or
+	 * replaced by returning a replacement MessageValue. Normally, however,
+	 * the default messages should not be changed.
+	 *
+	 * MessageValues describing any other constraints applied via PARAM
+	 * constants specific to this class should also be returned.
+	 * @stable to override
 	 *
 	 * @param string $name Parameter name being described.
 	 * @param array $settings Parameter settings array.
-	 * @param array $options Options array. Defined options for this base class are:
-	 *  - 'compact': (bool) Enable compact mode, as described above.
-	 * @return array
+	 * @param array $options Options array.
+	 * @return (MessageValue|null)[]
 	 */
-	public function describeSettings( $name, array $settings, array $options ) {
-		$compact = !empty( $options['compact'] );
-
-		$ret = [];
-
-		if ( isset( $settings[ParamValidator::PARAM_DEFAULT] ) ) {
-			$value = $this->stringifyValue(
-				$name, $settings[ParamValidator::PARAM_DEFAULT], $settings, $options
-			);
-			$ret['default'] = $compact ? [ 'value' => $value ] : $value;
-		}
-
-		return $ret;
+	public function getHelpInfo( $name, array $settings, array $options ) {
+		return [];
 	}
 
 }

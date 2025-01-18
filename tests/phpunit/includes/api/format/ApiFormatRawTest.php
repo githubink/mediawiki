@@ -1,11 +1,19 @@
 <?php
 
+namespace MediaWiki\Tests\Api\Format;
+
+use MediaWiki\Api\ApiFormatJson;
+use MediaWiki\Api\ApiFormatRaw;
+use MediaWiki\Api\ApiMain;
+use MWException;
+
 /**
  * @group API
- * @covers ApiFormatRaw
+ * @covers \MediaWiki\Api\ApiFormatRaw
  */
 class ApiFormatRawTest extends ApiFormatTestBase {
 
+	/** @inheritDoc */
 	protected $printerName = 'raw';
 
 	/**
@@ -15,7 +23,7 @@ class ApiFormatRawTest extends ApiFormatTestBase {
 	public static function provideGeneralEncoding() {
 		$options = [
 			'class' => ApiFormatRaw::class,
-			'factory' => function ( ApiMain $main ) {
+			'factory' => static function ( ApiMain $main ) {
 				return new ApiFormatRaw( $main, new ApiFormatJson( $main, 'json' ) );
 			}
 		];
@@ -106,7 +114,7 @@ class ApiFormatRawTest extends ApiFormatTestBase {
 			[],
 			[
 				'class' => ApiFormatRaw::class,
-				'factory' => function ( ApiMain $main ) use ( &$apiMain ) {
+				'factory' => static function ( ApiMain $main ) use ( &$apiMain ) {
 					$apiMain = $main;
 					$printer = new ApiFormatRaw( $main, new ApiFormatJson( $main, 'json' ) );
 					$printer->setFailWithHTTPError( true );

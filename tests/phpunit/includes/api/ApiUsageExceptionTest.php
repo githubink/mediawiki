@@ -1,9 +1,17 @@
 <?php
 
+namespace MediaWiki\Tests\Api;
+
+use MediaWiki\Api\ApiMessage;
+use MediaWiki\Api\ApiUsageException;
+use MediaWiki\Message\Message;
+use MediaWikiIntegrationTestCase;
+use StatusValue;
+
 /**
- * @covers ApiUsageException
+ * @covers \MediaWiki\Api\ApiUsageException
  */
-class ApiUsageExceptionTest extends MediaWikiTestCase {
+class ApiUsageExceptionTest extends MediaWikiIntegrationTestCase {
 
 	public function testCreateWithStatusValue_CanGetAMessageObject() {
 		$messageKey = 'some-message-key';
@@ -12,10 +20,10 @@ class ApiUsageExceptionTest extends MediaWikiTestCase {
 		$statusValue->fatal( $messageKey, $messageParameter );
 
 		$apiUsageException = new ApiUsageException( null, $statusValue );
-		/** @var \Message $gotMessage */
+		/** @var Message $gotMessage */
 		$gotMessage = $apiUsageException->getMessageObject();
 
-		$this->assertInstanceOf( \Message::class, $gotMessage );
+		$this->assertInstanceOf( Message::class, $gotMessage );
 		$this->assertEquals( $messageKey, $gotMessage->getKey() );
 		$this->assertEquals( [ $messageParameter ], $gotMessage->getParams() );
 	}
@@ -31,10 +39,10 @@ class ApiUsageExceptionTest extends MediaWikiTestCase {
 			$expectedCode,
 			$expectedData
 		);
-		/** @var \ApiMessage $gotMessage */
+		/** @var ApiMessage $gotMessage */
 		$gotMessage = $apiUsageException->getMessageObject();
 
-		$this->assertInstanceOf( \ApiMessage::class, $gotMessage );
+		$this->assertInstanceOf( ApiMessage::class, $gotMessage );
 		$this->assertEquals( $expectedMessage->getKey(), $gotMessage->getKey() );
 		$this->assertEquals( $expectedMessage->getParams(), $gotMessage->getParams() );
 		$this->assertEquals( $expectedCode, $gotMessage->getApiCode() );

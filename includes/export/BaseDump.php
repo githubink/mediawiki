@@ -2,7 +2,7 @@
 /**
  * Helper class for the --prefetch option of dumpTextPass.php
  *
- * Copyright © 2005 Brion Vibber <brion@pobox.com>
+ * Copyright © 2005 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
  * This program is free software; you can redistribute it and/or modify
@@ -24,6 +24,8 @@
  * @ingroup Maintenance
  */
 
+use MediaWiki\Revision\SlotRecord;
+
 /**
  * Readahead helper for making large MediaWiki data dumps;
  * reads in a previous XML dump to sequentially prefetch text
@@ -40,19 +42,30 @@
  * @ingroup Maintenance
  */
 class BaseDump {
-	/** @var XMLReader */
+	/** @var XMLReader|null */
 	protected $reader = null;
+	/** @var bool */
 	protected $atEnd = false;
+	/** @var bool */
 	protected $atPageEnd = false;
+	/** @var int */
 	protected $lastPage = 0;
+	/** @var int */
 	protected $lastRev = 0;
+	/** @var string[]|null */
 	protected $infiles = null;
 
+	/**
+	 * @param string $infile
+	 */
 	public function __construct( $infile ) {
 		$this->infiles = explode( ';', $infile );
 		$this->reader = new XMLReader();
 		$infile = array_shift( $this->infiles );
-		$this->reader->open( $infile, null, LIBXML_PARSEHUGE );
+		if ( !$this->reader->open( $infile, null, LIBXML_PARSEHUGE ) ) {
+			$this->debug( __METHOD__ . ' was unable to open xml' );
+			$this->atEnd = true;
+		}
 	}
 
 	/**
@@ -62,9 +75,10 @@ class BaseDump {
 	 *
 	 * @param int $page ID number of page to read
 	 * @param int $rev ID number of revision to read
+	 * @param string $slot Role name of the slot to read
 	 * @return string|null
 	 */
-	function prefetch( $page, $rev ) {
+	public function prefetch( $page, $rev, $slot = SlotRecord::MAIN ) {
 		$page = intval( $page );
 		$rev = intval( $rev );
 		while ( $this->lastPage < $page && !$this->atEnd ) {
@@ -72,7 +86,7 @@ class BaseDump {
 			$this->nextPage();
 		}
 		if ( $this->lastPage > $page || $this->atEnd ) {
-			$this->debug( "BaseDump::prefetch already past page $page "
+			$this->debug( "BaseDump::prefetch already past page $page or failed to open/read input file, "
 				. "looking for rev $rev  [$this->lastPage, $this->lastRev]" );
 
 			return null;
@@ -85,6 +99,18 @@ class BaseDump {
 		if ( $this->lastRev == $rev && !$this->atEnd ) {
 			$this->debug( "BaseDump::prefetch hit on $page, $rev [$this->lastPage, $this->lastRev]" );
 
+			if ( $slot !== SlotRecord::MAIN ) {
+				$lastSlot = SlotRecord::MAIN;
+				while ( $lastSlot !== $slot ) {
+					if ( !$this->skipTo( 'content', 'revision' ) ||
+						!$this->skipTo( 'role', 'revision' )
+					) {
+						return null;
+					}
+					$lastSlot = $this->nodeContents();
+				}
+			}
+
 			return $this->nextText();
 		} else {
 			$this->debug( "BaseDump::prefetch already past rev $rev on page $page "
@@ -94,16 +120,16 @@ class BaseDump {
 		}
 	}
 
-	function debug( $str ) {
-		wfDebug( $str . "\n" );
+	/**
+	 * @param string $str
+	 */
+	protected function debug( $str ) {
+		wfDebug( $str );
 		// global $dumper;
 		// $dumper->progress( $str );
 	}
 
-	/**
-	 * @private
-	 */
-	function nextPage() {
+	private function nextPage() {
 		if ( $this->skipTo( 'page', 'mediawiki' ) ) {
 			if ( $this->skipTo( 'id' ) ) {
 				$this->lastPage = intval( $this->nodeContents() );
@@ -114,16 +140,17 @@ class BaseDump {
 			$this->close();
 			if ( count( $this->infiles ) ) {
 				$infile = array_shift( $this->infiles );
-				$this->reader->open( $infile );
-				$this->atEnd = false;
+				if ( !$this->reader->open( $infile, null, LIBXML_PARSEHUGE ) ) {
+					$this->debug( __METHOD__ . ' was unable to open xml' );
+					$this->atEnd = true;
+				} else {
+					$this->atEnd = false;
+				}
 			}
 		}
 	}
 
-	/**
-	 * @private
-	 */
-	function nextRev() {
+	private function nextRev() {
 		if ( $this->skipTo( 'revision' ) ) {
 			if ( $this->skipTo( 'id' ) ) {
 				$this->lastRev = intval( $this->nodeContents() );
@@ -134,22 +161,22 @@ class BaseDump {
 	}
 
 	/**
-	 * @private
-	 * @return string
+	 * @return string|null
 	 */
-	function nextText() {
-		$this->skipTo( 'text' );
+	private function nextText() {
+		if ( !$this->skipTo( 'text', 'revision' ) ) {
+			return null;
+		}
 
 		return strval( $this->nodeContents() );
 	}
 
 	/**
-	 * @private
 	 * @param string $name
 	 * @param string $parent
 	 * @return bool|null
 	 */
-	function skipTo( $name, $parent = 'page' ) {
+	private function skipTo( $name, $parent = 'page' ) {
 		if ( $this->atEnd ) {
 			return false;
 		}
@@ -176,10 +203,9 @@ class BaseDump {
 	 * Fetches text contents of the current element, assuming
 	 * no sub-elements or such scary things.
 	 *
-	 * @return string
-	 * @private
+	 * @return string|null
 	 */
-	function nodeContents() {
+	private function nodeContents() {
 		if ( $this->atEnd ) {
 			return null;
 		}
@@ -203,10 +229,9 @@ class BaseDump {
 	}
 
 	/**
-	 * @private
 	 * @return null
 	 */
-	function close() {
+	public function close() {
 		$this->reader->close();
 		$this->atEnd = true;
 

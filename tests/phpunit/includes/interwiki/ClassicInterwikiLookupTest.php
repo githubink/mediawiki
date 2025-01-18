@@ -1,17 +1,53 @@
 <?php
+
+use MediaWiki\Config\ServiceOptions;
+use MediaWiki\Interwiki\ClassicInterwikiLookup;
+use MediaWiki\MainConfigNames;
+use MediaWiki\WikiMap\WikiMap;
+use Wikimedia\ObjectCache\WANObjectCache;
+
 /**
- * @covers MediaWiki\Interwiki\ClassicInterwikiLookup
- *
- * @group MediaWiki
+ * @covers \MediaWiki\Interwiki\ClassicInterwikiLookup
  * @group Database
  */
-class ClassicInterwikiLookupTest extends MediaWikiTestCase {
+class ClassicInterwikiLookupTest extends MediaWikiIntegrationTestCase {
 
 	private function populateDB( $iwrows ) {
-		$dbw = wfGetDB( DB_MASTER );
-		$dbw->delete( 'interwiki', '*', __METHOD__ );
-		$dbw->insert( 'interwiki', array_values( $iwrows ), __METHOD__ );
-		$this->tablesUsed[] = 'interwiki';
+		$this->db->newInsertQueryBuilder()
+			->insertInto( 'interwiki' )
+			->rows( $iwrows )
+			->caller( __METHOD__ )
+			->execute();
+	}
+
+	/**
+	 * @param string[]|false $interwikiData
+	 * @return ClassicInterwikiLookup
+	 */
+	private function getClassicInterwikiLookup( $interwikiData ): ClassicInterwikiLookup {
+		$services = $this->getServiceContainer();
+		$lang = $services->getLanguageFactory()->getLanguage( 'en' );
+		$config = [
+				MainConfigNames::InterwikiExpiry => 60 * 60,
+				MainConfigNames::InterwikiCache => $interwikiData,
+				MainConfigNames::InterwikiFallbackSite => 'en',
+				MainConfigNames::InterwikiScopes => 3,
+				MainConfigNames::InterwikiMagic => true,
+				MainConfigNames::VirtualDomainsMapping => [],
+				'wikiId' => WikiMap::getCurrentWikiId(),
+			];
+
+		return new ClassicInterwikiLookup(
+			new ServiceOptions(
+				ClassicInterwikiLookup::CONSTRUCTOR_OPTIONS,
+				$config
+			),
+			$lang,
+			WANObjectCache::newEmpty(),
+			$services->getHookContainer(),
+			$services->getConnectionProvider(),
+			$services->getLanguageNameUtils()
+		);
 	}
 
 	public function testDatabaseStorage() {
@@ -36,14 +72,7 @@ class ClassicInterwikiLookupTest extends MediaWikiTestCase {
 		];
 
 		$this->populateDB( [ $dewiki, $zzwiki ] );
-		$lookup = new \MediaWiki\Interwiki\ClassicInterwikiLookup(
-			Language::factory( 'en' ),
-			WANObjectCache::newEmpty(),
-			60 * 60,
-			false,
-			3,
-			'en'
-		);
+		$lookup = $this->getClassicInterwikiLookup( false );
 
 		$this->assertEquals(
 			[ $dewiki, $zzwiki ],
@@ -83,14 +112,14 @@ class ClassicInterwikiLookupTest extends MediaWikiTestCase {
 
 	/**
 	 * @param string $thisSite
-	 * @param string[] $local
-	 * @param string[] $global
+	 * @param string[][] $local
+	 * @param string[][] $global
 	 *
 	 * @return string[]
 	 */
 	private function populateHash( $thisSite, $local, $global ) {
 		$hash = [];
-		$hash[ '__sites:' . wfWikiID() ] = $thisSite;
+		$hash[ '__sites:' . WikiMap::getCurrentWikiId() ] = $thisSite;
 
 		$globals = [];
 		$locals = [];
@@ -115,75 +144,6 @@ class ClassicInterwikiLookupTest extends MediaWikiTestCase {
 		return $hash;
 	}
 
-	private function populateCDB( $thisSite, $local, $global ) {
-		$cdbFile = tempnam( wfTempDir(), 'MW-ClassicInterwikiLookupTest-' ) . '.cdb';
-		$cdb = \Cdb\Writer::open( $cdbFile );
-
-		$hash = $this->populateHash( $thisSite, $local, $global );
-
-		foreach ( $hash as $key => $value ) {
-			$cdb->set( $key, $value );
-		}
-
-		$cdb->close();
-		return $cdbFile;
-	}
-
-	public function testCDBStorage() {
-		// NOTE: CDB setup is expensive, so we only do
-		//  it once and run all the tests in one go.
-
-		$zzwiki = [
-			'iw_prefix' => 'zz',
-			'iw_url' => 'http://zzwiki.org/wiki/',
-			'iw_local' => 0
-		];
-
-		$dewiki = [
-			'iw_prefix' => 'de',
-			'iw_url' => 'http://de.wikipedia.org/wiki/',
-			'iw_local' => 1
-		];
-
-		$cdbFile = $this->populateCDB(
-			'en',
-			[ $dewiki ],
-			[ $zzwiki ]
-		);
-		$lookup = new \MediaWiki\Interwiki\ClassicInterwikiLookup(
-			Language::factory( 'en' ),
-			WANObjectCache::newEmpty(),
-			60 * 60,
-			$cdbFile,
-			3,
-			'en'
-		);
-
-		$this->assertEquals(
-			[ $zzwiki, $dewiki ],
-			$lookup->getAllPrefixes(),
-			'getAllPrefixes()'
-		);
-
-		$this->assertTrue( $lookup->isValidInterwiki( 'de' ), 'known prefix is valid' );
-		$this->assertTrue( $lookup->isValidInterwiki( 'zz' ), 'known prefix is valid' );
-
-		$interwiki = $lookup->fetch( 'de' );
-		$this->assertInstanceOf( Interwiki::class, $interwiki );
-
-		$this->assertSame( 'http://de.wikipedia.org/wiki/', $interwiki->getURL(), 'getURL' );
-		$this->assertSame( true, $interwiki->isLocal(), 'isLocal' );
-
-		$interwiki = $lookup->fetch( 'zz' );
-		$this->assertInstanceOf( Interwiki::class, $interwiki );
-
-		$this->assertSame( 'http://zzwiki.org/wiki/', $interwiki->getURL(), 'getURL' );
-		$this->assertSame( false, $interwiki->isLocal(), 'isLocal' );
-
-		// cleanup temp file
-		unlink( $cdbFile );
-	}
-
 	public function testArrayStorage() {
 		$zzwiki = [
 			'iw_prefix' => 'zz',
@@ -201,14 +161,7 @@ class ClassicInterwikiLookupTest extends MediaWikiTestCase {
 			[ $dewiki ],
 			[ $zzwiki ]
 		);
-		$lookup = new \MediaWiki\Interwiki\ClassicInterwikiLookup(
-			Language::factory( 'en' ),
-			WANObjectCache::newEmpty(),
-			60 * 60,
-			$hash,
-			3,
-			'en'
-		);
+		$lookup = $this->getClassicInterwikiLookup( $hash );
 
 		$this->assertEquals(
 			[ $zzwiki, $dewiki ],
@@ -254,14 +207,7 @@ class ClassicInterwikiLookupTest extends MediaWikiTestCase {
 			[],
 			[ $zz, $de, $azz ]
 		);
-		$lookup = new \MediaWiki\Interwiki\ClassicInterwikiLookup(
-			Language::factory( 'en' ),
-			WANObjectCache::newEmpty(),
-			60 * 60,
-			$hash,
-			3,
-			'en'
-		);
+		$lookup = $this->getClassicInterwikiLookup( $hash );
 
 		$this->assertEquals(
 			[ $zz, $de, $azz ],

@@ -21,25 +21,31 @@
 
 namespace MediaWiki\Auth;
 
-use Message;
+use MediaWiki\Language\RawMessage;
+use MediaWiki\Message\Message;
 
 /**
- * This is an authentication request that just implements a simple button.
+ * This is an authentication request that just implements a simple button. Can either be
+ * subclassed, or used directly. When used directly, with $required = false in the constructor,
+ * the ButtonAuthenticationRequest will only be included in the set of requests when the button
+ * was clicked; with $required = true, it will always be included and $button->{$name} can be
+ * used to check whether it has been clicked.
+ *
+ * @stable to extend
  * @ingroup Auth
  * @since 1.27
  */
+#[\AllowDynamicProperties]
 class ButtonAuthenticationRequest extends AuthenticationRequest {
 	/** @var string */
 	protected $name;
 
-	/** @var Message */
-	protected $label;
-
-	/** @var Message */
-	protected $help;
+	protected Message $label;
+	protected Message $help;
 
 	/**
-	 * @param string $name Button name
+	 * @stable to call
+	 * @param string $name Button name (e.g. HTML "name" attribute)
 	 * @param Message $label Button label
 	 * @param Message $help Button help
 	 * @param bool $required The button is required for authentication to proceed.
@@ -51,10 +57,18 @@ class ButtonAuthenticationRequest extends AuthenticationRequest {
 		$this->required = $required ? self::REQUIRED : self::OPTIONAL;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getUniqueId() {
 		return parent::getUniqueId() . ':' . $this->name;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getFieldInfo() {
 		return [
 			$this->name => [
@@ -73,30 +87,34 @@ class ButtonAuthenticationRequest extends AuthenticationRequest {
 	 *  exactly one matching request.
 	 */
 	public static function getRequestByName( array $reqs, $name ) {
-		$requests = array_filter( $reqs, function ( $req ) use ( $name ) {
+		$requests = array_filter( $reqs, static function ( $req ) use ( $name ) {
 			return $req instanceof ButtonAuthenticationRequest && $req->name === $name;
 		} );
+		// @phan-suppress-next-line PhanTypeMismatchReturnSuperType False positive
 		return count( $requests ) === 1 ? reset( $requests ) : null;
 	}
 
 	/**
 	 * @codeCoverageIgnore
+	 * @stable to override
 	 * @param array $data
 	 * @return AuthenticationRequest|static
 	 */
 	public static function __set_state( $data ) {
 		if ( !isset( $data['label'] ) ) {
-			$data['label'] = new \RawMessage( '$1', $data['name'] );
+			$data['label'] = new RawMessage( '$1', $data['name'] );
 		} elseif ( is_string( $data['label'] ) ) {
-			$data['label'] = new \Message( $data['label'] );
-		} elseif ( is_array( $data['label'] ) ) {
+			$data['label'] = new Message( $data['label'] );
+		} elseif ( is_array( $data['label'] ) && $data['label'] ) {
+			// @phan-suppress-next-line PhanParamTooFewUnpack Should infer non-emptiness from above
 			$data['label'] = Message::newFromKey( ...$data['label'] );
 		}
 		if ( !isset( $data['help'] ) ) {
-			$data['help'] = new \RawMessage( '$1', $data['name'] );
+			$data['help'] = new RawMessage( '$1', $data['name'] );
 		} elseif ( is_string( $data['help'] ) ) {
-			$data['help'] = new \Message( $data['help'] );
-		} elseif ( is_array( $data['help'] ) ) {
+			$data['help'] = new Message( $data['help'] );
+		} elseif ( is_array( $data['help'] ) && $data['help'] ) {
+			// @phan-suppress-next-line PhanParamTooFewUnpack Should infer non-emptiness from above
 			$data['help'] = Message::newFromKey( ...$data['help'] );
 		}
 		$ret = new static( $data['name'], $data['label'], $data['help'] );

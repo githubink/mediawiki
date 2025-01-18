@@ -1,14 +1,19 @@
 <?php
 
-namespace MediaWiki\Session;
+namespace MediaWiki\Tests\Session;
+
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiServices;
+use Wikimedia\ObjectCache\CachedBagOStuff;
+use Wikimedia\ObjectCache\HashBagOStuff;
 
 /**
  * BagOStuff with utility functions for MediaWiki\\Session\\* testing
  */
-class TestBagOStuff extends \CachedBagOStuff {
+class TestBagOStuff extends CachedBagOStuff {
 
 	public function __construct() {
-		parent::__construct( new \HashBagOStuff );
+		parent::__construct( new HashBagOStuff );
 	}
 
 	/**
@@ -51,7 +56,7 @@ class TestBagOStuff extends \CachedBagOStuff {
 	 * @param array|mixed $blob Session metadata and data
 	 */
 	public function setRawSession( $id, $blob ) {
-		$expiry = \RequestContext::getMain()->getConfig()->get( 'ObjectCacheSessionExpiry' );
+		$expiry = MediaWikiServices::getInstance()->getMainConfig()->get( MainConfigNames::ObjectCacheSessionExpiry );
 		$this->set( $this->makeKey( 'MWSession', $id ), $blob, $expiry );
 	}
 
@@ -68,7 +73,7 @@ class TestBagOStuff extends \CachedBagOStuff {
 	 * @return mixed
 	 */
 	public function getSessionFromBackend( $id ) {
-		return $this->backend->get( $this->makeKey( 'MWSession', $id ) );
+		return $this->store->get( $this->makeKey( 'MWSession', $id ) );
 	}
 
 	/**
@@ -79,3 +84,6 @@ class TestBagOStuff extends \CachedBagOStuff {
 	}
 
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( TestBagOStuff::class, 'MediaWiki\\Session\\TestBagOStuff' );

@@ -1,7 +1,4 @@
 <?php
-
-use Wikimedia\Assert\Assert;
-
 /**
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -21,6 +18,12 @@ use Wikimedia\Assert\Assert;
  * @file
  */
 
+declare( strict_types = 1 );
+
+namespace MediaWiki\Password;
+
+use LogicException;
+
 /**
  * Implements Argon2, a modern key derivation algorithm designed to resist GPU cracking and
  * side-channel attacks.
@@ -31,7 +34,7 @@ class Argon2Password extends Password {
 	/**
 	 * @var null[] Array with known password_hash() option names as keys
 	 */
-	private static $knownOptions = [
+	private const KNOWN_OPTIONS = [
 		'memory_cost' => null,
 		'time_cost' => null,
 		'threads' => null,
@@ -40,31 +43,28 @@ class Argon2Password extends Password {
 	/**
 	 * @inheritDoc
 	 */
-	protected function isSupported() {
-		// It is actually possible to have a PHP build with Argon2i but not Argon2id
-		return defined( 'PASSWORD_ARGON2I' ) || defined( 'PASSWORD_ARGON2ID' );
+	protected function isSupported(): bool {
+		return defined( 'PASSWORD_ARGON2ID' );
 	}
 
 	/**
-	 * @return mixed[] Array of 2nd and third parmeters to password_hash()
+	 * @return mixed[] Array of 2nd and third parameters to password_hash()
 	 */
-	private function prepareParams() {
+	private function prepareParams(): array {
 		switch ( $this->config['algo'] ) {
 			case 'argon2i':
 				$algo = PASSWORD_ARGON2I;
 				break;
 			case 'argon2id':
-				$algo = PASSWORD_ARGON2ID;
-				break;
 			case 'auto':
-				$algo = defined( 'PASSWORD_ARGON2ID' ) ? PASSWORD_ARGON2ID : PASSWORD_ARGON2I;
+				$algo = PASSWORD_ARGON2ID;
 				break;
 			default:
 				throw new LogicException( "Unexpected algo: {$this->config['algo']}" );
 
 		}
 
-		$params = array_intersect_key( $this->config, self::$knownOptions );
+		$params = array_intersect_key( $this->config, self::KNOWN_OPTIONS );
 
 		return [ $algo, $params ];
 	}
@@ -72,38 +72,22 @@ class Argon2Password extends Password {
 	/**
 	 * @inheritDoc
 	 */
-	public function crypt( $password ) {
-		list( $algo, $params ) = $this->prepareParams();
+	public function crypt( string $password ): void {
+		[ $algo, $params ] = $this->prepareParams();
 		$this->hash = password_hash( $password, $algo, $params );
 	}
 
 	/**
 	 * @inheritDoc
 	 */
-	public function equals( $other ) {
-		wfDeprecated( __METHOD__, '1.33' );
-
-		if ( is_string( $other ) ) {
-			return $this->verify( $other );
-		}
-
-		// Argon2 key derivation is not deterministic, can't pass objects to equals()
-		return false;
-	}
-
-	/**
-	 * @inheritDoc
-	 */
-	public function verify( $password ) {
-		Assert::parameterType( 'string', $password, '$password' );
-
+	public function verify( string $password ): bool {
 		return password_verify( $password, $this->hash );
 	}
 
 	/**
 	 * @inheritDoc
 	 */
-	public function toString() {
+	public function toString(): string {
 		$res = ":argon2:{$this->hash}";
 		$this->assertIsSafeSize( $res );
 		return $res;
@@ -112,8 +96,11 @@ class Argon2Password extends Password {
 	/**
 	 * @inheritDoc
 	 */
-	public function needsUpdate() {
-		list( $algo, $params ) = $this->prepareParams();
+	public function needsUpdate(): bool {
+		[ $algo, $params ] = $this->prepareParams();
 		return password_needs_rehash( $this->hash, $algo, $params );
 	}
 }
+
+/** @deprecated since 1.43 use MediaWiki\\Password\\Argon2Password */
+class_alias( Argon2Password::class, 'Argon2Password' );

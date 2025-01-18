@@ -1,9 +1,18 @@
 <?php
 
+use MediaWiki\Content\Content;
+use MediaWiki\Content\ContentHandler;
+use MediaWiki\Content\Renderer\ContentParseParams;
+use MediaWiki\Parser\ParserOutput;
+
 class DummyContentHandlerForTesting extends ContentHandler {
 
 	public function __construct( $dataModel, $formats = [ DummyContentForTesting::MODEL_ID ] ) {
 		parent::__construct( $dataModel, $formats );
+	}
+
+	protected function getContentClass() {
+		return DummyContentForTesting::class;
 	}
 
 	/**
@@ -27,9 +36,7 @@ class DummyContentHandlerForTesting extends ContentHandler {
 	 * @return Content
 	 */
 	public function unserializeContent( $blob, $format = null ) {
-		$d = unserialize( $blob );
-
-		return new DummyContentForTesting( $d );
+		return new DummyContentForTesting( $blob );
 	}
 
 	/**
@@ -38,5 +45,26 @@ class DummyContentHandlerForTesting extends ContentHandler {
 	 */
 	public function makeEmptyContent() {
 		return new DummyContentForTesting( '' );
+	}
+
+	public function generateHTMLOnEdit(): bool {
+		return false;
+	}
+
+	/**
+	 * @see ContentHandler::fillParserOutput()
+	 *
+	 * @since 1.38
+	 * @param Content $content
+	 * @param ContentParseParams $cpoParams
+	 * @param ParserOutput &$output The output object to fill (reference).
+	 */
+	protected function fillParserOutput(
+		Content $content,
+		ContentParseParams $cpoParams,
+		ParserOutput &$output
+	) {
+			'@phan-var DummyContentForTesting $content';
+			$output = new ParserOutput( $content->getNativeData() );
 	}
 }

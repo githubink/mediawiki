@@ -1,129 +1,35 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
-use MediaWiki\Revision\SlotRecord;
-use MediaWiki\Revision\SlotRenderingProvider;
+use MediaWiki\Content\FileContentHandler;
+use MediaWiki\Content\WikitextContent;
+use MediaWiki\Content\WikitextContentHandler;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Page\PageReferenceValue;
+use MediaWiki\Parser\ParserOptions;
+use MediaWiki\Parser\ParserOutput;
+use MediaWiki\Parser\ParserOutputFlags;
+use MediaWiki\Title\Title;
+use MediaWiki\Title\TitleFactory;
+use MediaWiki\User\UserIdentity;
+use Wikimedia\Rdbms\IDBAccessObject;
+use Wikimedia\TestingAccessWrapper;
 
 /**
+ * See also unit tests at \MediaWiki\Tests\Unit\WikitextContentHandlerTest
+ *
  * @group ContentHandler
+ * @covers \MediaWiki\Content\WikitextContentHandler
+ * @covers \MediaWiki\Content\TextContentHandler
+ * @covers \MediaWiki\Content\ContentHandler
  */
 class WikitextContentHandlerTest extends MediaWikiLangTestCase {
-	/**
-	 * @var ContentHandler
-	 */
-	private $handler;
+	private WikitextContentHandler $handler;
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
-		$this->handler = ContentHandler::getForModelID( CONTENT_MODEL_WIKITEXT );
-	}
-
-	/**
-	 * @covers WikitextContentHandler::serializeContent
-	 */
-	public function testSerializeContent() {
-		$content = new WikitextContent( 'hello world' );
-
-		$this->assertEquals( 'hello world', $this->handler->serializeContent( $content ) );
-		$this->assertEquals(
-			'hello world',
-			$this->handler->serializeContent( $content, CONTENT_FORMAT_WIKITEXT )
-		);
-
-		try {
-			$this->handler->serializeContent( $content, 'dummy/foo' );
-			$this->fail( "serializeContent() should have failed on unknown format" );
-		} catch ( MWException $e ) {
-			// ok, as expected
-		}
-	}
-
-	/**
-	 * @covers WikitextContentHandler::unserializeContent
-	 */
-	public function testUnserializeContent() {
-		$content = $this->handler->unserializeContent( 'hello world' );
-		$this->assertEquals( 'hello world', $content->getText() );
-
-		$content = $this->handler->unserializeContent( 'hello world', CONTENT_FORMAT_WIKITEXT );
-		$this->assertEquals( 'hello world', $content->getText() );
-
-		try {
-			$this->handler->unserializeContent( 'hello world', 'dummy/foo' );
-			$this->fail( "unserializeContent() should have failed on unknown format" );
-		} catch ( MWException $e ) {
-			// ok, as expected
-		}
-	}
-
-	/**
-	 * @covers WikitextContentHandler::makeEmptyContent
-	 */
-	public function testMakeEmptyContent() {
-		$content = $this->handler->makeEmptyContent();
-
-		$this->assertTrue( $content->isEmpty() );
-		$this->assertEquals( '', $content->getText() );
-	}
-
-	public static function dataIsSupportedFormat() {
-		return [
-			[ null, true ],
-			[ CONTENT_FORMAT_WIKITEXT, true ],
-			[ 99887766, false ],
-		];
-	}
-
-	/**
-	 * @dataProvider provideMakeRedirectContent
-	 * @param Title|string $title Title object or string for Title::newFromText()
-	 * @param string $expected Serialized form of the content object built
-	 * @covers WikitextContentHandler::makeRedirectContent
-	 */
-	public function testMakeRedirectContent( $title, $expected ) {
-		MediaWikiServices::getInstance()->getContentLanguage()->resetNamespaces();
-
-		MediaWikiServices::getInstance()->resetServiceForTesting( 'MagicWordFactory' );
-
-		if ( is_string( $title ) ) {
-			$title = Title::newFromText( $title );
-		}
-		$content = $this->handler->makeRedirectContent( $title );
-		$this->assertEquals( $expected, $content->serialize() );
-	}
-
-	public static function provideMakeRedirectContent() {
-		return [
-			[ 'Hello', '#REDIRECT [[Hello]]' ],
-			[ 'Template:Hello', '#REDIRECT [[Template:Hello]]' ],
-			[ 'Hello#section', '#REDIRECT [[Hello#section]]' ],
-			[ 'user:john_doe#section', '#REDIRECT [[User:John doe#section]]' ],
-			[ 'MEDIAWIKI:FOOBAR', '#REDIRECT [[MediaWiki:FOOBAR]]' ],
-			[ 'Category:Foo', '#REDIRECT [[:Category:Foo]]' ],
-			[ Title::makeTitle( NS_MAIN, 'en:Foo' ), '#REDIRECT [[en:Foo]]' ],
-			[ Title::makeTitle( NS_MAIN, 'Foo', '', 'en' ), '#REDIRECT [[:en:Foo]]' ],
-			[
-				Title::makeTitle( NS_MAIN, 'Bar', 'fragment', 'google' ),
-				'#REDIRECT [[google:Bar#fragment]]'
-			],
-		];
-	}
-
-	/**
-	 * @dataProvider dataIsSupportedFormat
-	 * @covers WikitextContentHandler::isSupportedFormat
-	 */
-	public function testIsSupportedFormat( $format, $supported ) {
-		$this->assertEquals( $supported, $this->handler->isSupportedFormat( $format ) );
-	}
-
-	/**
-	 * @covers WikitextContentHandler::supportsDirectEditing
-	 */
-	public function testSupportsDirectEditing() {
-		$handler = new WikiTextContentHandler();
-		$this->assertTrue( $handler->supportsDirectEditing(), 'direct editing is supported' );
+		$this->handler = $this->getServiceContainer()->getContentHandlerFactory()
+			->getContentHandler( CONTENT_MODEL_WIKITEXT );
 	}
 
 	public static function dataMerge3() {
@@ -160,7 +66,6 @@ class WikitextContentHandlerTest extends MediaWikiLangTestCase {
 
 	/**
 	 * @dataProvider dataMerge3
-	 * @covers WikitextContentHandler::merge3
 	 */
 	public function testMerge3( $old, $mine, $yours, $expected ) {
 		$this->markTestSkippedIfNoDiff3();
@@ -226,11 +131,10 @@ class WikitextContentHandlerTest extends MediaWikiLangTestCase {
 
 	/**
 	 * @dataProvider dataGetAutosummary
-	 * @covers WikitextContentHandler::getAutosummary
 	 */
 	public function testGetAutosummary( $old, $new, $flags, $expected ) {
-		$oldContent = is_null( $old ) ? null : new WikitextContent( $old );
-		$newContent = is_null( $new ) ? null : new WikitextContent( $new );
+		$oldContent = $old === null ? null : new WikitextContent( $old );
+		$newContent = $new === null ? null : new WikitextContent( $new );
 
 		$summary = $this->handler->getAutosummary( $oldContent, $newContent, $flags );
 
@@ -318,10 +222,9 @@ class WikitextContentHandlerTest extends MediaWikiLangTestCase {
 
 	/**
 	 * @dataProvider dataGetChangeTag
-	 * @covers WikitextContentHandler::getChangeTag
 	 */
 	public function testGetChangeTag( $old, $new, $flags, $expected ) {
-		$this->setMwGlobals( 'wgSoftwareTags', [
+		$this->overrideConfigValue( MainConfigNames::SoftwareTags, [
 			'mw-new-redirect' => true,
 			'mw-removed-redirect' => true,
 			'mw-changed-redirect-target' => true,
@@ -330,71 +233,90 @@ class WikitextContentHandlerTest extends MediaWikiLangTestCase {
 			'mw-blank' => true,
 			'mw-replace' => true,
 		] );
-		$oldContent = is_null( $old ) ? null : new WikitextContent( $old );
-		$newContent = is_null( $new ) ? null : new WikitextContent( $new );
+		$oldContent = $old === null ? null : new WikitextContent( $old );
+		$newContent = $new === null ? null : new WikitextContent( $new );
 
 		$tag = $this->handler->getChangeTag( $oldContent, $newContent, $flags );
 
 		$this->assertSame( $expected, $tag );
 	}
 
-	/**
-	 * @covers WikitextContentHandler::getDataForSearchIndex
-	 */
+	public function testGetFieldsForSearchIndex() {
+		$searchEngine = $this->createMock( SearchEngine::class );
+
+		$searchEngine->method( 'makeSearchFieldMapping' )
+			->willReturnCallback( static function ( $name, $type ) {
+				return new DummySearchIndexFieldDefinition( $name, $type );
+			} );
+
+		$this->hideDeprecated( 'MediaWiki\\Content\\ContentHandler::getForModelID' );
+
+		$fields = $this->handler->getFieldsForSearchIndex( $searchEngine );
+
+		$this->assertArrayHasKey( 'category', $fields );
+		$this->assertArrayHasKey( 'external_link', $fields );
+		$this->assertArrayHasKey( 'outgoing_link', $fields );
+		$this->assertArrayHasKey( 'template', $fields );
+		$this->assertArrayHasKey( 'content_model', $fields );
+	}
+
 	public function testDataIndexFieldsFile() {
 		$mockEngine = $this->createMock( SearchEngine::class );
-		$title = Title::newFromText( 'Somefile.jpg', NS_FILE );
-		$page = new WikiPage( $title );
+		$title = Title::makeTitle( NS_FILE, 'Somefile.jpg' );
+		$page = $this->getServiceContainer()->getWikiPageFactory()->newFromTitle( $title );
+		// Mark the page as not existent to avoid DB queries.
+		$pageWrapper = TestingAccessWrapper::newFromObject( $page );
+		$pageWrapper->mLatest = null;
+		$pageWrapper->mId = 0;
+		$pageWrapper->mDataLoadedFrom = IDBAccessObject::READ_NORMAL;
 
 		$fileHandler = $this->getMockBuilder( FileContentHandler::class )
 			->disableOriginalConstructor()
-			->setMethods( [ 'getDataForSearchIndex' ] )
+			->onlyMethods( [ 'getDataForSearchIndex' ] )
 			->getMock();
 
 		$handler = $this->getMockBuilder( WikitextContentHandler::class )
 			->disableOriginalConstructor()
-			->setMethods( [ 'getFileHandler' ] )
+			->onlyMethods( [ 'getFileHandler' ] )
 			->getMock();
 
-		$handler->method( 'getFileHandler' )->will( $this->returnValue( $fileHandler ) );
+		$handler->method( 'getFileHandler' )->willReturn( $fileHandler );
 		$fileHandler->expects( $this->once() )
 			->method( 'getDataForSearchIndex' )
-			->will( $this->returnValue( [ 'file_text' => 'This is file content' ] ) );
+			->willReturn( [ 'file_text' => 'This is file content' ] );
 
-		$data = $handler->getDataForSearchIndex( $page, new ParserOutput(), $mockEngine );
+		$data = $handler->getDataForSearchIndex( $page, new ParserOutput( '' ), $mockEngine );
 		$this->assertArrayHasKey( 'file_text', $data );
 		$this->assertEquals( 'This is file content', $data['file_text'] );
 	}
 
-	/**
-	 * @covers ContentHandler::getSecondaryDataUpdates
-	 */
-	public function testGetSecondaryDataUpdates() {
-		$title = Title::newFromText( 'Somefile.jpg', NS_FILE );
-		$content = new WikitextContent( '' );
+	public function testHadSignature() {
+		$services = $this->getServiceContainer();
 
-		/** @var SlotRenderingProvider $srp */
-		$srp = $this->getMock( SlotRenderingProvider::class );
+		$pageObj = PageReferenceValue::localReference( NS_MAIN, __CLASS__ );
+		// Force a content model in the converted Title to avoid DB queries.
+		$title = $services->getTitleFactory()->newFromPageReference( $pageObj );
+		$title->setContentModel( CONTENT_MODEL_WIKITEXT );
+		$titleFactory = $this->createMock( TitleFactory::class );
+		$titleFactory->method( 'newFromPageReference' )
+			->with( $pageObj )
+			->willReturn( $title );
+		$this->setService( 'TitleFactory', $titleFactory );
 
-		$handler = new WikitextContentHandler();
-		$updates = $handler->getSecondaryDataUpdates( $title, $content, SlotRecord::MAIN, $srp );
+		$contentTransformer = $services->getContentTransformer();
+		$contentRenderer = $services->getContentRenderer();
+		$this->hideDeprecated( 'AbstractContent::preSaveTransform' );
 
-		$this->assertEquals( [], $updates );
+		$content = new WikitextContent( '~~~~' );
+		$pstContent = $contentTransformer->preSaveTransform(
+			$content,
+			$pageObj,
+			$this->createMock( UserIdentity::class ),
+			ParserOptions::newFromAnon()
+		);
+
+		$this->assertTrue( $contentRenderer->getParserOutput( $pstContent, $pageObj )->getOutputFlag(
+			ParserOutputFlags::USER_SIGNATURE
+		) );
 	}
-
-	/**
-	 * @covers ContentHandler::getDeletionUpdates
-	 */
-	public function testGetDeletionUpdates() {
-		$title = Title::newFromText( 'Somefile.jpg', NS_FILE );
-		$content = new WikitextContent( '' );
-
-		$srp = $this->getMock( SlotRenderingProvider::class );
-
-		$handler = new WikitextContentHandler();
-		$updates = $handler->getDeletionUpdates( $title, SlotRecord::MAIN );
-
-		$this->assertEquals( [], $updates );
-	}
-
 }

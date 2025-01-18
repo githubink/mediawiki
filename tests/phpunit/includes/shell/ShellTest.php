@@ -1,17 +1,17 @@
 <?php
 
+use MediaWiki\MainConfigNames;
 use MediaWiki\Shell\Command;
 use MediaWiki\Shell\Shell;
-use Wikimedia\TestingAccessWrapper;
 
 /**
  * @covers \MediaWiki\Shell\Shell
  * @group Shell
  */
-class ShellTest extends MediaWikiTestCase {
+class ShellTest extends MediaWikiIntegrationTestCase {
 
 	public function testIsDisabled() {
-		$this->assertInternalType( 'bool', Shell::isDisabled() ); // sanity
+		$this->assertIsBool( Shell::isDisabled() );
 	}
 
 	/**
@@ -21,10 +21,10 @@ class ShellTest extends MediaWikiTestCase {
 		if ( wfIsWindows() ) {
 			$this->markTestSkipped( 'This test requires a POSIX environment.' );
 		}
-		$this->assertSame( $expected, call_user_func_array( [ Shell::class, 'escape' ], $args ) );
+		$this->assertSame( $expected, Shell::escape( ...$args ) );
 	}
 
-	public function provideEscape() {
+	public static function provideEscape() {
 		return [
 			'simple' => [ [ 'true' ], "'true'" ],
 			'with args' => [ [ 'convert', '-font', 'font name' ], "'convert' '-font' 'font name'" ],
@@ -37,7 +37,8 @@ class ShellTest extends MediaWikiTestCase {
 	 * @covers \MediaWiki\Shell\Shell::makeScriptCommand
 	 * @dataProvider provideMakeScriptCommand
 	 *
-	 * @param string $expected
+	 * @param string $expected expected in POSIX
+	 * @param string $expectedWin expected in Windows
 	 * @param string $script
 	 * @param string[] $parameters
 	 * @param string[] $options
@@ -45,13 +46,14 @@ class ShellTest extends MediaWikiTestCase {
 	 */
 	public function testMakeScriptCommand(
 		$expected,
+		$expectedWin,
 		$script,
 		$parameters,
 		$options = [],
 		$hook = null
 	) {
 		// Running tests under Vagrant involves MWMultiVersion that uses the below hook
-		$this->setMwGlobals( 'wgHooks', [] );
+		$this->overrideConfigValue( MainConfigNames::Hooks, [] );
 
 		if ( $hook ) {
 			$this->setTemporaryHook( 'wfShellWikiCmd', $hook );
@@ -61,44 +63,54 @@ class ShellTest extends MediaWikiTestCase {
 		$command->params( 'safe' )
 			->unsafeParams( 'unsafe' );
 
-		$this->assertType( Command::class, $command );
+		$this->assertInstanceOf( Command::class, $command );
 
-		$wrapper = TestingAccessWrapper::newFromObject( $command );
-		$this->assertEquals( $expected, $wrapper->command );
-		$this->assertEquals( 0, $wrapper->restrictions & Shell::NO_LOCALSETTINGS );
+		if ( wfIsWindows() ) {
+			$this->assertEquals( $expectedWin, $command->getCommandString() );
+		} else {
+			$this->assertEquals( $expected, $command->getCommandString() );
+		}
+		$this->assertSame( [], $command->getDisallowedPaths() );
 	}
 
-	public function provideMakeScriptCommand() {
+	public static function provideMakeScriptCommand() {
 		global $wgPhpCli;
 
+		$IP = MW_INSTALL_PATH;
+
 		return [
-			[
-				"'$wgPhpCli' 'maintenance/foobar.php' 'bar'\\''\"baz' 'safe' unsafe",
-				'maintenance/foobar.php',
+			'no option' => [
+				"'$wgPhpCli' '$IP/maintenance/run.php' '$IP/maintenance/foobar.php' 'bar'\\''\"baz' 'safe' unsafe",
+				"\"$wgPhpCli\" \"$IP/maintenance/run.php\" \"$IP/maintenance/foobar.php\" \"bar'\\\"baz\" \"safe\" unsafe",
+				"$IP/maintenance/foobar.php",
 				[ 'bar\'"baz' ],
 			],
-			[
-				"'$wgPhpCli' 'changed.php' '--wiki=somewiki' 'bar'\\''\"baz' 'safe' unsafe",
+			'hook' => [
+				"'$wgPhpCli' '$IP/maintenance/run.php' 'changed.php' '--wiki=somewiki' 'bar'\\''\"baz' 'safe' unsafe",
+				"\"$wgPhpCli\" \"$IP/maintenance/run.php\" \"changed.php\" \"--wiki=somewiki\" \"bar'\\\"baz\" \"safe\" unsafe",
 				'maintenance/foobar.php',
 				[ 'bar\'"baz' ],
 				[],
-				function ( &$script, array &$parameters ) {
+				static function ( &$script, array &$parameters ) {
 					$script = 'changed.php';
 					array_unshift( $parameters, '--wiki=somewiki' );
 				}
 			],
-			[
-				"'/bin/perl' 'maintenance/foobar.php' 'bar'\\''\"baz' 'safe' unsafe",
-				'maintenance/foobar.php',
-				[ 'bar\'"baz' ],
+			'php option' => [
+				"'/bin/perl' '$IP/maintenance/run.php' 'maintenance/foobar.php'  'safe' unsafe",
+				"\"/bin/perl\" \"$IP/maintenance/run.php\" \"maintenance/foobar.php\"  \"safe\" unsafe",
+				"maintenance/foobar.php",
+				[],
 				[ 'php' => '/bin/perl' ],
 			],
-			[
-				"'$wgPhpCli' 'foobinize' 'maintenance/foobar.php' 'bar'\\''\"baz' 'safe' unsafe",
-				'maintenance/foobar.php',
-				[ 'bar\'"baz' ],
+			'wrapper option' => [
+				"'$wgPhpCli' 'foobinize' 'maintenance/foobar.php'  'safe' unsafe",
+				"\"$wgPhpCli\" \"foobinize\" \"maintenance/foobar.php\"  \"safe\" unsafe",
+				"maintenance/foobar.php",
+				[],
 				[ 'wrapper' => 'foobinize' ],
 			],
 		];
 	}
+
 }

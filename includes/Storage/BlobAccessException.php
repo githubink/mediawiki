@@ -1,7 +1,5 @@
 <?php
 /**
- * Exception representing a failure to look up a revision.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -27,6 +25,7 @@ use RuntimeException;
 /**
  * Exception representing a failure to access a data blob.
  *
+ * @newable
  * @since 1.31
  */
 class BlobAccessException extends RuntimeException {

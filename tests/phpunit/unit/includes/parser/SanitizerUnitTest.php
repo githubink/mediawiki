@@ -1,98 +1,77 @@
 <?php
 
+namespace MediaWiki\Tests\Parser;
+
+use MediaWiki\Parser\Sanitizer;
+use MediaWikiUnitTestCase;
+use UtfNormal\Constants;
+
 /**
- * @todo Tests covering decodeCharReferences can be refactored into a single
- * method and dataprovider.
- *
  * @group Sanitizer
  */
 class SanitizerUnitTest extends MediaWikiUnitTestCase {
 
 	/**
-	 * @covers Sanitizer::decodeCharReferences
+	 * @dataProvider provideDecodeCharReferences
+	 * @covers \MediaWiki\Parser\Sanitizer::decodeCharReferences
 	 */
-	public function testDecodeNamedEntities() {
-		$this->assertEquals(
-			"\xc3\xa9cole",
-			Sanitizer::decodeCharReferences( '&eacute;cole' ),
-			'decode named entities'
-		);
+	public function testDecodeCharReferences( string $expected, string $input ) {
+		$this->assertSame( $expected, Sanitizer::decodeCharReferences( $input ) );
 	}
 
-	/**
-	 * @covers Sanitizer::decodeCharReferences
-	 */
-	public function testDecodeNumericEntities() {
-		$this->assertEquals(
-			"\xc4\x88io bonas dans l'\xc3\xa9cole!",
-			Sanitizer::decodeCharReferences( "&#x108;io bonas dans l'&#233;cole!" ),
-			'decode numeric entities'
-		);
-	}
-
-	/**
-	 * @covers Sanitizer::decodeCharReferences
-	 */
-	public function testDecodeMixedEntities() {
-		$this->assertEquals(
-			"\xc4\x88io bonas dans l'\xc3\xa9cole!",
-			Sanitizer::decodeCharReferences( "&#x108;io bonas dans l'&eacute;cole!" ),
-			'decode mixed numeric/named entities'
-		);
-	}
-
-	/**
-	 * @covers Sanitizer::decodeCharReferences
-	 */
-	public function testDecodeMixedComplexEntities() {
-		$this->assertEquals(
-			"\xc4\x88io bonas dans l'\xc3\xa9cole! (mais pas &#x108;io dans l'&eacute;cole)",
-			Sanitizer::decodeCharReferences(
-				"&#x108;io bonas dans l'&eacute;cole! (mais pas &amp;#x108;io dans l'&#38;eacute;cole)"
-			),
-			'decode mixed complex entities'
-		);
-	}
-
-	/**
-	 * @covers Sanitizer::decodeCharReferences
-	 */
-	public function testInvalidAmpersand() {
-		$this->assertEquals(
-			'a & b',
-			Sanitizer::decodeCharReferences( 'a & b' ),
-			'Invalid ampersand'
-		);
-	}
-
-	/**
-	 * @covers Sanitizer::decodeCharReferences
-	 */
-	public function testInvalidEntities() {
-		$this->assertEquals(
-			'&foo;',
-			Sanitizer::decodeCharReferences( '&foo;' ),
-			'Invalid named entity'
-		);
-	}
-
-	/**
-	 * @covers Sanitizer::decodeCharReferences
-	 */
-	public function testInvalidNumberedEntities() {
-		$this->assertEquals(
-			UtfNormal\Constants::UTF8_REPLACEMENT,
-			Sanitizer::decodeCharReferences( "&#88888888888888;" ),
-			'Invalid numbered entity'
-		);
+	public static function provideDecodeCharReferences() {
+		return [
+			'decode named entities' => [
+				"\u{00E9}cole",
+				'&eacute;cole',
+			],
+			'decode numeric entities' => [
+				"\u{0108}io bonas dans l'\u{00E9}cole!",
+				"&#x108;io bonas dans l'&#233;cole!",
+			],
+			'decode mixed numeric/named entities' => [
+				"\u{0108}io bonas dans l'\u{00E9}cole!",
+				"&#x108;io bonas dans l'&eacute;cole!",
+			],
+			'decode mixed complex entities' => [
+				"\u{0108}io bonas dans l'\u{00E9}cole! (mais pas &#x108;io dans l'&eacute;cole)",
+				"&#x108;io bonas dans l'&eacute;cole! (mais pas &amp;#x108;io dans l'&#38;eacute;cole)",
+			],
+			'Invalid ampersand' => [
+				'a & b',
+				'a & b',
+			],
+			'Invalid named entity' => [
+				'&foo;',
+				'&foo;',
+			],
+			'Invalid numbered entity (decimal)' => [
+				Constants::UTF8_REPLACEMENT,
+				"&#888888888888888888;",
+			],
+			'Invalid numbered entity (hex)' => [
+				Constants::UTF8_REPLACEMENT,
+				"&#x88888888888888888;",
+			],
+			// These cases are also "very large" numbers, but they will
+			// truncate down to ASCII.  So be careful.
+			'Invalid numbered entity w/ valid truncation (decimal)' => [
+				Constants::UTF8_REPLACEMENT,
+				"&#18446744073709551681;",
+			],
+			'Invalid numbered entity w/ valid truncation (hex)' => [
+				Constants::UTF8_REPLACEMENT,
+				"&#x10000000000000041;",
+			],
+		];
 	}
 
 	/**
 	 * @dataProvider provideTagAttributesToDecode
-	 * @covers Sanitizer::decodeTagAttributes
+	 * @covers \MediaWiki\Parser\Sanitizer::decodeTagAttributes
 	 */
 	public function testDecodeTagAttributes( $expected, $attributes, $message = '' ) {
-		$this->assertEquals( $expected,
+		$this->assertSame( $expected,
 			Sanitizer::decodeTagAttributes( $attributes ),
 			$message
 		);
@@ -165,10 +144,10 @@ class SanitizerUnitTest extends MediaWikiUnitTestCase {
 
 	/**
 	 * @dataProvider provideCssCommentsFixtures
-	 * @covers Sanitizer::checkCss
+	 * @covers \MediaWiki\Parser\Sanitizer::checkCss
 	 */
 	public function testCssCommentsChecking( $expected, $css, $message = '' ) {
-		$this->assertEquals( $expected,
+		$this->assertSame( $expected,
 			Sanitizer::checkCss( $css ),
 			$message
 		);
@@ -190,16 +169,6 @@ class SanitizerUnitTest extends MediaWikiUnitTestCase {
 				'Remove anything after a comment-start token' ],
 			[ '', "\\2f\\2a unifinished comment'",
 				'Remove anything after a backslash-escaped comment-start token' ],
-			[
-				'/* insecure input */',
-				'filter: progid:DXImageTransform.Microsoft.AlphaImageLoader'
-					. '(src=\'asdf.png\',sizingMethod=\'scale\');'
-			],
-			[
-				'/* insecure input */',
-				'-ms-filter: "progid:DXImageTransform.Microsoft.AlphaImageLoader'
-					. '(src=\'asdf.png\',sizingMethod=\'scale\')";'
-			],
 			[ '/* insecure input */', 'width: expression(1+1);' ],
 			[ '/* insecure input */', 'background-image: image(asdf.png);' ],
 			[ '/* insecure input */', 'background-image: -webkit-image(asdf.png);' ],
@@ -215,16 +184,15 @@ class SanitizerUnitTest extends MediaWikiUnitTestCase {
 			],
 			[ '/* insecure input */', 'foo: attr( title, url );' ],
 			[ '/* insecure input */', 'foo: attr( title url );' ],
-			[ '/* insecure input */', 'foo: var(--evil-attribute)' ],
 		];
 	}
 
 	/**
 	 * @dataProvider provideEscapeHtmlAllowEntities
-	 * @covers Sanitizer::escapeHtmlAllowEntities
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeHtmlAllowEntities
 	 */
 	public function testEscapeHtmlAllowEntities( $expected, $html ) {
-		$this->assertEquals(
+		$this->assertSame(
 			$expected,
 			Sanitizer::escapeHtmlAllowEntities( $html )
 		);
@@ -240,43 +208,8 @@ class SanitizerUnitTest extends MediaWikiUnitTestCase {
 	}
 
 	/**
-	 * Test Sanitizer::escapeId
-	 *
-	 * @dataProvider provideEscapeId
-	 * @covers Sanitizer::escapeId
-	 */
-	public function testEscapeId( $input, $output ) {
-		$this->assertEquals(
-			$output,
-			Sanitizer::escapeId( $input, [ 'noninitial', 'legacy' ] )
-		);
-	}
-
-	public static function provideEscapeId() {
-		return [
-			[ '+', '.2B' ],
-			[ '&', '.26' ],
-			[ '=', '.3D' ],
-			[ ':', ':' ],
-			[ ';', '.3B' ],
-			[ '@', '.40' ],
-			[ '$', '.24' ],
-			[ '-_.', '-_.' ],
-			[ '!', '.21' ],
-			[ '*', '.2A' ],
-			[ '/', '.2F' ],
-			[ '[]', '.5B.5D' ],
-			[ '<>', '.3C.3E' ],
-			[ '\'', '.27' ],
-			[ '§', '.C2.A7' ],
-			[ 'Test:A & B/Here', 'Test:A_.26_B.2FHere' ],
-			[ 'A&B&amp;C&amp;amp;D&amp;amp;amp;E', 'A.26B.26amp.3BC.26amp.3Bamp.3BD.26amp.3Bamp.3Bamp.3BE' ],
-		];
-	}
-
-	/**
 	 * @dataProvider provideIsReservedDataAttribute
-	 * @covers Sanitizer::isReservedDataAttribute
+	 * @covers \MediaWiki\Parser\Sanitizer::isReservedDataAttribute
 	 */
 	public function testIsReservedDataAttribute( $attr, $expected ) {
 		$this->assertSame( $expected, Sanitizer::isReservedDataAttribute( $attr ) );
@@ -292,24 +225,25 @@ class SanitizerUnitTest extends MediaWikiUnitTestCase {
 			[ 'data-parsoid', true ],
 			[ 'data-mw-foo', true ],
 			[ 'data-ooui-foo', true ],
-			[ 'data-mwfoo', true ], // could be false but this is how it's implemented currently
+			// could be false but this is how it's implemented currently
+			[ 'data-mwfoo', true ],
 		];
 	}
 
 	/**
 	 * @dataProvider provideStripAllTags
 	 *
-	 * @covers Sanitizer::stripAllTags()
-	 * @covers RemexStripTagHandler
+	 * @covers \MediaWiki\Parser\Sanitizer::stripAllTags()
+	 * @covers \MediaWiki\Parser\RemexStripTagHandler
 	 *
 	 * @param string $input
 	 * @param string $expected
 	 */
 	public function testStripAllTags( $input, $expected ) {
-		$this->assertEquals( $expected, Sanitizer::stripAllTags( $input ) );
+		$this->assertSame( $expected, Sanitizer::stripAllTags( $input ) );
 	}
 
-	public function provideStripAllTags() {
+	public static function provideStripAllTags() {
 		return [
 			[ '<p>Foo</p>', 'Foo' ],
 			[ '<p id="one">Foo</p><p id="two">Bar</p>', 'Foo Bar' ],
@@ -322,6 +256,9 @@ class SanitizerUnitTest extends MediaWikiUnitTestCase {
 			[ '1<span class="<?php">2</span>3', '123' ],
 			[ '1<span class="<?">2</span>3', '123' ],
 			[ '<th>1</th><td>2</td>', '1 2' ],
+			[ '<style>.hello { display: block; }</style>', '' ],
+			[ 'Foo<style>p { color: red; }</style>Bar', 'FooBar' ],
+			[ '<script>var test = true;</script>', '' ],
 		];
 	}
 

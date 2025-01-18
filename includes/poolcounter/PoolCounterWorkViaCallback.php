@@ -1,8 +1,5 @@
 <?php
 /**
- * Provides of semaphore semantics for restricting the number
- * of workers that may be concurrently performing the same task.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -21,12 +18,19 @@
  * @file
  */
 
+namespace MediaWiki\PoolCounter;
+
+use InvalidArgumentException;
+
 /**
- * Convenience class for dealing with PoolCounters using callbacks
+ * Convenience class for dealing with PoolCounter using callbacks
  * @since 1.22
+ * @newable
+ * @note marked as newable in 1.35 for lack of a better alternative,
+ *       but should use a factory in the future.
  */
 class PoolCounterWorkViaCallback extends PoolCounterWork {
-	/** @var callable */
+	/** @var callable|null */
 	protected $doWork;
 	/** @var callable|null */
 	protected $doCachedWork;
@@ -44,25 +48,25 @@ class PoolCounterWorkViaCallback extends PoolCounterWork {
 	 * If a 'doCachedWork' callback is provided, then execute() may wait for any prior
 	 * process in the pool to finish and reuse its cached result.
 	 *
+	 * @stable to call
 	 * @param string $type The class of actions to limit concurrency for
 	 * @param string $key
 	 * @param array $callbacks Map of callbacks
-	 * @throws MWException
 	 */
 	public function __construct( $type, $key, array $callbacks ) {
 		parent::__construct( $type, $key );
 		foreach ( [ 'doWork', 'doCachedWork', 'fallback', 'error' ] as $name ) {
 			if ( isset( $callbacks[$name] ) ) {
 				if ( !is_callable( $callbacks[$name] ) ) {
-					throw new MWException( "Invalid callback provided for '$name' function." );
+					throw new InvalidArgumentException( "Invalid callback provided for '$name' function." );
 				}
 				$this->$name = $callbacks[$name];
 			}
 		}
-		if ( !isset( $this->doWork ) ) {
-			throw new MWException( "No callback provided for 'doWork' function." );
+		if ( !$this->doWork ) {
+			throw new InvalidArgumentException( "No callback provided for 'doWork' function." );
 		}
-		$this->cacheable = isset( $this->doCachedWork );
+		$this->cacheable = (bool)$this->doCachedWork;
 	}
 
 	public function doWork() {
@@ -76,9 +80,9 @@ class PoolCounterWorkViaCallback extends PoolCounterWork {
 		return false;
 	}
 
-	public function fallback() {
+	public function fallback( $fast ) {
 		if ( $this->fallback ) {
-			return ( $this->fallback )();
+			return ( $this->fallback )( $fast );
 		}
 		return false;
 	}
@@ -90,3 +94,6 @@ class PoolCounterWorkViaCallback extends PoolCounterWork {
 		return false;
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( PoolCounterWorkViaCallback::class, 'PoolCounterWorkViaCallback' );

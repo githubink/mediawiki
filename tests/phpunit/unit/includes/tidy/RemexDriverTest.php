@@ -1,7 +1,12 @@
 <?php
 
+use MediaWiki\Config\HashConfig;
+use MediaWiki\Config\ServiceOptions;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Parser\Sanitizer;
+
 class RemexDriverTest extends MediaWikiUnitTestCase {
-	private static $remexTidyTestData = [
+	private const REMEX_TIDY_TEST_DATA = [
 		[
 			'Empty string',
 			"",
@@ -159,6 +164,11 @@ class RemexDriverTest extends MediaWikiUnitTestCase {
 			'<p>a</p>'
 		],
 		[
+			'<span> is not a splittable tag',
+			'<span>x<div>a</div>y</span> <span>x<div></div>y</span>',
+			'<span>x<div>a</div>y</span> <span>x<div></div>y</span>',
+		],
+		[
 			'<span> is not a splittable tag, but gets p-wrapped in simple wrapping scenarios',
 			'<span>a</span>',
 			'<p><span>a</span></p>'
@@ -199,14 +209,11 @@ class RemexDriverTest extends MediaWikiUnitTestCase {
 			'a<small><i><div>d</div></i>e</small>',
 			'<p>a</p><small><i><div>d</div></i></small><p><small>e</small></p>'
 		],
-		// phpcs:disable Generic.Files.LineLength
 		[
 			'Complex pwrap test 6',
 			'<i>a<div>b</div>c<b>d<div>e</div>f</b>g</i>',
-			// PHP 5 does not allow concatenation in initialisation of a class static variable
 			'<p><i>a</i></p><i><div>b</div></i><p><i>c<b>d</b></i></p><i><b><div>e</div></b></i><p><i><b>f</b>g</i></p>'
 		],
-		// phpcs:enable
 		/* FIXME the second <b> causes a stack split which clones the <i> even
 		 * though no <p> is actually generated
 		[
@@ -281,26 +288,78 @@ class RemexDriverTest extends MediaWikiUnitTestCase {
 			'foo <link rel="foo" href="bar" /> bar',
 			'<p>foo <link rel="foo" href="bar" /> bar</p>',
 		],
+		// From the old TidyTest class
+		[
+			'<mw:editsection> should survive tidy',
+			'<mw:editsection page="foo" section="bar">foo</mw:editsection>',
+			'<mw:editsection page="foo" section="bar">foo</mw:editsection>',
+		],
+		[
+			'TOC_PLACEHOLDER should survive tidy',
+			'<meta property="mw:PageProp/toc" />',
+			'<meta property="mw:PageProp/toc" />',
+		],
+		[
+			'<link> should survive tidy',
+			'<link foo="bar"/>foo',
+			"<link foo=\"bar\" /><p>foo</p>",
+		],
+		[
+			'<meta> should survive tidy',
+			'<meta foo="bar"/>foo',
+			"<meta foo=\"bar\" /><p>foo</p>",
+		],
 	];
 
-	public function provider() {
-		return self::$remexTidyTestData;
+	public static function provider() {
+		$testMathML = <<<'MathML'
+<math xmlns="http://www.w3.org/1998/Math/MathML">
+    <mrow>
+      <mi>a</mi>
+      <mo>&InvisibleTimes;</mo>
+      <msup>
+        <mi>x</mi>
+        <mn>2</mn>
+      </msup>
+      <mo>+</mo>
+      <mi>b</mi>
+      <mo>&InvisibleTimes; </mo>
+      <mi>x</mi>
+      <mo>+</mo>
+      <mi>c</mi>
+    </mrow>
+  </math>
+MathML;
+		$testMathML = Sanitizer::normalizeCharReferences( $testMathML );
+		return array_merge( self::REMEX_TIDY_TEST_DATA, [ [
+			'<math> should survive tidy',
+			$testMathML,
+			$testMathML,
+		] ] );
 	}
 
 	/**
 	 * @dataProvider provider
-	 * @covers MediaWiki\Tidy\RemexCompatFormatter
-	 * @covers MediaWiki\Tidy\RemexCompatMunger
-	 * @covers MediaWiki\Tidy\RemexDriver
-	 * @covers MediaWiki\Tidy\RemexMungerData
+	 * @covers \MediaWiki\Tidy\RemexCompatFormatter
+	 * @covers \MediaWiki\Tidy\RemexCompatMunger
+	 * @covers \MediaWiki\Tidy\RemexDriver
+	 * @covers \MediaWiki\Tidy\RemexMungerData
 	 */
 	public function testTidy( $desc, $input, $expected ) {
-		$r = new MediaWiki\Tidy\RemexDriver( [] );
+		$r = new MediaWiki\Tidy\RemexDriver(
+			new ServiceOptions(
+				MediaWiki\Tidy\RemexDriver::CONSTRUCTOR_OPTIONS,
+				new HashConfig( [
+					MainConfigNames::TidyConfig => [],
+					MainConfigNames::ParserEnableLegacyMediaDOM => false,
+				] )
+			)
+		);
 		$result = $r->tidy( $input );
 		$this->assertEquals( $expected, $result, $desc );
 	}
 
-	public function html5libProvider() {
+	public static function html5libProvider() {
 		$files = json_decode( file_get_contents( __DIR__ . '/html5lib-tests.json' ), true );
 		$tests = [];
 		foreach ( $files as $file => $fileTests ) {
@@ -319,7 +378,15 @@ class RemexDriverTest extends MediaWikiUnitTestCase {
 	 * @coversNothing
 	 */
 	public function testHtml5Lib( $desc, $input ) {
-		$r = new MediaWiki\Tidy\RemexDriver( [] );
+		$r = new MediaWiki\Tidy\RemexDriver(
+			new ServiceOptions(
+				MediaWiki\Tidy\RemexDriver::CONSTRUCTOR_OPTIONS,
+				new HashConfig( [
+					MainConfigNames::TidyConfig => [],
+					MainConfigNames::ParserEnableLegacyMediaDOM => false,
+				] )
+			)
+		);
 		$result = $r->tidy( $input );
 		$this->assertTrue( true, $desc );
 	}

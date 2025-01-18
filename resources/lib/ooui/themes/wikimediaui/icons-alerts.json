@@ -1,7 +1,7 @@
 {
 	"selectorWithoutVariant": ".oo-ui-icon-{name}",
 	"selectorWithVariant": ".oo-ui-image-{variant}.oo-ui-icon-{name}",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"variants": {
 		"invert": {
 			"color": "#fff",
@@ -12,13 +12,13 @@
 			"global": true
 		},
 		"destructive": {
-			"color": "#d33"
+			"color": "#d73333"
 		},
 		"error": {
-			"color": "#d33"
+			"color": "#d73333"
 		},
 		"warning": {
-			"color": "#fc3"
+			"color": "#edab00"
 		},
 		"success": {
 			"color": "#14866d"
@@ -33,6 +33,9 @@
 		},
 		"bell": {
 			"file": "images/icons/bell.svg"
+		},
+		"bellOutline": {
+			"file": "images/icons/bellOutline.svg"
 		},
 		"error": {
 			"file": "images/icons/error.svg",
@@ -63,6 +66,12 @@
 				"ltr": "images/icons/speechBubbles-ltr.svg",
 				"rtl": "images/icons/speechBubbles-rtl.svg"
 			}
+		},
+		"success": {
+			"file": "images/icons/success.svg",
+			"variants": [
+				"success"
+			]
 		},
 		"tray": {
 			"file": "images/icons/tray.svg"

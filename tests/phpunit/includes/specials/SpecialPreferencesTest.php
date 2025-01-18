@@ -6,57 +6,54 @@
  * Copyright © 2013, Wikimedia Foundation Inc.
  */
 
+use MediaWiki\MainConfigNames;
+use MediaWiki\Specials\SpecialPreferences;
+use MediaWiki\User\Options\UserOptionsManager;
+
 /**
  * @group Preferences
  * @group Database
  *
- * @covers SpecialPreferences
+ * @covers \MediaWiki\Specials\SpecialPreferences
  */
-class SpecialPreferencesTest extends MediaWikiTestCase {
+class SpecialPreferencesTest extends SpecialPageTestBase {
+	/**
+	 * HACK: use this variable to override UserOptionsManager for use in the special page. Ideally we'd just do
+	 * $this->setService, but that's super hard because some places that use UserOptionsManager read a lot from the
+	 * global state and a mock would need to be super-complex for all the various checks to work.
+	 */
+	private ?UserOptionsManager $userOptionsManager = null;
+
+	protected function tearDown(): void {
+		$this->userOptionsManager = null;
+		parent::tearDown();
+	}
+
+	protected function newSpecialPage() {
+		return new SpecialPreferences(
+			$this->getServiceContainer()->getPreferencesFactory(),
+			$this->userOptionsManager ?? $this->getServiceContainer()->getUserOptionsManager()
+		);
+	}
 
 	/**
-	 * Make sure a nickname which is longer than $wgMaxSigChars
-	 * is not throwing a fatal error.
-	 *
-	 * Test specifications by Alexandre "ialex" Emsenhuber.
-	 * @todo give this test a real name explaining what is being tested here
+	 * Make sure a username which is longer than $wgMaxSigChars
+	 * is not throwing a fatal error (T43337).
 	 */
-	public function testT43337() {
-		// Set a low limit
-		$this->setMwGlobals( 'wgMaxSigChars', 2 );
+	public function testLongUsernameDoesNotFatal() {
+		$maxSigChars = 2;
+		$this->overrideConfigValue( MainConfigNames::MaxSigChars, $maxSigChars );
+		$nickname = str_repeat( 'x', $maxSigChars + 1 );
+		$user = $this->getMutableTestUser()->getUser();
 
-		$user = $this->createMock( User::class );
-		$user->expects( $this->any() )
-			->method( 'isAnon' )
-			->will( $this->returnValue( false ) );
+		$this->userOptionsManager = $this->createMock( UserOptionsManager::class );
+		$this->userOptionsManager->method( 'getOption' )
+			->with( $user, 'nickname' )
+			->willReturn( $nickname );
 
-		# Yeah foreach requires an array, not NULL =(
-		$user->expects( $this->any() )
-			->method( 'getEffectiveGroups' )
-			->will( $this->returnValue( [] ) );
-
-		# The mocked user has a long nickname
-		$user->expects( $this->any() )
-			->method( 'getOption' )
-			->will( $this->returnValueMap( [
-				[ 'nickname', null, false, 'superlongnickname' ],
-			]
-			) );
-
-		# Needs to return something
-		$user->method( 'getOptions' )
-			->willReturn( [] );
-
-		# Forge a request to call the special page
-		$context = new RequestContext();
-		$context->setRequest( new FauxRequest() );
-		$context->setUser( $user );
-		$context->setTitle( Title::newFromText( 'Test' ) );
-
-		# Do the call, should not spurt a fatal error.
-		$special = new SpecialPreferences();
-		$special->setContext( $context );
-		$this->assertNull( $special->execute( [] ) );
+		$this->executeSpecialPage( '', null, null, $user );
+		// We assert that no error is thrown
+		$this->addToAssertionCount( 1 );
 	}
 
 }

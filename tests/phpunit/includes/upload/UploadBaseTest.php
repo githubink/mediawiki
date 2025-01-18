@@ -1,25 +1,30 @@
 <?php
 
+use MediaWiki\Interwiki\ClassicInterwikiLookup;
+use MediaWiki\MainConfigNames;
+use Wikimedia\Mime\XmlTypeCheck;
+
 /**
  * @group Upload
  */
-class UploadBaseTest extends MediaWikiTestCase {
+class UploadBaseTest extends MediaWikiIntegrationTestCase {
+
+	protected const UPLOAD_PATH = "/tests/phpunit/data/upload/";
 
 	/** @var UploadTestHandler */
 	protected $upload;
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
 		$this->upload = new UploadTestHandler;
 
-		$this->setMwGlobals( 'wgHooks', [
-			'InterwikiLoadPrefix' => [
-				function ( $prefix, &$data ) {
-					return false;
-				}
-			],
-		] );
+		$this->overrideConfigValue(
+			MainConfigNames::InterwikiCache,
+			ClassicInterwikiLookup::buildCdbHash( [
+				// no entries, no interwiki prefixes
+			] )
+		);
 	}
 
 	/**
@@ -27,7 +32,7 @@ class UploadBaseTest extends MediaWikiTestCase {
 	 * of UploadBase::getTitle() and then the actual returned title
 	 *
 	 * @dataProvider provideTestTitleValidation
-	 * @covers UploadBase::getTitle
+	 * @covers \UploadBase::getTitle
 	 */
 	public function testTitleValidation( $srcFilename, $dstFilename, $code, $msg ) {
 		/* Check the result code */
@@ -80,7 +85,7 @@ class UploadBaseTest extends MediaWikiTestCase {
 
 	/**
 	 * Test the upload verification functions
-	 * @covers UploadBase::verifyUpload
+	 * @covers \UploadBase::verifyUpload
 	 */
 	public function testVerifyUpload() {
 		/* Setup with zero file size */
@@ -103,16 +108,16 @@ class UploadBaseTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers UploadBase::verifyUpload
+	 * @covers \UploadBase::verifyUpload
 	 *
 	 * test uploading a 100 bytes file with $wgMaxUploadSize = 100
 	 *
 	 * This method should be abstracted so we can test different settings.
 	 */
 	public function testMaxUploadSize() {
-		$this->setMwGlobals( [
-			'wgMaxUploadSize' => 100,
-			'wgFileExtensions' => [
+		$this->overrideConfigValues( [
+			MainConfigNames::MaxUploadSize => 100,
+			MainConfigNames::FileExtensions => [
 				'txt',
 			],
 		] );
@@ -128,17 +133,16 @@ class UploadBaseTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers UploadBase::checkSvgScriptCallback
+	 * @covers \UploadBase::checkSvgScriptCallback
 	 * @dataProvider provideCheckSvgScriptCallback
 	 */
 	public function testCheckSvgScriptCallback( $svg, $wellFormed, $filterMatch, $message ) {
-		list( $formed, $match ) = $this->upload->checkSvgString( $svg );
+		[ $formed, $match ] = $this->upload->checkSvgString( $svg );
 		$this->assertSame( $wellFormed, $formed, $message . " (well-formed)" );
 		$this->assertSame( $filterMatch, $match, $message . " (filter match)" );
 	}
 
 	public static function provideCheckSvgScriptCallback() {
-		// phpcs:disable Generic.Files.LineLength
 		return [
 			// html5sec SVG vectors
 			[
@@ -158,6 +162,13 @@ class UploadBaseTest extends MediaWikiTestCase {
 				true,
 				true,
 				'SVG with onload property (http://html5sec.org/#65)'
+			],
+			[
+				'<svg xmlns="http://www.w3.org/2000/svg" xmlns:svg="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   ><defs><inkscape:path-effect svg:onload="javascript:alert(1)" /></defs></svg>',
+				true,
+				true,
+				'SVG with svg:onload on a non-svg element (probably not a thing)'
 			],
 			[
 				'<svg xmlns="http://www.w3.org/2000/svg"> <a xmlns:xlink="http://www.w3.org/1999/xlink" xlink:href="javascript:alert(1)"><rect width="1000" height="1000" fill="white"/></a> </svg>',
@@ -528,7 +539,7 @@ class UploadBaseTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers UploadBase::detectScriptInSvg
+	 * @covers \UploadBase::detectScriptInSvg
 	 * @dataProvider provideDetectScriptInSvg
 	 */
 	public function testDetectScriptInSvg( $svg, $expected, $message ) {
@@ -541,27 +552,32 @@ class UploadBaseTest extends MediaWikiTestCase {
 		global $IP;
 		return [
 			[
-				"$IP/tests/phpunit/data/upload/buggynamespace-original.svg",
+				$IP . self::UPLOAD_PATH . "buggynamespace-original.svg",
 				false,
 				'SVG with a weird but valid namespace definition created by Adobe Illustrator'
 			],
 			[
-				"$IP/tests/phpunit/data/upload/buggynamespace-okay.svg",
+				$IP . self::UPLOAD_PATH . "buggynamespace-okay.svg",
 				false,
 				'SVG with a namespace definition created by Adobe Illustrator and mangled by Inkscape'
 			],
 			[
-				"$IP/tests/phpunit/data/upload/buggynamespace-okay2.svg",
+				$IP . self::UPLOAD_PATH . "buggynamespace-okay2.svg",
 				false,
 				'SVG with a namespace definition created by Adobe Illustrator and mangled by Inkscape (twice)'
 			],
 			[
-				"$IP/tests/phpunit/data/upload/buggynamespace-bad.svg",
+				$IP . self::UPLOAD_PATH . "inkscape-only-selected.svg",
+				false,
+				'SVG with an inkscape only-selected attribute'
+			],
+			[
+				$IP . self::UPLOAD_PATH . "buggynamespace-bad.svg",
 				[ 'uploadscriptednamespace', 'i' ],
 				'SVG with a namespace definition using an undefined entity'
 			],
 			[
-				"$IP/tests/phpunit/data/upload/buggynamespace-evilhtml.svg",
+				$IP . self::UPLOAD_PATH . "buggynamespace-evilhtml.svg",
 				[ 'uploadscriptednamespace', 'http://www.w3.org/1999/xhtml' ],
 				'SVG with an html namespace encoded as an entity'
 			],
@@ -569,7 +585,7 @@ class UploadBaseTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers UploadBase::checkXMLEncodingMissmatch
+	 * @covers \UploadBase::checkXMLEncodingMissmatch
 	 * @dataProvider provideCheckXMLEncodingMissmatch
 	 */
 	public function testCheckXMLEncodingMissmatch( $fileContents, $evil ) {
@@ -578,16 +594,17 @@ class UploadBaseTest extends MediaWikiTestCase {
 		$this->assertSame( $evil, UploadBase::checkXMLEncodingMissmatch( $filename ) );
 	}
 
-	public function provideCheckXMLEncodingMissmatch() {
+	public static function provideCheckXMLEncodingMissmatch() {
 		return [
 			[ '<?xml version="1.0" encoding="utf-7"?><svg></svg>', true ],
 			[ '<?xml version="1.0" encoding="utf-8"?><svg></svg>', false ],
 			[ '<?xml version="1.0" encoding="WINDOWS-1252"?><svg></svg>', false ],
+			[ '<?xml version="1.0" encoding="us-ascii"?><svg></svg>', false ],
 		];
 	}
 
 	/**
-	 * @covers UploadBase::detectScript
+	 * @covers \UploadBase::detectScript
 	 * @dataProvider provideDetectScript
 	 */
 	public function testDetectScript( $filename, $mime, $extension, $expected, $message ) {
@@ -599,25 +616,25 @@ class UploadBaseTest extends MediaWikiTestCase {
 		global $IP;
 		return [
 			[
-				"$IP/tests/phpunit/data/upload/png-plain.png",
+				$IP . self::UPLOAD_PATH . "png-plain.png",
 				'image/png',
 				'png',
 				false,
-				'PNG with no suspicious things in it, should pass.'
+				'PNG with no suspicious things in it; should pass.'
 			],
 			[
-				"$IP/tests/phpunit/data/upload/png-embedded-breaks-ie5.png",
+				$IP . self::UPLOAD_PATH . "png-embedded-breaks-ie5.png",
 				'image/png',
 				'png',
 				true,
 				'PNG with embedded data that IE5/6 interprets as HTML; should be rejected.'
 			],
 			[
-				"$IP/tests/phpunit/data/upload/jpeg-a-href-in-metadata.jpg",
+				$IP . self::UPLOAD_PATH . "jpeg-a-href-in-metadata.jpg",
 				'image/jpeg',
 				'jpeg',
 				false,
-				'JPEG with innocuous HTML in metadata from a flickr photo; should pass (T27707).'
+				'JPEG with innocuous HTML in metadata from a flickr photo; should pass (T27707).',
 			],
 		];
 	}
@@ -640,6 +657,8 @@ class UploadTestHandler extends UploadBase {
 	 * Almost the same as UploadBase::detectScriptInSvg, except it's
 	 * public, works on an xml string instead of filename, and returns
 	 * the result instead of interpreting them.
+	 * @param string $svg
+	 * @return array
 	 */
 	public function checkSvgString( $svg ) {
 		$check = new XmlTypeCheck(
@@ -647,8 +666,8 @@ class UploadTestHandler extends UploadBase {
 			[ $this, 'checkSvgScriptCallback' ],
 			false,
 			[
-				'processing_instruction_handler' => 'UploadBase::checkSvgPICallback',
-				'external_dtd_handler' => 'UploadBase::checkSvgExternalDTD'
+				'processing_instruction_handler' => [ UploadBase::class, 'checkSvgPICallback' ],
+				'external_dtd_handler' => [ UploadBase::class, 'checkSvgExternalDTD' ],
 			]
 		);
 		return [ $check->wellFormed, $check->filterMatch ];
@@ -656,6 +675,7 @@ class UploadTestHandler extends UploadBase {
 
 	/**
 	 * Same as parent function, but override visibility to 'public'.
+	 * @inheritDoc
 	 */
 	public function detectScriptInSvg( $filename, $partial ) {
 		return parent::detectScriptInSvg( $filename, $partial );

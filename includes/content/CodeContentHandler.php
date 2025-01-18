@@ -21,8 +21,17 @@
  * @ingroup Content
  */
 
+namespace MediaWiki\Content;
+
+use LogicException;
+use MediaWiki\Language\Language;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Title\Title;
+
 /**
- * Content handler for code content such as CSS, JavaScript, JSON, etc
+ * Content handler for code content such as CSS, JavaScript, JSON, etc.
+ *
+ * @stable to extend
  * @since 1.24
  * @ingroup Content
  */
@@ -31,6 +40,8 @@ abstract class CodeContentHandler extends TextContentHandler {
 	/**
 	 * Returns the English language, because code is English, and should be handled as such.
 	 *
+	 * @stable to override
+	 *
 	 * @param Title $title
 	 * @param Content|null $content
 	 *
@@ -38,12 +49,14 @@ abstract class CodeContentHandler extends TextContentHandler {
 	 *
 	 * @see ContentHandler::getPageLanguage()
 	 */
-	public function getPageLanguage( Title $title, Content $content = null ) {
-		return Language::factory( 'en' );
+	public function getPageLanguage( Title $title, ?Content $content = null ) {
+		return MediaWikiServices::getInstance()->getLanguageFactory()->getLanguage( 'en' );
 	}
 
 	/**
 	 * Returns the English language, because code is English, and should be handled as such.
+	 *
+	 * @stable to override
 	 *
 	 * @param Title $title
 	 * @param Content|null $content
@@ -52,16 +65,15 @@ abstract class CodeContentHandler extends TextContentHandler {
 	 *
 	 * @see ContentHandler::getPageViewLanguage()
 	 */
-	public function getPageViewLanguage( Title $title, Content $content = null ) {
-		return Language::factory( 'en' );
+	public function getPageViewLanguage( Title $title, ?Content $content = null ) {
+		return MediaWikiServices::getInstance()->getLanguageFactory()->getLanguage( 'en' );
 	}
 
-	/**
-	 * @return string
-	 * @throws MWException
-	 */
+	/** @inheritDoc */
 	protected function getContentClass() {
-		throw new MWException( 'Subclass must override' );
+		throw new LogicException( 'Subclass must override' );
 	}
 
 }
+/** @deprecated class alias since 1.43 */
+class_alias( CodeContentHandler::class, 'CodeContentHandler' );

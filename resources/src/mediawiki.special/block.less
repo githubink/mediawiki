@@ -1,31 +1,83 @@
+@import 'mediawiki.skin.variables.less';
+
 /*!
- * Styles for Special:Block
+ * Styles for Codex Special:Block
  */
 
-// OOUIHTMLForm specifics
-@ooui-font-size-browser: 16; // Assumed browser default of `16px`.
-@ooui-font-size-base: 0.875em; // Equals `14px` at browser default of `16px`.
-
-@ooui-spacing-radio-label: 26 / @ooui-font-size-browser / @ooui-font-size-base; // Equals `1.85714286em`≈`26px`.
-
-body.mw-special-Block {
-	.mw-block-editing-restriction.oo-ui-fieldLayout {
-		margin-left: @ooui-spacing-radio-label;
+.mw-special-Block:not( .mw-special-Block--legacy ) {
+	noscript {
+		color: @color-error;
+		font-weight: @font-weight-bold;
+		display: block;
 	}
 
-	.mw-block-restriction.oo-ui-fieldLayout {
-		margin-left: 2 * @ooui-spacing-radio-label;
+	.mw-block-messages {
+		margin-top: @spacing-100;
+	}
 
-		.oo-ui-widget {
-			max-width: 50em - 2 * @ooui-spacing-radio-label;
+	.mw-htmlform-submit-buttons {
+		display: none;
+	}
+
+	// Hide the log and convenience links showing at the bottom of page.
+	.mw-ipb-conveniencelinks,
+	.mw-warning-with-logexcerpt {
+		display: none;
+	}
+}
+
+/*!
+ * Styles for both Codex and OOUI
+ */
+
+.mw-block-hideuser,
+.mw-block-confirm {
+	font-weight: bold;
+}
+
+/*!
+ * Styles specific to legacy OOUI Special:Block
+ */
+
+.mw-special-Block--legacy {
+	.mw-htmlform {
+		> .oo-ui-panelLayout-framed {
+			border: 0;
+		}
+
+		> .oo-ui-panelLayout-padded {
+			padding: 0;
 		}
 	}
 
-	.oo-ui-panelLayout-framed {
-		border: 0;
+	// Affects sitewide/partial radio, partial action checkboxes, and block detail checkboxes
+	.mw-block-editing-restriction.oo-ui-fieldLayout,
+	.mw-block-action-restriction .oo-ui-checkboxMultioptionWidget,
+	.mw-block-restriction.oo-ui-labelElement {
+		margin-top: 12px;
 	}
 
-	.oo-ui-panelLayout-padded {
-		padding: 0;
+	.mw-block-partial-restriction.oo-ui-fieldLayout {
+		// Match spacing of partial action checkboxes to block detail checkboxes
+		.oo-ui-checkboxMultioptionWidget {
+			padding: 0;
+		}
+	}
+
+	#mw-input-wpReason {
+		.oo-ui-dropdownInputWidget,
+		.oo-ui-textInputWidget {
+			display: block;
+			max-width: 50em;
+		}
+
+		.oo-ui-textInputWidget {
+			margin-top: 0.5em;
+		}
+	}
+
+	.mw-ipb-conveniencelinks {
+		font-size: 90%;
+		text-align: right;
 	}
 }

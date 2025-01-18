@@ -20,7 +20,15 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
+use MediaWiki\Json\FormatJson;
 use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\ContentSecurityPolicy;
+use MediaWiki\Utils\UrlUtils;
+use Psr\Log\LoggerInterface;
+use Wikimedia\ParamValidator\ParamValidator;
 
 /**
  * Api module to receive and log CSP violation reports
@@ -29,12 +37,23 @@ use MediaWiki\Logger\LoggerFactory;
  */
 class ApiCSPReport extends ApiBase {
 
-	private $log;
+	private LoggerInterface $log;
 
 	/**
 	 * These reports should be small. Ignore super big reports out of paranoia
 	 */
-	const MAX_POST_SIZE = 8192;
+	private const MAX_POST_SIZE = 8192;
+
+	private UrlUtils $urlUtils;
+
+	public function __construct(
+		ApiMain $main,
+		string $action,
+		UrlUtils $urlUtils
+	) {
+		parent::__construct( $main, $action );
+		$this->urlUtils = $urlUtils;
+	}
 
 	/**
 	 * Logs a content-security-policy violation report from web browser.
@@ -54,7 +73,7 @@ class ApiCSPReport extends ApiBase {
 			// XXX Is it ok to put untrusted data into log??
 			'csp-report' => $report,
 			'method' => __METHOD__,
-			'user_id' => $this->getUser()->getId() || 'logged-out',
+			'user_id' => $this->getUser()->getId() ?: 'logged-out',
 			'user-agent' => $userAgent,
 			'source' => $this->getParameter( 'source' ),
 		] );
@@ -87,7 +106,7 @@ class ApiCSPReport extends ApiBase {
 	private function getFlags( $report, $userAgent ) {
 		$reportOnly = $this->getParameter( 'reportonly' );
 		$source = $this->getParameter( 'source' );
-		$falsePositives = $this->getConfig()->get( 'CSPFalsePositiveUrls' );
+		$falsePositives = $this->getConfig()->get( MainConfigNames::CSPFalsePositiveUrls );
 
 		$flags = [];
 		if ( $source !== 'internal' ) {
@@ -129,10 +148,14 @@ class ApiCSPReport extends ApiBase {
 			return true;
 		}
 
-		$bits = wfParseUrl( $url );
+		$bits = $this->urlUtils->parse( $url );
+		if ( !$bits ) {
+			return false;
+		}
+
 		unset( $bits['user'], $bits['pass'], $bits['query'], $bits['fragment'] );
 		$bits['path'] = '';
-		$serverUrl = wfAssembleUrl( $bits );
+		$serverUrl = UrlUtils::assemble( $bits );
 		if ( isset( $patterns[$serverUrl] ) ) {
 			// The origin of the url matches a pattern,
 			// e.g. "https://example.org" matches "https://example.org/foo/b?a#r"
@@ -142,7 +165,7 @@ class ApiCSPReport extends ApiBase {
 			// We only use this pattern if it ends in a slash, this prevents
 			// "/foos" from matching "/foo", and "https://good.combo.bad" matching
 			// "https://good.com".
-			if ( substr( $pattern, -1 ) === '/' && strpos( $url, $pattern ) === 0 ) {
+			if ( str_ends_with( $pattern, '/' ) && str_starts_with( $url, $pattern ) ) {
 				// The pattern starts with the same as the url
 				// e.g. "https://example.org/foo/" matches "https://example.org/foo/b?a#r"
 				return true;
@@ -181,10 +204,7 @@ class ApiCSPReport extends ApiBase {
 		}
 		$status = FormatJson::parse( $postBody, FormatJson::FORCE_ASSOC );
 		if ( !$status->isGood() ) {
-			$msg = $status->getErrors()[0]['message'];
-			if ( $msg instanceof Message ) {
-				$msg = $msg->getKey();
-			}
+			$msg = $status->getMessages()[0]->getKey();
 			$this->error( $msg, __METHOD__ );
 		}
 
@@ -216,10 +236,9 @@ class ApiCSPReport extends ApiBase {
 		$line = isset( $report['line-number'] )
 			? ':' . $report['line-number']
 			: '';
-		$warningText = $flagText .
+		return $flagText .
 			' Received CSP report: <' . $blockedOrigin . '>' .
 			' blocked from being loaded on <' . $page . '>' . $line;
-		return $warningText;
 	}
 
 	/**
@@ -227,12 +246,11 @@ class ApiCSPReport extends ApiBase {
 	 * @return string
 	 */
 	private function originFromUrl( $url ) {
-		$bits = wfParseUrl( $url );
+		$bits = $this->urlUtils->parse( $url ) ?? [];
 		unset( $bits['user'], $bits['pass'], $bits['query'], $bits['fragment'] );
 		$bits['path'] = '';
-		$serverUrl = wfAssembleUrl( $bits );
 		// e.g. "https://example.org" from "https://example.org/foo/b?a#r"
-		return $serverUrl;
+		return UrlUtils::assemble( $bits );
 	}
 
 	/**
@@ -256,23 +274,19 @@ class ApiCSPReport extends ApiBase {
 	public function getAllowedParams() {
 		return [
 			'reportonly' => [
-				ApiBase::PARAM_TYPE => 'boolean',
-				ApiBase::PARAM_DFLT => false
+				ParamValidator::PARAM_TYPE => 'boolean',
+				ParamValidator::PARAM_DEFAULT => false
 			],
 			'source' => [
-				ApiBase::PARAM_TYPE => 'string',
-				ApiBase::PARAM_DFLT => 'internal',
-				ApiBase::PARAM_REQUIRED => false
+				ParamValidator::PARAM_TYPE => 'string',
+				ParamValidator::PARAM_DEFAULT => 'internal',
+				ParamValidator::PARAM_REQUIRED => false
 			]
 		];
 	}
 
 	public function mustBePosted() {
 		return true;
-	}
-
-	public function isWriteMode() {
-		return false;
 	}
 
 	/**
@@ -292,7 +306,7 @@ class ApiCSPReport extends ApiBase {
 	}
 
 	/**
-	 * Doesn't touch db, so max lag should be rather irrelavent.
+	 * Doesn't touch db, so max lag should be rather irrelevant.
 	 *
 	 * Also, this makes sure that reports aren't lost during lag events.
 	 * @return bool
@@ -301,3 +315,6 @@ class ApiCSPReport extends ApiBase {
 		return false;
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiCSPReport::class, 'ApiCSPReport' );

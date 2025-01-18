@@ -1,5 +1,4 @@
 <?php
-
 /**
  * Search engine result issued from SearchData search engines.
  *
@@ -22,22 +21,25 @@
  * @ingroup Search
  */
 
-class SqlSearchResult extends SearchResult {
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Title\Title;
+
+class SqlSearchResult extends RevisionSearchResult {
 	/** @var string[] */
 	private $terms;
 
 	/**
-	 * SqlSearchResult constructor.
 	 * @param Title $title
 	 * @param string[] $terms list of parsed terms
 	 */
 	public function __construct( Title $title, array $terms ) {
-		$this->initFromTitle( $title );
+		parent::__construct( $title );
 		$this->terms = $terms;
 	}
 
 	/**
-	 * return string[]
+	 * @return string[]
 	 */
 	public function getTermMatches(): array {
 		return $this->terms;
@@ -47,22 +49,20 @@ class SqlSearchResult extends SearchResult {
 	 * @param array $terms Terms to highlight (this parameter is deprecated)
 	 * @return string Highlighted text snippet, null (and not '') if not supported
 	 */
-	function getTextSnippet( $terms = [] ) {
-		global $wgAdvancedSearchHighlighting;
+	public function getTextSnippet( $terms = [] ) {
+		$advancedSearchHighlighting = MediaWikiServices::getInstance()
+			->getMainConfig()->get( MainConfigNames::AdvancedSearchHighlighting );
 		$this->initText();
-
-		// TODO: make highliter take a content object. Make ContentHandler a factory for SearchHighliter.
-		list( $contextlines, $contextchars ) = $this->searchEngine->userHighlightPrefs();
 
 		$h = new SearchHighlighter();
 		if ( count( $this->terms ) > 0 ) {
-			if ( $wgAdvancedSearchHighlighting ) {
-				return $h->highlightText( $this->mText, $this->terms, $contextlines, $contextchars );
+			if ( $advancedSearchHighlighting ) {
+				return $h->highlightText( $this->mText, $this->terms );
 			} else {
-				return $h->highlightSimple( $this->mText, $this->terms, $contextlines, $contextchars );
+				return $h->highlightSimple( $this->mText, $this->terms );
 			}
 		} else {
-			return $h->highlightNone( $this->mText, $contextlines, $contextchars );
+			return $h->highlightNone( $this->mText );
 		}
 	}
 

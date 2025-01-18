@@ -1,7 +1,5 @@
 <?php
 /**
- * Redis-backed job queue code.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -21,14 +19,20 @@
  */
 
 use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\WikiMap\WikiMap;
 use Psr\Log\LoggerInterface;
+use Wikimedia\ObjectCache\RedisConnectionPool;
+use Wikimedia\ObjectCache\RedisConnRef;
 
 /**
- * Class to handle job queues stored in Redis
+ * Redis-backed job queue storage.
  *
  * This is a faster and less resource-intensive job queue than JobQueueDB.
  * All data for a queue using this class is placed into one redis server.
- * The mediawiki/services/jobrunner background service must be set up and running.
+ *
+ * When used on a wiki farm, you can optionally use the  `redisJobRunnerService` background
+ * service from the `mediawiki/services/jobrunner.git` repository, to run jobs from a central
+ * system rather than per-wiki via one of the default job runners (e.g. maintenance/runJobs.php).
  *
  * There are eight main redis keys (per queue) used to track jobs:
  *   - l-unclaimed  : A list of job IDs used for ready unclaimed jobs
@@ -39,6 +43,7 @@ use Psr\Log\LoggerInterface;
  *   - h-sha1ById   : A hash of (job ID => SHA1) for unclaimed jobs used for de-duplication
  *   - h-attempts   : A hash of (job ID => attempt count) used for job claiming/retries
  *   - h-data       : A hash of (job ID => serialized blobs) for job storage
+ *
  * A job ID can be in only one of z-delayed, l-unclaimed, z-claimed, and z-abandoned.
  * If an ID appears in any of those lists, it should have a h-data entry for its ID.
  * If a job has a SHA1 de-duplication value and its ID is in l-unclaimed or z-delayed, then
@@ -56,14 +61,14 @@ use Psr\Log\LoggerInterface;
  * Aside from root job keys, all keys have no expiry, and are only removed when jobs are run.
  * All the keys are prefixed with the relevant wiki ID information.
  *
- * This class requires Redis 2.6 as it makes use Lua scripts for fast atomic operations.
+ * This class requires Redis 2.6 or later as it uses Lua scripting for fast atomic operations.
  * Additionally, it should be noted that redis has different persistence modes, such
- * as rdb snapshots, journaling, and no persistence. Appropriate configuration should be
+ * as rdb snapshots, journaling, or no persistence. Appropriate configuration should be
  * made on the servers based on what queues are using it and what tolerance they have.
  *
+ * @since 1.22
  * @ingroup JobQueue
  * @ingroup Redis
- * @since 1.22
  */
 class JobQueueRedis extends JobQueue {
 	/** @var RedisConnectionPool */
@@ -76,7 +81,7 @@ class JobQueueRedis extends JobQueue {
 	/** @var string Compression method to use */
 	protected $compression;
 
-	const MAX_PUSH_SIZE = 25; // avoid tying up the server
+	private const MAX_PUSH_SIZE = 25; // avoid tying up the server
 
 	/**
 	 * @param array $params Possible keys:
@@ -88,8 +93,7 @@ class JobQueueRedis extends JobQueue {
 	 *   - compression : The type of compression to use; one of (none,gzip).
 	 *   - daemonized  : Set to true if the redisJobRunnerService runs in the background.
 	 *                   This will disable job recycling/undelaying from the MediaWiki side
-	 *                   to avoid redundance and out-of-sync configuration.
-	 * @throws InvalidArgumentException
+	 *                   to avoid redundancy and out-of-sync configuration.
 	 */
 	public function __construct( array $params ) {
 		parent::__construct( $params );
@@ -134,7 +138,7 @@ class JobQueueRedis extends JobQueue {
 	protected function doGetSize() {
 		$conn = $this->getConnection();
 		try {
-			return $conn->lSize( $this->getQueueKey( 'l-unclaimed' ) );
+			return $conn->lLen( $this->getQueueKey( 'l-unclaimed' ) );
 		} catch ( RedisException $e ) {
 			throw $this->handleErrorAndMakeException( $conn, $e );
 		}
@@ -149,8 +153,8 @@ class JobQueueRedis extends JobQueue {
 		$conn = $this->getConnection();
 		try {
 			$conn->multi( Redis::PIPELINE );
-			$conn->zSize( $this->getQueueKey( 'z-claimed' ) );
-			$conn->zSize( $this->getQueueKey( 'z-abandoned' ) );
+			$conn->zCard( $this->getQueueKey( 'z-claimed' ) );
+			$conn->zCard( $this->getQueueKey( 'z-abandoned' ) );
 
 			return array_sum( $conn->exec() );
 		} catch ( RedisException $e ) {
@@ -166,7 +170,7 @@ class JobQueueRedis extends JobQueue {
 	protected function doGetDelayedCount() {
 		$conn = $this->getConnection();
 		try {
-			return $conn->zSize( $this->getQueueKey( 'z-delayed' ) );
+			return $conn->zCard( $this->getQueueKey( 'z-delayed' ) );
 		} catch ( RedisException $e ) {
 			throw $this->handleErrorAndMakeException( $conn, $e );
 		}
@@ -180,7 +184,7 @@ class JobQueueRedis extends JobQueue {
 	protected function doGetAbandonedCount() {
 		$conn = $this->getConnection();
 		try {
-			return $conn->zSize( $this->getQueueKey( 'z-abandoned' ) );
+			return $conn->zCard( $this->getQueueKey( 'z-abandoned' ) );
 		} catch ( RedisException $e ) {
 			throw $this->handleErrorAndMakeException( $conn, $e );
 		}
@@ -233,7 +237,7 @@ class JobQueueRedis extends JobQueue {
 				count( $items ) - $failed - $pushed );
 			if ( $failed > 0 ) {
 				$err = "Could not insert {$failed} {$this->type} job(s).";
-				wfDebugLog( 'JobQueueRedis', $err );
+				wfDebugLog( 'JobQueue', $err );
 				throw new RedisException( $err );
 			}
 		} catch ( RedisException $e ) {
@@ -243,7 +247,7 @@ class JobQueueRedis extends JobQueue {
 
 	/**
 	 * @param RedisConnRef $conn
-	 * @param array $items List of results from JobQueueRedis::getNewJobFields()
+	 * @param array[] $items List of results from JobQueueRedis::getNewJobFields()
 	 * @return int Number of jobs inserted (duplicates are ignored)
 	 * @throws RedisException
 	 */
@@ -309,7 +313,7 @@ LUA;
 
 	/**
 	 * @see JobQueue::doPop()
-	 * @return RunnableJob|bool
+	 * @return RunnableJob|false
 	 * @throws JobQueueError
 	 */
 	protected function doPop() {
@@ -326,11 +330,11 @@ LUA;
 				$this->incrStats( 'pops', $this->type );
 				$item = $this->unserialize( $blob );
 				if ( $item === false ) {
-					wfDebugLog( 'JobQueueRedis', "Could not unserialize {$this->type} job." );
+					wfDebugLog( 'JobQueue', "Could not unserialize {$this->type} job." );
 					continue;
 				}
 
-				// If $item is invalid, the runner loop recyling will cleanup as needed
+				// If $item is invalid, the runner loop recycling will cleanup as needed
 				$job = $this->getJobFromFields( $item ); // may be false
 			} while ( !$job ); // job may be false if invalid
 		} catch ( RedisException $e ) {
@@ -421,7 +425,7 @@ LUA;
 			);
 
 			if ( !$res ) {
-				wfDebugLog( 'JobQueueRedis', "Could not acknowledge {$this->type} job $uuid." );
+				wfDebugLog( 'JobQueue', "Could not acknowledge {$this->type} job $uuid." );
 
 				return false;
 			}
@@ -439,7 +443,6 @@ LUA;
 	 * @param IJobSpecification $job
 	 * @return bool
 	 * @throws JobQueueError
-	 * @throws LogicException
 	 */
 	protected function doDeduplicateRootJob( IJobSpecification $job ) {
 		if ( !$job->hasRootJobParams() ) {
@@ -447,11 +450,11 @@ LUA;
 		}
 		$params = $job->getRootJobParams();
 
-		$key = $this->getRootJobCacheKey( $params['rootJobSignature'] );
+		$key = $this->getRootJobCacheKey( $params['rootJobSignature'], $job->getType() );
 
 		$conn = $this->getConnection();
 		try {
-			$timestamp = $conn->get( $key ); // current last timestamp of this job
+			$timestamp = $conn->get( $key ); // last known timestamp of such a root job
 			if ( $timestamp && $timestamp >= $params['rootJobTimestamp'] ) {
 				return true; // a newer version of this root job was enqueued
 			}
@@ -471,14 +474,14 @@ LUA;
 	 */
 	protected function doIsRootJobOldDuplicate( IJobSpecification $job ) {
 		if ( !$job->hasRootJobParams() ) {
-			return false; // job has no de-deplication info
+			return false; // job has no de-duplication info
 		}
 		$params = $job->getRootJobParams();
 
 		$conn = $this->getConnection();
 		try {
 			// Get the last time this root job was enqueued
-			$timestamp = $conn->get( $this->getRootJobCacheKey( $params['rootJobSignature'] ) );
+			$timestamp = $conn->get( $this->getRootJobCacheKey( $params['rootJobSignature'], $job->getType() ) );
 		} catch ( RedisException $e ) {
 			throw $this->handleErrorAndMakeException( $conn, $e );
 		}
@@ -503,7 +506,7 @@ LUA;
 				$keys[] = $this->getQueueKey( $prop );
 			}
 
-			$ok = ( $conn->delete( $keys ) !== false );
+			$ok = ( $conn->del( $keys ) !== false );
 			$conn->sRem( $this->getGlobalKey( 's-queuesWithJobs' ), $this->encodeQueueName() );
 
 			return $ok;
@@ -514,7 +517,7 @@ LUA;
 
 	/**
 	 * @see JobQueue::getAllQueuedJobs()
-	 * @return Iterator
+	 * @return Iterator<RunnableJob>
 	 * @throws JobQueueError
 	 */
 	public function getAllQueuedJobs() {
@@ -530,7 +533,7 @@ LUA;
 
 	/**
 	 * @see JobQueue::getAllDelayedJobs()
-	 * @return Iterator
+	 * @return Iterator<RunnableJob>
 	 * @throws JobQueueError
 	 */
 	public function getAllDelayedJobs() {
@@ -546,7 +549,7 @@ LUA;
 
 	/**
 	 * @see JobQueue::getAllAcquiredJobs()
-	 * @return Iterator
+	 * @return Iterator<RunnableJob>
 	 * @throws JobQueueError
 	 */
 	public function getAllAcquiredJobs() {
@@ -562,7 +565,7 @@ LUA;
 
 	/**
 	 * @see JobQueue::getAllAbandonedJobs()
-	 * @return Iterator
+	 * @return Iterator<RunnableJob>
 	 * @throws JobQueueError
 	 */
 	public function getAllAbandonedJobs() {
@@ -579,7 +582,7 @@ LUA;
 	/**
 	 * @param RedisConnRef $conn
 	 * @param array $uids List of job UUIDs
-	 * @return MappedIterator
+	 * @return MappedIterator<RunnableJob>
 	 */
 	protected function getJobIterator( RedisConnRef $conn, array $uids ) {
 		return new MappedIterator(
@@ -587,7 +590,7 @@ LUA;
 			function ( $uid ) use ( $conn ) {
 				return $this->getJobFromUidInternal( $uid, $conn );
 			},
-			[ 'accept' => function ( $job ) {
+			[ 'accept' => static function ( $job ) {
 				return is_object( $job );
 			} ]
 		);
@@ -608,7 +611,7 @@ LUA;
 		try {
 			$conn->multi( Redis::PIPELINE );
 			foreach ( $types as $type ) {
-				$conn->lSize( $this->getQueueKey( 'l-unclaimed', $type ) );
+				$conn->lLen( $this->getQueueKey( 'l-unclaimed', $type ) );
 			}
 			$res = $conn->exec();
 			if ( is_array( $res ) ) {
@@ -628,7 +631,7 @@ LUA;
 	 *
 	 * @param string $uid
 	 * @param RedisConnRef|Redis $conn
-	 * @return RunnableJob|bool Returns false if the job does not exist
+	 * @return RunnableJob|false Returns false if the job does not exist
 	 * @throws JobQueueError
 	 * @throws UnexpectedValueException
 	 */
@@ -693,7 +696,7 @@ LUA;
 			// Some jobs cannot run until a "release timestamp"
 			'rtimestamp' => $job->getReleaseTimestamp() ?: 0,
 			// Additional job metadata
-			'uuid' => UIDGenerator::newRawUUIDv4( UIDGenerator::QUICK_RAND ),
+			'uuid' => $this->idGenerator->newRawUUIDv4(),
 			'sha1' => $job->ignoreDuplicates()
 				? Wikimedia\base_convert( sha1( serialize( $job->getDeduplicationInfo() ) ), 16, 36, 31 )
 				: '',
@@ -703,7 +706,7 @@ LUA;
 
 	/**
 	 * @param array $fields
-	 * @return RunnableJob|bool
+	 * @return RunnableJob|false
 	 */
 	protected function getJobFromFields( array $fields ) {
 		$params = $fields['params'];
@@ -737,7 +740,7 @@ LUA;
 
 	/**
 	 * @param string $blob
-	 * @return array|bool Unserialized version of $blob or false
+	 * @return array|false Unserialized version of $blob or false
 	 */
 	protected function unserialize( $blob ) {
 		$fields = unserialize( $blob );
@@ -821,7 +824,7 @@ LUA;
 
 		$parts = [ $keyspace, 'jobqueue', $type, $prop ];
 
-		// Parts are typically ASCII, but encode for sanity to escape ":"
+		// Parts are typically ASCII, but encode to escape ":"
 		return implode( ':', array_map( 'rawurlencode', $parts ) );
 	}
 }

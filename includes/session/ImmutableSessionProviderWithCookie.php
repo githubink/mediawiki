@@ -23,7 +23,9 @@
 
 namespace MediaWiki\Session;
 
-use WebRequest;
+use InvalidArgumentException;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\WebRequest;
 
 /**
  * An ImmutableSessionProviderWithCookie doesn't persist the user, but
@@ -34,6 +36,7 @@ use WebRequest;
  * not changing User" using a session cookie. This class implements such an
  * optional session cookie.
  *
+ * @stable to extend
  * @ingroup Session
  * @since 1.27
  */
@@ -45,6 +48,7 @@ abstract class ImmutableSessionProviderWithCookie extends SessionProvider {
 	protected $sessionCookieOptions = [];
 
 	/**
+	 * @stable to call
 	 * @param array $params Keys include:
 	 *  - sessionCookieName: Session cookie name, if multiple sessions per
 	 *    client are to be supported.
@@ -55,13 +59,13 @@ abstract class ImmutableSessionProviderWithCookie extends SessionProvider {
 
 		if ( isset( $params['sessionCookieName'] ) ) {
 			if ( !is_string( $params['sessionCookieName'] ) ) {
-				throw new \InvalidArgumentException( 'sessionCookieName must be a string' );
+				throw new InvalidArgumentException( 'sessionCookieName must be a string' );
 			}
 			$this->sessionCookieName = $params['sessionCookieName'];
 		}
 		if ( isset( $params['sessionCookieOptions'] ) ) {
 			if ( !is_array( $params['sessionCookieOptions'] ) ) {
-				throw new \InvalidArgumentException( 'sessionCookieOptions must be an array' );
+				throw new InvalidArgumentException( 'sessionCookieOptions must be an array' );
 			}
 			$this->sessionCookieOptions = $params['sessionCookieOptions'];
 		}
@@ -85,19 +89,32 @@ abstract class ImmutableSessionProviderWithCookie extends SessionProvider {
 			);
 		}
 
-		$prefix = $this->sessionCookieOptions['prefix'] ?? $this->config->get( 'CookiePrefix' );
+		$prefix = $this->sessionCookieOptions['prefix']
+			?? $this->getConfig()->get( MainConfigNames::CookiePrefix );
 		$id = $request->getCookie( $this->sessionCookieName, $prefix );
 		return SessionManager::validateSessionId( $id ) ? $id : null;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function persistsSessionId() {
 		return $this->sessionCookieName !== null;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function canChangeUser() {
 		return false;
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function persistSession( SessionBackend $session, WebRequest $request ) {
 		if ( $this->sessionCookieName === null ) {
 			return;
@@ -112,14 +129,21 @@ abstract class ImmutableSessionProviderWithCookie extends SessionProvider {
 
 		$options = $this->sessionCookieOptions;
 		if ( $session->shouldForceHTTPS() || $session->getUser()->requiresHTTPS() ) {
-			$response->setCookie( 'forceHTTPS', 'true', null,
-				[ 'prefix' => '', 'secure' => false ] + $options );
+			// Send a cookie unless $wgForceHTTPS is set (T256095)
+			if ( !$this->getConfig()->get( MainConfigNames::ForceHTTPS ) ) {
+				$response->setCookie( 'forceHTTPS', 'true', null,
+					[ 'prefix' => '', 'secure' => false ] + $options );
+			}
 			$options['secure'] = true;
 		}
 
 		$response->setCookie( $this->sessionCookieName, $session->getId(), null, $options );
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function unpersistSession( WebRequest $request ) {
 		if ( $this->sessionCookieName === null ) {
 			return;
@@ -135,12 +159,17 @@ abstract class ImmutableSessionProviderWithCookie extends SessionProvider {
 		$response->clearCookie( $this->sessionCookieName, $this->sessionCookieOptions );
 	}
 
+	/**
+	 * @inheritDoc
+	 * @stable to override
+	 */
 	public function getVaryCookies() {
 		if ( $this->sessionCookieName === null ) {
 			return [];
 		}
 
-		$prefix = $this->sessionCookieOptions['prefix'] ?? $this->config->get( 'CookiePrefix' );
+		$prefix = $this->sessionCookieOptions['prefix'] ??
+			$this->getConfig()->get( MainConfigNames::CookiePrefix );
 		return [ $prefix . $this->sessionCookieName ];
 	}
 

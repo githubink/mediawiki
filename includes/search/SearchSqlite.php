@@ -22,7 +22,8 @@
  */
 
 use MediaWiki\MediaWikiServices;
-use Wikimedia\Rdbms\DatabaseSqlite;
+use Wikimedia\AtEase\AtEase;
+use Wikimedia\Rdbms\IDatabase;
 
 /**
  * Search engine hook for SQLite
@@ -33,11 +34,15 @@ class SearchSqlite extends SearchDatabase {
 	 * Whether fulltext search is supported by current schema
 	 * @return bool
 	 */
-	function fulltextSearchSupported() {
-		/** @var DatabaseSqlite $dbr */
-		$dbr = $this->lb->getConnection( DB_REPLICA );
+	private function fulltextSearchSupported() {
+		$dbr = $this->dbProvider->getReplicaDatabase();
+		$sql = (string)$dbr->newSelectQueryBuilder()
+			->select( 'sql' )
+			->from( 'sqlite_master' )
+			->where( [ 'tbl_name' => $dbr->tableName( 'searchindex', 'raw' ) ] )
+			->caller( __METHOD__ )->fetchField();
 
-		return $dbr->checkForEnabledSearch();
+		return ( stristr( $sql, 'fts' ) !== false );
 	}
 
 	/**
@@ -57,9 +62,9 @@ class SearchSqlite extends SearchDatabase {
 		if ( preg_match_all( '/([-+<>~]?)(([' . $lc . ']+)(\*?)|"[^"]*")/',
 				$filteredText, $m, PREG_SET_ORDER ) ) {
 			foreach ( $m as $bits ) {
-				Wikimedia\suppressWarnings();
-				list( /* all */, $modifier, $term, $nonQuoted, $wildcard ) = $bits;
-				Wikimedia\restoreWarnings();
+				AtEase::suppressWarnings();
+				[ /* all */, $modifier, $term, $nonQuoted, $wildcard ] = $bits;
+				AtEase::restoreWarnings();
 
 				if ( $nonQuoted != '' ) {
 					$term = $nonQuoted;
@@ -75,8 +80,10 @@ class SearchSqlite extends SearchDatabase {
 
 				// Some languages such as Serbian store the input form in the search index,
 				// so we may need to search for matches in multiple writing system variants.
-				$convertedVariants = MediaWikiServices::getInstance()->getContentLanguage()->
-					autoConvertToAllVariants( $term );
+
+				$converter = MediaWikiServices::getInstance()->getLanguageConverterFactory()
+					->getLanguageConverter();
+				$convertedVariants = $converter->autoConvertToAllVariants( $term );
 				if ( is_array( $convertedVariants ) ) {
 					$variants = array_unique( array_values( $convertedVariants ) );
 				} else {
@@ -101,6 +108,7 @@ class SearchSqlite extends SearchDatabase {
 				if ( count( $strippedVariants ) > 1 ) {
 					$searchon .= '(';
 				}
+				$count = 0;
 				foreach ( $strippedVariants as $stripped ) {
 					if ( $nonQuoted && strpos( $stripped, ' ' ) !== false ) {
 						// Hack for Chinese: we need to toss in quotes for
@@ -108,7 +116,11 @@ class SearchSqlite extends SearchDatabase {
 						// added spaces between them to make word breaks.
 						$stripped = '"' . trim( $stripped ) . '"';
 					}
+					if ( $count > 0 ) {
+						$searchon .= " OR ";
+					}
 					$searchon .= "$quote$stripped$quote$wildcard ";
+					++$count;
 				}
 				if ( count( $strippedVariants ) > 1 ) {
 					$searchon .= ')';
@@ -121,10 +133,10 @@ class SearchSqlite extends SearchDatabase {
 			}
 
 		} else {
-			wfDebug( __METHOD__ . ": Can't understand search query '{$filteredText}'\n" );
+			wfDebug( __METHOD__ . ": Can't understand search query '{$filteredText}'" );
 		}
 
-		$dbr = $this->lb->getConnectionRef( DB_REPLICA );
+		$dbr = $this->dbProvider->getReplicaDatabase();
 		$searchon = $dbr->addQuotes( $searchon );
 		$field = $this->getIndexField( $fulltext );
 
@@ -161,7 +173,7 @@ class SearchSqlite extends SearchDatabase {
 	 * Perform a full text search query and return a result set.
 	 *
 	 * @param string $term Raw search term
-	 * @return SqlSearchResultSet
+	 * @return SqlSearchResultSet|null
 	 */
 	protected function doSearchTextInDB( $term ) {
 		return $this->searchInternal( $term, true );
@@ -171,7 +183,7 @@ class SearchSqlite extends SearchDatabase {
 	 * Perform a title-only search query and return a result set.
 	 *
 	 * @param string $term Raw search term
-	 * @return SqlSearchResultSet
+	 * @return SqlSearchResultSet|null
 	 */
 	protected function doSearchTitleInDB( $term ) {
 		return $this->searchInternal( $term, false );
@@ -184,11 +196,15 @@ class SearchSqlite extends SearchDatabase {
 
 		$filteredTerm =
 			$this->filter( MediaWikiServices::getInstance()->getContentLanguage()->lc( $term ) );
-		$dbr = $this->lb->getConnectionRef( DB_REPLICA );
-		$resultSet = $dbr->query( $this->getQuery( $filteredTerm, $fulltext ) );
+		$dbr = $this->dbProvider->getReplicaDatabase();
+		// The real type is still IDatabase, but IReplicaDatabase is used for safety.
+		'@phan-var IDatabase $dbr';
+		// phpcs:ignore MediaWiki.Usage.DbrQueryUsage.DbrQueryFound
+		$resultSet = $dbr->query( $this->getQuery( $filteredTerm, $fulltext ), __METHOD__ );
 
 		$total = null;
-		$totalResult = $dbr->query( $this->getCountQuery( $filteredTerm, $fulltext ) );
+		// phpcs:ignore MediaWiki.Usage.DbrQueryUsage.DbrQueryFound
+		$totalResult = $dbr->query( $this->getCountQuery( $filteredTerm, $fulltext ), __METHOD__ );
 		$row = $totalResult->fetchObject();
 		if ( $row ) {
 			$total = intval( $row->c );
@@ -203,13 +219,13 @@ class SearchSqlite extends SearchDatabase {
 	 * @return string
 	 */
 	private function queryNamespaces() {
-		if ( is_null( $this->namespaces ) ) {
+		if ( $this->namespaces === null ) {
 			return '';  # search all
 		}
 		if ( $this->namespaces === [] ) {
-			$namespaces = '0';
+			$namespaces = NS_MAIN;
 		} else {
-			$dbr = $this->lb->getConnectionRef( DB_REPLICA );
+			$dbr = $this->dbProvider->getReplicaDatabase();
 			$namespaces = $dbr->makeList( $this->namespaces );
 		}
 		return 'AND page_namespace IN (' . $namespaces . ')';
@@ -221,9 +237,7 @@ class SearchSqlite extends SearchDatabase {
 	 * @return string
 	 */
 	private function limitResult( $sql ) {
-		$dbr = $this->lb->getConnectionRef( DB_REPLICA );
-
-		return $dbr->limitResult( $sql, $this->limit, $this->offset );
+		return $this->dbProvider->getReplicaDatabase()->limitResult( $sql, $this->limit, $this->offset );
 	}
 
 	/**
@@ -258,21 +272,21 @@ class SearchSqlite extends SearchDatabase {
 	 */
 	private function queryMain( $filteredTerm, $fulltext ) {
 		$match = $this->parseQuery( $filteredTerm, $fulltext );
-		$dbr = $this->lb->getMaintenanceConnectionRef( DB_REPLICA );
+		$dbr = $this->dbProvider->getReplicaDatabase();
 		$page = $dbr->tableName( 'page' );
 		$searchindex = $dbr->tableName( 'searchindex' );
 		return "SELECT $searchindex.rowid, page_namespace, page_title " .
-			"FROM $page,$searchindex " .
+			"FROM $searchindex CROSS JOIN $page " .
 			"WHERE page_id=$searchindex.rowid AND $match";
 	}
 
 	private function getCountQuery( $filteredTerm, $fulltext ) {
 		$match = $this->parseQuery( $filteredTerm, $fulltext );
-		$dbr = $this->lb->getMaintenanceConnectionRef( DB_REPLICA );
+		$dbr = $this->dbProvider->getReplicaDatabase();
 		$page = $dbr->tableName( 'page' );
 		$searchindex = $dbr->tableName( 'searchindex' );
 		return "SELECT COUNT(*) AS c " .
-			"FROM $page,$searchindex " .
+			"FROM $searchindex CROSS JOIN $page " .
 			"WHERE page_id=$searchindex.rowid AND $match " .
 			$this->queryNamespaces();
 	}
@@ -285,20 +299,21 @@ class SearchSqlite extends SearchDatabase {
 	 * @param string $title
 	 * @param string $text
 	 */
-	function update( $id, $title, $text ) {
+	public function update( $id, $title, $text ) {
 		if ( !$this->fulltextSearchSupported() ) {
 			return;
 		}
 		// @todo find a method to do it in a single request,
 		// couldn't do it so far due to typelessness of FTS3 tables.
-		$dbw = $this->lb->getConnectionRef( DB_MASTER );
-		$dbw->delete( 'searchindex', [ 'rowid' => $id ], __METHOD__ );
-		$dbw->insert( 'searchindex',
-			[
-				'rowid' => $id,
-				'si_title' => $title,
-				'si_text' => $text
-			], __METHOD__ );
+		$dbw = $this->dbProvider->getPrimaryDatabase();
+		$dbw->newDeleteQueryBuilder()
+			->deleteFrom( 'searchindex' )
+			->where( [ 'rowid' => $id ] )
+			->caller( __METHOD__ )->execute();
+		$dbw->newInsertQueryBuilder()
+			->insertInto( 'searchindex' )
+			->row( [ 'rowid' => $id, 'si_title' => $title, 'si_text' => $text ] )
+			->caller( __METHOD__ )->execute();
 	}
 
 	/**
@@ -308,15 +323,16 @@ class SearchSqlite extends SearchDatabase {
 	 * @param int $id
 	 * @param string $title
 	 */
-	function updateTitle( $id, $title ) {
+	public function updateTitle( $id, $title ) {
 		if ( !$this->fulltextSearchSupported() ) {
 			return;
 		}
 
-		$dbw = $this->lb->getConnectionRef( DB_MASTER );
-		$dbw->update( 'searchindex',
-			[ 'si_title' => $title ],
-			[ 'rowid' => $id ],
-			__METHOD__ );
+		$dbw = $this->dbProvider->getPrimaryDatabase();
+		$dbw->newUpdateQueryBuilder()
+			->update( 'searchindex' )
+			->set( [ 'si_title' => $title ] )
+			->where( [ 'rowid' => $id ] )
+			->caller( __METHOD__ )->execute();
 	}
 }

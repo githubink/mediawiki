@@ -1,6 +1,6 @@
 <?php
 /**
- * Copyright © 2005 Brion Vibber <brion@pobox.com>
+ * Copyright © 2005 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
  * This program is free software; you can redistribute it and/or modify
@@ -21,6 +21,8 @@
  * @file
  */
 
+use MediaWiki\Maintenance\BackupDumper;
+
 /**
  * @ingroup Dump
  */
@@ -30,17 +32,23 @@ class ExportProgressFilter extends DumpFilter {
 	 */
 	private $progress;
 
-	function __construct( &$sink, &$progress ) {
+	/**
+	 * @param DumpOutput &$sink
+	 * @param BackupDumper &$progress
+	 */
+	public function __construct( &$sink, &$progress ) {
 		parent::__construct( $sink );
 		$this->progress = $progress;
 	}
 
-	function writeClosePage( $string ) {
+	/** @inheritDoc */
+	public function writeClosePage( $string ) {
 		parent::writeClosePage( $string );
 		$this->progress->reportPage();
 	}
 
-	function writeRevision( $rev, $string ) {
+	/** @inheritDoc */
+	public function writeRevision( $rev, $string ) {
 		parent::writeRevision( $rev, $string );
 		$this->progress->revCount();
 	}

@@ -1,5 +1,7 @@
 <?php
 
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Title\Title;
 use Wikimedia\Rdbms\IResultWrapper;
 
 /**
@@ -21,7 +23,7 @@ class SqlSearchResultSet extends SearchResultSet {
 	 * @param string[] $terms
 	 * @param int|null $total
 	 */
-	function __construct( IResultWrapper $resultSet, array $terms, $total = null ) {
+	public function __construct( IResultWrapper $resultSet, array $terms, $total = null ) {
 		parent::__construct();
 		$this->resultSet = $resultSet;
 		$this->terms = $terms;
@@ -32,13 +34,13 @@ class SqlSearchResultSet extends SearchResultSet {
 	 * @return string[]
 	 * @deprecated since 1.34
 	 */
-	function termMatches() {
+	public function termMatches() {
 		return $this->terms;
 	}
 
-	function numRows() {
+	public function numRows() {
 		if ( $this->resultSet === false ) {
-			return false;
+			return 0;
 		}
 
 		return $this->resultSet->numRows();
@@ -52,9 +54,9 @@ class SqlSearchResultSet extends SearchResultSet {
 		if ( $this->results === null ) {
 			$this->results = [];
 			$this->resultSet->rewind();
-			$terms = \MediaWiki\MediaWikiServices::getInstance()->getContentLanguage()
+			$terms = MediaWikiServices::getInstance()->getContentLanguage()
 				->convertForSearchResult( $this->terms );
-			while ( ( $row = $this->resultSet->fetchObject() ) !== false ) {
+			foreach ( $this->resultSet as $row ) {
 				$result = new SqlSearchResult(
 					Title::makeTitle( $row->page_namespace, $row->page_title ),
 					$terms
@@ -66,16 +68,8 @@ class SqlSearchResultSet extends SearchResultSet {
 		return $this->results;
 	}
 
-	function free() {
-		if ( $this->resultSet === false ) {
-			return;
-		}
-
-		$this->resultSet->free();
-	}
-
-	function getTotalHits() {
-		if ( !is_null( $this->totalHits ) ) {
+	public function getTotalHits() {
+		if ( $this->totalHits !== null ) {
 			return $this->totalHits;
 		} else {
 			// Special:Search expects a number here.

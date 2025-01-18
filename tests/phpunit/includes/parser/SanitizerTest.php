@@ -1,43 +1,60 @@
 <?php
 
+namespace MediaWiki\Tests\Parser;
+
+use InvalidArgumentException;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Parser\Sanitizer;
+use MediaWikiIntegrationTestCase;
+use UnexpectedValueException;
 use Wikimedia\TestingAccessWrapper;
 
 /**
  * @group Sanitizer
  */
-class SanitizerTest extends MediaWikiTestCase {
-
-	protected function tearDown() {
-		MWTidy::destroySingleton();
-		parent::tearDown();
-	}
+class SanitizerTest extends MediaWikiIntegrationTestCase {
 
 	/**
-	 * @covers Sanitizer::removeHTMLtags
+	 * @covers \MediaWiki\Parser\Sanitizer::internalRemoveHTMLtags
 	 * @dataProvider provideHtml5Tags
 	 *
 	 * @param string $tag Name of an HTML5 element (ie: 'video')
 	 * @param bool $escaped Whether sanitizer let the tag in or escape it (ie: '&lt;video&gt;')
 	 */
-	public function testRemovehtmltagsOnHtml5Tags( $tag, $escaped ) {
-		$this->hideDeprecated( 'disabling tidy' );
-		$this->hideDeprecated( 'MWTidy::setInstance' );
-		MWTidy::setInstance( false );
-
+	public function testInternalRemoveHtmlTagsOnHtml5Tags( $tag, $escaped ) {
 		if ( $escaped ) {
 			$this->assertEquals( "&lt;$tag&gt;",
-				Sanitizer::removeHTMLtags( "<$tag>" )
+				Sanitizer::internalRemoveHtmlTags( "<$tag>" )
 			);
 		} else {
 			$this->assertEquals( "<$tag></$tag>\n",
-				Sanitizer::removeHTMLtags( "<$tag>" )
+				Sanitizer::internalRemoveHtmlTags( "<$tag></$tag>\n" )
 			);
 		}
 	}
 
 	/**
-	 * Provide HTML5 tags
+	 * @covers \MediaWiki\Parser\Sanitizer::removeSomeTags
+	 * @dataProvider provideHtml5Tags
+	 *
+	 * @param string $tag Name of an HTML5 element (ie: 'video')
+	 * @param bool $escaped Whether sanitizer let the tag in or escape it (ie: '&lt;video&gt;')
 	 */
+	public function testRemoveSomeTagsOnHtml5Tags( $tag, $escaped ) {
+		if ( $escaped ) {
+			$this->assertEquals( "&lt;$tag&gt;",
+				Sanitizer::removeSomeTags( "<$tag>" )
+			);
+		} else {
+			$this->assertEquals( "<$tag></$tag>\n",
+				Sanitizer::removeSomeTags( "<$tag></$tag>\n" )
+			);
+			$this->assertEquals( "<$tag></$tag>",
+				Sanitizer::removeSomeTags( "<$tag>" )
+			);
+		}
+	}
+
 	public static function provideHtml5Tags() {
 		$ESCAPED = true; # We want tag to be escaped
 		$VERBATIM = false; # We want to keep the tag
@@ -49,7 +66,7 @@ class SanitizerTest extends MediaWikiTestCase {
 		];
 	}
 
-	function dataRemoveHTMLtags() {
+	public function dataRemoveHTMLtags() {
 		return [
 			// former testSelfClosingTag
 			[
@@ -81,20 +98,25 @@ class SanitizerTest extends MediaWikiTestCase {
 
 	/**
 	 * @dataProvider dataRemoveHTMLtags
-	 * @covers Sanitizer::removeHTMLtags
+	 * @covers \MediaWiki\Parser\Sanitizer::internalRemoveHtmlTags
 	 */
-	public function testRemoveHTMLtags( $input, $output, $msg = null ) {
-		$this->hideDeprecated( 'disabling tidy' );
-		$this->hideDeprecated( 'MWTidy::setInstance' );
-		MWTidy::setInstance( false );
-		$this->assertEquals( $output, Sanitizer::removeHTMLtags( $input ), $msg );
+	public function testInternalRemoveHTMLtags( $input, $output, $msg = null ) {
+		$this->assertEquals( $output, Sanitizer::internalRemoveHtmlTags( $input ), $msg );
+	}
+
+	/**
+	 * @dataProvider dataRemoveHTMLtags
+	 * @covers \MediaWiki\Parser\Sanitizer::removeSomeTags
+	 */
+	public function testRemoveSomeTags( $input, $output, $msg = null ) {
+		$this->assertEquals( $output, Sanitizer::removeSomeTags( $input ), $msg );
 	}
 
 	/**
 	 * @dataProvider provideDeprecatedAttributes
-	 * @covers Sanitizer::fixTagAttributes
-	 * @covers Sanitizer::validateTagAttributes
-	 * @covers Sanitizer::validateAttributes
+	 * @covers \MediaWiki\Parser\Sanitizer::fixTagAttributes
+	 * @covers \MediaWiki\Parser\Sanitizer::validateTagAttributes
+	 * @covers \MediaWiki\Parser\Sanitizer::validateAttributes
 	 */
 	public function testDeprecatedAttributesUnaltered( $inputAttr, $inputEl, $message = '' ) {
 		$this->assertEquals( " $inputAttr",
@@ -122,8 +144,8 @@ class SanitizerTest extends MediaWikiTestCase {
 
 	/**
 	 * @dataProvider provideValidateTagAttributes
-	 * @covers Sanitizer::validateTagAttributes
-	 * @covers Sanitizer::validateAttributes
+	 * @covers \MediaWiki\Parser\Sanitizer::validateTagAttributes
+	 * @covers \MediaWiki\Parser\Sanitizer::validateAttributes
 	 */
 	public function testValidateTagAttributes( $element, $attribs, $expected ) {
 		$actual = Sanitizer::validateTagAttributes( $attribs, $element );
@@ -140,31 +162,28 @@ class SanitizerTest extends MediaWikiTestCase {
 				[ 'id' => 'foo bar', 'itemprop' => 'foo', 'content' => 'bar' ],
 				[ 'itemprop' => 'foo', 'content' => 'bar' ],
 			],
+			[ 'div',
+				[ 'role' => 'presentation', 'aria-hidden' => 'true' ],
+				[ 'role' => 'presentation', 'aria-hidden' => 'true' ],
+			],
+			[ 'div',
+				[ 'role' => 'menuitem', 'aria-hidden' => 'false' ],
+				[ 'role' => 'menuitem', 'aria-hidden' => 'false' ],
+			],
 		];
 	}
 
 	/**
-	 * @dataProvider provideAttributeWhitelist
-	 * @covers Sanitizer::attributeWhitelist
+	 * @dataProvider provideAttributesAllowed
+	 * @covers \MediaWiki\Parser\Sanitizer::attributesAllowedInternal
 	 */
-	public function testAttributeWhitelist( $element, $attribs ) {
-		$this->hideDeprecated( 'Sanitizer::attributeWhitelist' );
-		$this->hideDeprecated( 'Sanitizer::setupAttributeWhitelist' );
-		$actual = Sanitizer::attributeWhitelist( $element );
-		$this->assertArrayEquals( $attribs, $actual );
-	}
-
-	/**
-	 * @dataProvider provideAttributeWhitelist
-	 * @covers Sanitizer::attributeWhitelistInternal
-	 */
-	public function testAttributeWhitelistInternal( $element, $attribs ) {
+	public function testAttributesAllowedInternal( $element, $attribs ) {
 		$sanitizer = TestingAccessWrapper::newFromClass( Sanitizer::class );
-		$actual = $sanitizer->attributeWhitelistInternal( $element );
+		$actual = $sanitizer->attributesAllowedInternal( $element );
 		$this->assertArrayEquals( $attribs, array_keys( $actual ) );
 	}
 
-	public function provideAttributeWhitelist() {
+	public static function provideAttributesAllowed() {
 		/** [ <element>, [ <good attribute 1>, <good attribute 2>, ...] ] */
 		return [
 			[ 'math', [ 'class', 'style', 'id', 'title' ] ],
@@ -176,10 +195,11 @@ class SanitizerTest extends MediaWikiTestCase {
 	/**
 	 * @dataProvider provideEscapeIdForStuff
 	 *
-	 * @covers Sanitizer::escapeIdForAttribute()
-	 * @covers Sanitizer::escapeIdForLink()
-	 * @covers Sanitizer::escapeIdForExternalInterwiki()
-	 * @covers Sanitizer::escapeIdInternal()
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdForAttribute()
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdForLink()
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdForExternalInterwiki()
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdInternal()
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdInternalUrl()
 	 *
 	 * @param string $stuff
 	 * @param string[] $config
@@ -190,20 +210,21 @@ class SanitizerTest extends MediaWikiTestCase {
 	public function testEscapeIdForStuff( $stuff, array $config, $id, $expected, $mode = null ) {
 		$func = "Sanitizer::escapeIdFor{$stuff}";
 		$iwFlavor = array_pop( $config );
-		$this->setMwGlobals( [
-			'wgFragmentMode' => $config,
-			'wgExternalInterwikiFragmentMode' => $iwFlavor,
+		$this->overrideConfigValues( [
+			MainConfigNames::FragmentMode => $config,
+			MainConfigNames::ExternalInterwikiFragmentMode => $iwFlavor,
 		] );
-		$escaped = call_user_func( $func, $id, $mode );
+		$escaped = $func( $id, $mode );
 		self::assertEquals( $expected, $escaped );
 	}
 
-	public function provideEscapeIdForStuff() {
+	public static function provideEscapeIdForStuff() {
 		// Test inputs and outputs
-		$text = 'foo тест_#%!\'()[]:<>&&amp;&amp;amp;';
+		$text = 'foo тест_#%!\'()[]:<>&&amp;&amp;amp;%F0';
 		$legacyEncoded = 'foo_.D1.82.D0.B5.D1.81.D1.82_.23.25.21.27.28.29.5B.5D:.3C.3E' .
-			'.26.26amp.3B.26amp.3Bamp.3B';
-		$html5Encoded = 'foo_тест_#%!\'()[]:<>&&amp;&amp;amp;';
+			'.26.26amp.3B.26amp.3Bamp.3B.25F0';
+		$html5EncodedId = 'foo_тест_#%!\'()[]:<>&&amp;&amp;amp;%F0';
+		$html5EncodedHref = 'foo_тест_#%!\'()[]:<>&&amp;&amp;amp;%25F0';
 
 		// Settings: last element is $wgExternalInterwikiFragmentMode, the rest is $wgFragmentMode
 		$legacy = [ 'legacy', 'legacy' ];
@@ -221,78 +242,110 @@ class SanitizerTest extends MediaWikiTestCase {
 
 			// Transition to a new world: legacy links with HTML5 fallback
 			[ 'Attribute', $legacyNew, $text, $legacyEncoded, Sanitizer::ID_PRIMARY ],
-			[ 'Attribute', $legacyNew, $text, $html5Encoded, Sanitizer::ID_FALLBACK ],
+			[ 'Attribute', $legacyNew, $text, $html5EncodedId, Sanitizer::ID_FALLBACK ],
 			[ 'Link', $legacyNew, $text, $legacyEncoded ],
 			[ 'ExternalInterwiki', $legacyNew, $text, $legacyEncoded ],
 
 			// New world: HTML5 links, legacy fallbacks
-			[ 'Attribute', $newLegacy, $text, $html5Encoded, Sanitizer::ID_PRIMARY ],
+			[ 'Attribute', $newLegacy, $text, $html5EncodedId, Sanitizer::ID_PRIMARY ],
 			[ 'Attribute', $newLegacy, $text, $legacyEncoded, Sanitizer::ID_FALLBACK ],
-			[ 'Link', $newLegacy, $text, $html5Encoded ],
+			[ 'Link', $newLegacy, $text, $html5EncodedHref ],
 			[ 'ExternalInterwiki', $newLegacy, $text, $legacyEncoded ],
 
 			// Distant future: no legacy fallbacks, but still linking to leagacy wikis
-			[ 'Attribute', $new, $text, $html5Encoded, Sanitizer::ID_PRIMARY ],
+			[ 'Attribute', $new, $text, $html5EncodedId, Sanitizer::ID_PRIMARY ],
 			[ 'Attribute', $new, $text, false, Sanitizer::ID_FALLBACK ],
-			[ 'Link', $new, $text, $html5Encoded ],
+			[ 'Link', $new, $text, $html5EncodedHref ],
 			[ 'ExternalInterwiki', $new, $text, $legacyEncoded ],
 
 			// Just before the heat death of universe: external interwikis are also HTML5 \m/
-			[ 'Attribute', $allNew, $text, $html5Encoded, Sanitizer::ID_PRIMARY ],
+			[ 'Attribute', $allNew, $text, $html5EncodedId, Sanitizer::ID_PRIMARY ],
 			[ 'Attribute', $allNew, $text, false, Sanitizer::ID_FALLBACK ],
-			[ 'Link', $allNew, $text, $html5Encoded ],
-			[ 'ExternalInterwiki', $allNew, $text, $html5Encoded ],
+			[ 'Link', $allNew, $text, $html5EncodedHref ],
+			[ 'ExternalInterwiki', $allNew, $text, $html5EncodedHref ],
+
+			// Whitespace
+			[ 'attribute', $allNew, "foo bar", 'foo_bar', Sanitizer::ID_PRIMARY ],
+			[ 'attribute', $allNew, "foo\fbar", 'foo_bar', Sanitizer::ID_PRIMARY ],
+			[ 'attribute', $allNew, "foo\nbar", 'foo_bar', Sanitizer::ID_PRIMARY ],
+			[ 'attribute', $allNew, "foo\tbar", 'foo_bar', Sanitizer::ID_PRIMARY ],
+			[ 'attribute', $allNew, "foo\rbar", 'foo_bar', Sanitizer::ID_PRIMARY ],
 		];
 	}
 
 	/**
-	 * @expectedException InvalidArgumentException
-	 * @covers Sanitizer::escapeIdInternal()
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdInternal()
 	 */
 	public function testInvalidFragmentThrows() {
-		$this->setMwGlobals( 'wgFragmentMode', [ 'boom!' ] );
+		$this->overrideConfigValue( MainConfigNames::FragmentMode, [ 'boom!' ] );
+		$this->expectException( InvalidArgumentException::class );
 		Sanitizer::escapeIdForAttribute( 'This should throw' );
 	}
 
 	/**
-	 * @expectedException UnexpectedValueException
-	 * @covers Sanitizer::escapeIdForAttribute()
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdForAttribute()
 	 */
 	public function testNoPrimaryFragmentModeThrows() {
-		$this->setMwGlobals( 'wgFragmentMode', [ 666 => 'html5' ] );
+		$this->overrideConfigValue( MainConfigNames::FragmentMode, [ 666 => 'html5' ] );
+		$this->expectException( UnexpectedValueException::class );
 		Sanitizer::escapeIdForAttribute( 'This should throw' );
 	}
 
 	/**
-	 * @expectedException UnexpectedValueException
-	 * @covers Sanitizer::escapeIdForLink()
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdForLink()
 	 */
 	public function testNoPrimaryFragmentModeThrows2() {
-		$this->setMwGlobals( 'wgFragmentMode', [ 666 => 'html5' ] );
+		$this->overrideConfigValue( MainConfigNames::FragmentMode, [ 666 => 'html5' ] );
+		$this->expectException( UnexpectedValueException::class );
 		Sanitizer::escapeIdForLink( 'This should throw' );
 	}
 
 	/**
-	 * Test escapeIdReferenceList for consistency with escapeIdForAttribute
+	 * Test escapeIdReferenceListInternal for consistency with escapeIdForAttribute
 	 *
-	 * @dataProvider provideEscapeIdReferenceList
-	 * @covers Sanitizer::escapeIdReferenceList
+	 * @dataProvider provideEscapeIdReferenceListInternal
+	 * @covers \MediaWiki\Parser\Sanitizer::escapeIdReferenceListInternal
 	 */
-	public function testEscapeIdReferenceList( $referenceList, $id1, $id2 ) {
+	public function testEscapeIdReferenceListInternal( $referenceList, $id1, $id2 ) {
+		$sanitizer = TestingAccessWrapper::newFromClass( Sanitizer::class );
+		$actual = $sanitizer->escapeIdReferenceListInternal( $referenceList );
+
 		$this->assertEquals(
-			Sanitizer::escapeIdReferenceList( $referenceList ),
+			$actual,
 			Sanitizer::escapeIdForAttribute( $id1 )
 			. ' '
 			. Sanitizer::escapeIdForAttribute( $id2 )
 		);
 	}
 
-	public static function provideEscapeIdReferenceList() {
+	public static function provideEscapeIdReferenceListInternal() {
 		/** [ <reference list>, <individual id 1>, <individual id 2> ] */
 		return [
 			[ 'foo bar', 'foo', 'bar' ],
 			[ '#1 #2', '#1', '#2' ],
 			[ '+1 +2', '+1', '+2' ],
+		];
+	}
+
+	/**
+	 * Test cleanUrl
+	 *
+	 * @dataProvider provideCleanUrl
+	 * @covers \MediaWiki\Parser\Sanitizer::cleanUrl
+	 */
+	public function testCleanUrl( string $input, string $output ) {
+		$this->assertEquals( $output, Sanitizer::cleanUrl( $input ) );
+	}
+
+	public static function provideCleanUrl() {
+		return [
+			[ 'http://www.example.com/file.txt', 'http://www.example.com/file.txt' ],
+			[
+				"https://www.exa\u{00AD}\u{200B}\u{2060}\u{FEFF}" .
+				"\u{034F}\u{180B}\u{180C}\u{180D}\u{200C}\u{200D}" .
+				"\u{FE00}\u{FE08}\u{FE0F}mple.com",
+				'https://www.example.com'
+			],
 		];
 	}
 

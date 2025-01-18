@@ -1,7 +1,5 @@
 <?php
 /**
- * Value object representing a modification of revision slots.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -22,7 +20,7 @@
 
 namespace MediaWiki\Storage;
 
-use Content;
+use MediaWiki\Content\Content;
 use MediaWiki\Revision\MutableRevisionSlots;
 use MediaWiki\Revision\RevisionAccessException;
 use MediaWiki\Revision\RevisionSlots;
@@ -57,7 +55,7 @@ class RevisionSlotsUpdate {
 	 */
 	public static function newFromRevisionSlots(
 		RevisionSlots $newSlots,
-		RevisionSlots $parentSlots = null
+		?RevisionSlots $parentSlots = null
 	) {
 		$modified = $newSlots->getSlots();
 		$removed = [];
@@ -86,10 +84,11 @@ class RevisionSlotsUpdate {
 	 * in $newContent are not considered removed. They are instead assumed to be inherited.
 	 *
 	 * @param Content[] $newContent The new content, using slot roles as array keys.
+	 * @param RevisionSlots|null $parentSlots
 	 *
 	 * @return RevisionSlotsUpdate
 	 */
-	public static function newFromContent( array $newContent, RevisionSlots $parentSlots = null ) {
+	public static function newFromContent( array $newContent, ?RevisionSlots $parentSlots = null ) {
 		$modified = [];
 
 		foreach ( $newContent as $role => $content ) {
@@ -163,8 +162,6 @@ class RevisionSlotsUpdate {
 	 *
 	 * The roles used with modifySlot() will be returned from getModifiedRoles(),
 	 * unless overwritten with removeSlot().
-	 *
-	 * @param SlotRecord $slot
 	 */
 	public function modifySlot( SlotRecord $slot ) {
 		$role = $slot->getRole();
@@ -218,7 +215,10 @@ class RevisionSlotsUpdate {
 		if ( isset( $this->modifiedSlots[$role] ) ) {
 			return $this->modifiedSlots[$role];
 		} else {
-			throw new RevisionAccessException( 'No such slot: ' . $role );
+			throw new RevisionAccessException(
+				'No such slot: {role}',
+				[ 'role' => $role ]
+			);
 		}
 	}
 
@@ -284,8 +284,6 @@ class RevisionSlotsUpdate {
 	/**
 	 * Applies this update to the given MutableRevisionSlots, setting all modified slots,
 	 * and removing all removed roles.
-	 *
-	 * @param MutableRevisionSlots $slots
 	 */
 	public function apply( MutableRevisionSlots $slots ) {
 		foreach ( $this->getModifiedRoles() as $role ) {

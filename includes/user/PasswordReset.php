@@ -1,7 +1,5 @@
 <?php
 /**
- * User password reset helper for MediaWiki.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -20,185 +18,260 @@
  * @file
  */
 
+namespace MediaWiki\User;
+
+use Iterator;
+use LogicException;
+use MapCacheLRU;
 use MediaWiki\Auth\AuthManager;
 use MediaWiki\Auth\TemporaryPasswordAuthenticationRequest;
+use MediaWiki\Config\ServiceOptions;
+use MediaWiki\Deferred\DeferredUpdates;
+use MediaWiki\Deferred\SendPasswordResetEmailUpdate;
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\HookContainer\HookRunner;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Message\Message;
+use MediaWiki\Parser\Sanitizer;
+use MediaWiki\User\Options\UserOptionsLookup;
 use Psr\Log\LoggerAwareInterface;
+use Psr\Log\LoggerAwareTrait;
 use Psr\Log\LoggerInterface;
-use MediaWiki\Logger\LoggerFactory;
+use StatusValue;
 
 /**
- * Helper class for the password reset functionality shared by the web UI and the API.
+ * Password reset helper for functionality shared by the web UI and the API.
  *
  * Requires the TemporaryPasswordPrimaryAuthenticationProvider and the
  * EmailNotificationSecondaryAuthenticationProvider (or something providing equivalent
  * functionality) to be enabled.
  */
 class PasswordReset implements LoggerAwareInterface {
-	/** @var Config */
-	protected $config;
+	use LoggerAwareTrait;
 
-	/** @var AuthManager */
-	protected $authManager;
-
-	/** @var LoggerInterface */
-	protected $logger;
+	private ServiceOptions $config;
+	private AuthManager $authManager;
+	private HookRunner $hookRunner;
+	private UserIdentityLookup $userIdentityLookup;
+	private UserFactory $userFactory;
+	private UserNameUtils $userNameUtils;
+	private UserOptionsLookup $userOptionsLookup;
 
 	/**
 	 * In-process cache for isAllowed lookups, by username.
 	 * Contains a StatusValue object
-	 * @var MapCacheLRU
 	 */
-	private $permissionCache;
-
-	public function __construct( Config $config, AuthManager $authManager ) {
-		$this->config = $config;
-		$this->authManager = $authManager;
-		$this->permissionCache = new MapCacheLRU( 1 );
-		$this->logger = LoggerFactory::getInstance( 'authentication' );
-	}
+	private MapCacheLRU $permissionCache;
 
 	/**
-	 * Set the logger instance to use.
-	 *
-	 * @param LoggerInterface $logger
-	 * @since 1.29
+	 * @internal For use by ServiceWiring
 	 */
-	public function setLogger( LoggerInterface $logger ) {
+	public const CONSTRUCTOR_OPTIONS = [
+		MainConfigNames::EnableEmail,
+		MainConfigNames::PasswordResetRoutes,
+	];
+
+	/**
+	 * This class is managed by MediaWikiServices, don't instantiate directly.
+	 *
+	 * @param ServiceOptions $config
+	 * @param LoggerInterface $logger
+	 * @param AuthManager $authManager
+	 * @param HookContainer $hookContainer
+	 * @param UserIdentityLookup $userIdentityLookup
+	 * @param UserFactory $userFactory
+	 * @param UserNameUtils $userNameUtils
+	 * @param UserOptionsLookup $userOptionsLookup
+	 */
+	public function __construct(
+		ServiceOptions $config,
+		LoggerInterface $logger,
+		AuthManager $authManager,
+		HookContainer $hookContainer,
+		UserIdentityLookup $userIdentityLookup,
+		UserFactory $userFactory,
+		UserNameUtils $userNameUtils,
+		UserOptionsLookup $userOptionsLookup
+	) {
+		$config->assertRequiredOptions( self::CONSTRUCTOR_OPTIONS );
+
+		$this->config = $config;
 		$this->logger = $logger;
+
+		$this->authManager = $authManager;
+		$this->hookRunner = new HookRunner( $hookContainer );
+		$this->userIdentityLookup = $userIdentityLookup;
+		$this->userFactory = $userFactory;
+		$this->userNameUtils = $userNameUtils;
+		$this->userOptionsLookup = $userOptionsLookup;
+
+		$this->permissionCache = new MapCacheLRU( 1 );
 	}
 
 	/**
 	 * Check if a given user has permission to use this functionality.
 	 * @param User $user
-	 * @param bool $displayPassword If set, also check whether the user is allowed to reset the
-	 *   password of another user and see the temporary password.
 	 * @since 1.29 Second argument for displayPassword removed.
 	 * @return StatusValue
 	 */
 	public function isAllowed( User $user ) {
-		$status = $this->permissionCache->get( $user->getName() );
-		if ( !$status ) {
-			$resetRoutes = $this->config->get( 'PasswordResetRoutes' );
-			$status = StatusValue::newGood();
-
-			if ( !is_array( $resetRoutes ) || !in_array( true, $resetRoutes, true ) ) {
-				// Maybe password resets are disabled, or there are no allowable routes
-				$status = StatusValue::newFatal( 'passwordreset-disabled' );
-			} elseif (
-				( $providerStatus = $this->authManager->allowsAuthenticationDataChange(
-					new TemporaryPasswordAuthenticationRequest(), false ) )
-				&& !$providerStatus->isGood()
-			) {
-				// Maybe the external auth plugin won't allow local password changes
-				$status = StatusValue::newFatal( 'resetpass_forbidden-reason',
-					$providerStatus->getMessage() );
-			} elseif ( !$this->config->get( 'EnableEmail' ) ) {
-				// Maybe email features have been disabled
-				$status = StatusValue::newFatal( 'passwordreset-emaildisabled' );
-			} elseif ( !$user->isAllowed( 'editmyprivateinfo' ) ) {
-				// Maybe not all users have permission to change private data
-				$status = StatusValue::newFatal( 'badaccess' );
-			} elseif ( $this->isBlocked( $user ) ) {
-				// Maybe the user is blocked (check this here rather than relying on the parent
-				// method as we have a more specific error message to use here and we want to
-				// ignore some types of blocks)
-				$status = StatusValue::newFatal( 'blocked-mailpassword' );
+		return $this->permissionCache->getWithSetCallback(
+			$user->getName(),
+			function () use ( $user ) {
+				return $this->computeIsAllowed( $user );
 			}
+		);
+	}
 
-			$this->permissionCache->set( $user->getName(), $status );
+	/**
+	 * @since 1.42
+	 * @return StatusValue
+	 */
+	public function isEnabled(): StatusValue {
+		$resetRoutes = $this->config->get( MainConfigNames::PasswordResetRoutes );
+		if ( !is_array( $resetRoutes ) || !in_array( true, $resetRoutes, true ) ) {
+			// Maybe password resets are disabled, or there are no allowable routes
+			return StatusValue::newFatal( 'passwordreset-disabled' );
 		}
 
-		return $status;
+		$providerStatus = $this->authManager->allowsAuthenticationDataChange(
+			new TemporaryPasswordAuthenticationRequest(), false );
+		if ( !$providerStatus->isGood() ) {
+			// Maybe the external auth plugin won't allow local password changes
+			return StatusValue::newFatal( 'resetpass_forbidden-reason',
+				$providerStatus->getMessage() );
+		}
+		if ( !$this->config->get( MainConfigNames::EnableEmail ) ) {
+			// Maybe email features have been disabled
+			return StatusValue::newFatal( 'passwordreset-emaildisabled' );
+		}
+		return StatusValue::newGood();
+	}
+
+	private function computeIsAllowed( User $user ): StatusValue {
+		$enabledStatus = $this->isEnabled();
+		if ( !$enabledStatus->isGood() ) {
+			return $enabledStatus;
+		}
+		if ( !$user->isAllowed( 'editmyprivateinfo' ) ) {
+			// Maybe not all users have permission to change private data
+			return StatusValue::newFatal( 'badaccess' );
+		}
+		if ( $this->isBlocked( $user ) ) {
+			// Maybe the user is blocked (check this here rather than relying on the parent
+			// method as we have a more specific error message to use here, and we want to
+			// ignore some types of blocks)
+			return StatusValue::newFatal( 'blocked-mailpassword' );
+		}
+		return StatusValue::newGood();
 	}
 
 	/**
 	 * Do a password reset. Authorization is the caller's responsibility.
 	 *
-	 * Process the form.  At this point we know that the user passes all the criteria in
-	 * userCanExecute(), and if the data array contains 'Username', etc, then Username
+	 * Process the form.
+	 *
+	 * At this point, we know that the user passes all the criteria in
+	 * userCanExecute(), and if the data array contains 'Username', etc., then Username
 	 * resets are allowed.
 	 *
 	 * @since 1.29 Fourth argument for displayPassword removed.
 	 * @param User $performingUser The user that does the password reset
 	 * @param string|null $username The user whose password is reset
 	 * @param string|null $email Alternative way to specify the user
-	 * @return StatusValue Will contain the passwords as a username => password array if the
-	 *   $displayPassword flag was set
-	 * @throws LogicException When the user is not allowed to perform the action
-	 * @throws MWException On unexpected DB errors
+	 * @return StatusValue
 	 */
 	public function execute(
-		User $performingUser, $username = null, $email = null
+		User $performingUser,
+		$username = null,
+		$email = null
 	) {
 		if ( !$this->isAllowed( $performingUser )->isGood() ) {
-			throw new LogicException( 'User ' . $performingUser->getName()
-				. ' is not allowed to reset passwords' );
+			throw new LogicException(
+				'User ' . $performingUser->getName() . ' is not allowed to reset passwords'
+			);
 		}
 
-		$resetRoutes = $this->config->get( 'PasswordResetRoutes' )
-			+ [ 'username' => false, 'email' => false ];
-		if ( $resetRoutes['username'] && $username ) {
-			$method = 'username';
-			$users = [ User::newFromName( $username ) ];
-			$email = null;
-		} elseif ( $resetRoutes['email'] && $email ) {
-			if ( !Sanitizer::validateEmail( $email ) ) {
-				return StatusValue::newFatal( 'passwordreset-invalidemail' );
-			}
-			$method = 'email';
-			$users = $this->getUsersByEmail( $email );
-			$username = null;
-		} else {
-			// The user didn't supply any data
-			return StatusValue::newFatal( 'passwordreset-nodata' );
-		}
-
-		// Check for hooks (captcha etc), and allow them to modify the users list
-		$error = [];
-		$data = [
-			'Username' => $username,
-			'Email' => $email,
-		];
-		if ( !Hooks::run( 'SpecialPasswordResetOnSubmit', [ &$users, $data, &$error ] ) ) {
-			return StatusValue::newFatal( Message::newFromSpecifier( $error ) );
-		}
-
-		if ( !$users ) {
-			if ( $method === 'email' ) {
-				// Don't reveal whether or not an email address is in use
-				return StatusValue::newGood( [] );
-			} else {
-				return StatusValue::newFatal( 'noname' );
-			}
-		}
-
-		$firstUser = $users[0];
-
-		if ( !$firstUser instanceof User || !$firstUser->getId() ) {
-			// Don't parse username as wikitext (T67501)
-			return StatusValue::newFatal( wfMessage( 'nosuchuser', wfEscapeWikiText( $username ) ) );
-		}
-
-		// Check against the rate limiter
+		// Check against the rate limiter. If the $wgRateLimit is reached, we want to pretend
+		// that the request was good to avoid displaying an error message.
 		if ( $performingUser->pingLimiter( 'mailpassword' ) ) {
-			return StatusValue::newFatal( 'actionthrottledtext' );
+			return StatusValue::newGood();
 		}
 
-		// All the users will have the same email address
-		if ( !$firstUser->getEmail() ) {
-			// This won't be reachable from the email route, so safe to expose the username
-			return StatusValue::newFatal( wfMessage( 'noemail',
-				wfEscapeWikiText( $firstUser->getName() ) ) );
-		}
-
-		// We need to have a valid IP address for the hook, but per T20347, we should
-		// send the user's name if they're logged in.
+		// We need to have a valid IP address for the hook 'User::mailPasswordInternal', but per T20347,
+		// we should send the user's name if they're logged in.
 		$ip = $performingUser->getRequest()->getIP();
 		if ( !$ip ) {
 			return StatusValue::newFatal( 'badipaddress' );
 		}
 
-		Hooks::run( 'User::mailPasswordInternal', [ &$performingUser, &$ip, &$firstUser ] );
+		$resetRoutes = $this->config->get( MainConfigNames::PasswordResetRoutes )
+			+ [ 'username' => false, 'email' => false ];
+		if ( !$resetRoutes['username'] || $username === '' ) {
+			$username = null;
+		}
+		if ( !$resetRoutes['email'] || $email === '' ) {
+			$email = null;
+		}
+
+		if ( $username !== null && !$this->userNameUtils->getCanonical( $username ) ) {
+			return StatusValue::newFatal( 'noname' );
+		}
+		if ( $email !== null && !Sanitizer::validateEmail( $email ) ) {
+			return StatusValue::newFatal( 'passwordreset-invalidemail' );
+		}
+		// At this point, $username and $email are either valid or not provided
+
+		/** @var User[] $users */
+		$users = [];
+
+		if ( $username !== null ) {
+			$user = $this->userFactory->newFromName( $username );
+			// User must have an email address to attempt sending a password reset email
+			if ( $user && $user->isRegistered() && $user->getEmail() && (
+				!$this->userOptionsLookup->getBoolOption( $user, 'requireemail' ) ||
+				$user->getEmail() === $email
+			) ) {
+				// Either providing the email in the form is not required to request a reset,
+				// or the correct email was provided
+				$users[] = $user;
+			}
+
+		} elseif ( $email !== null ) {
+			foreach ( $this->getUsersByEmail( $email ) as $userIdent ) {
+				// Skip users whose preference 'requireemail' is on since the username was not submitted
+				if ( $this->userOptionsLookup->getBoolOption( $userIdent, 'requireemail' ) ) {
+					continue;
+				}
+				$users[] = $this->userFactory->newFromUserIdentity( $userIdent );
+			}
+
+		} else {
+			// The user didn't supply any data
+			return StatusValue::newFatal( 'passwordreset-nodata' );
+		}
+
+		// Check for hooks (captcha etc.), and allow them to modify the list of users
+		$data = [
+			'Username' => $username,
+			'Email' => $email,
+		];
+
+		$error = [];
+		if ( !$this->hookRunner->onSpecialPasswordResetOnSubmit( $users, $data, $error ) ) {
+			return StatusValue::newFatal( Message::newFromSpecifier( $error ) );
+		}
+
+		if ( !$users ) {
+			// Don't reveal whether a username or email address is in use
+			return StatusValue::newGood();
+		}
+
+		// Get the first element in $users by using `reset` function since
+		// the key '0' might have been unset from $users array by a hook handler.
+		$firstUser = reset( $users );
+
+		$this->hookRunner->onUser__mailPasswordInternal( $performingUser, $ip, $firstUser );
 
 		$result = StatusValue::newGood();
 		$reqs = [];
@@ -207,7 +280,15 @@ class PasswordReset implements LoggerAwareInterface {
 			$req->username = $user->getName();
 			$req->mailpassword = true;
 			$req->caller = $performingUser->getName();
+
 			$status = $this->authManager->allowsAuthenticationDataChange( $req, true );
+			// If the status is good and the value is 'throttled-mailpassword', we want to pretend
+			// that the request was good to avoid displaying an error message and disclose
+			// if a reset password was previously sent.
+			if ( $status->isGood() && $status->getValue() === 'throttled-mailpassword' ) {
+				return StatusValue::newGood();
+			}
+
 			if ( $status->isGood() && $status->getValue() !== 'ignored' ) {
 				$reqs[] = $req;
 			} elseif ( $result->isGood() ) {
@@ -225,30 +306,22 @@ class PasswordReset implements LoggerAwareInterface {
 			'requestingUser' => $performingUser->getName(),
 			'targetUsername' => $username,
 			'targetEmail' => $email,
-			'actualUser' => $firstUser->getName(),
 		];
 
 		if ( !$result->isGood() ) {
 			$this->logger->info(
-				"{requestingUser} attempted password reset of {actualUser} but failed",
+				"{requestingUser} attempted password reset of {targetUsername} but failed",
 				$logContext + [ 'errors' => $result->getErrors() ]
 			);
 			return $result;
 		}
 
-		$passwords = [];
-		foreach ( $reqs as $req ) {
-			// This is adding a new temporary password, not intentionally changing anything
-			// (even though it might technically invalidate an old temporary password).
-			$this->authManager->changeAuthenticationData( $req, /* $isAddition */ true );
-		}
-
-		$this->logger->info(
-			"{requestingUser} did password reset of {actualUser}",
-			$logContext
+		DeferredUpdates::addUpdate(
+			new SendPasswordResetEmailUpdate( $this->authManager, $reqs, $logContext ),
+			DeferredUpdates::POSTSEND
 		);
 
-		return StatusValue::newGood( $passwords );
+		return StatusValue::newGood();
 	}
 
 	/**
@@ -258,39 +331,27 @@ class PasswordReset implements LoggerAwareInterface {
 	 * @return bool
 	 * @since 1.30
 	 */
-	protected function isBlocked( User $user ) {
-		$block = $user->getBlock() ?: $user->getGlobalBlock();
-		if ( !$block ) {
-			return false;
-		}
-		return $block->appliesToPasswordReset();
+	private function isBlocked( User $user ) {
+		$block = $user->getBlock();
+		return $block && $block->appliesToPasswordReset();
 	}
 
 	/**
+	 * @note This is protected to allow configuring in tests. This class is not stable to extend.
+	 *
 	 * @param string $email
-	 * @return User[]
-	 * @throws MWException On unexpected database errors
+	 *
+	 * @return Iterator<UserIdentity>
 	 */
 	protected function getUsersByEmail( $email ) {
-		$userQuery = User::getQueryInfo();
-		$res = wfGetDB( DB_REPLICA )->select(
-			$userQuery['tables'],
-			$userQuery['fields'],
-			[ 'user_email' => $email ],
-			__METHOD__,
-			[],
-			$userQuery['joins']
-		);
-
-		if ( !$res ) {
-			// Some sort of database error, probably unreachable
-			throw new MWException( 'Unknown database error in ' . __METHOD__ );
-		}
-
-		$users = [];
-		foreach ( $res as $row ) {
-			$users[] = User::newFromRow( $row );
-		}
-		return $users;
+		return $this->userIdentityLookup->newSelectQueryBuilder()
+			->join( 'user', null, [ "actor_user=user_id" ] )
+			->where( [ 'user_email' => $email ] )
+			->caller( __METHOD__ )
+			->fetchUserIdentities();
 	}
+
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( PasswordReset::class, 'PasswordReset' );

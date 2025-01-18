@@ -1,7 +1,5 @@
 <?php
 /**
- * Implements Special:CreateAccount
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,57 +16,81 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup SpecialPage
  */
 
+namespace MediaWiki\Specials;
+
+use ErrorPageError;
 use MediaWiki\Auth\AuthManager;
+use MediaWiki\Language\FormatterFactory;
 use MediaWiki\Logger\LoggerFactory;
-use MediaWiki\MediaWikiServices;
+use MediaWiki\SpecialPage\LoginSignupSpecialPage;
+use MediaWiki\Title\Title;
+use MediaWiki\User\UserIdentity;
+use MediaWiki\User\UserIdentityUtils;
+use StatusValue;
 
 /**
  * Implements Special:CreateAccount
  *
  * @ingroup SpecialPage
+ * @ingroup Auth
  */
 class SpecialCreateAccount extends LoginSignupSpecialPage {
+	/** @inheritDoc */
 	protected static $allowedActions = [
 		AuthManager::ACTION_CREATE,
 		AuthManager::ACTION_CREATE_CONTINUE
 	];
 
+	/** @inheritDoc */
 	protected static $messages = [
 		'authform-newtoken' => 'nocookiesfornew',
 		'authform-notoken' => 'sessionfailure',
 		'authform-wrongtoken' => 'sessionfailure',
 	];
 
-	public function __construct() {
-		parent::__construct( 'CreateAccount' );
+	private FormatterFactory $formatterFactory;
+
+	private UserIdentityUtils $identityUtils;
+
+	/**
+	 * @param AuthManager $authManager
+	 * @param FormatterFactory $formatterFactory
+	 * @param UserIdentityUtils $identityUtils
+	 */
+	public function __construct(
+		AuthManager $authManager,
+		FormatterFactory $formatterFactory,
+		UserIdentityUtils $identityUtils
+	) {
+		parent::__construct( 'CreateAccount', 'createaccount' );
+
+		$this->setAuthManager( $authManager );
+		$this->formatterFactory = $formatterFactory;
+		$this->identityUtils = $identityUtils;
 	}
 
 	public function doesWrites() {
 		return true;
 	}
 
-	public function isRestricted() {
-		return !User::groupHasPermission( '*', 'createaccount' );
-	}
-
-	public function userCanExecute( User $user ) {
-		return $user->isAllowed( 'createaccount' );
-	}
-
 	public function checkPermissions() {
 		parent::checkPermissions();
 
-		$user = $this->getUser();
-		$status = AuthManager::singleton()->checkAccountCreatePermissions( $user );
+		$performer = $this->getAuthority();
+		$authManager = $this->getAuthManager();
+
+		$status = $this->mPosted ?
+			$authManager->authorizeCreateAccount( $performer ) :
+			$authManager->probablyCanCreateAccount( $performer );
+
 		if ( !$status->isGood() ) {
-			// track block with a cookie if it doesn't exists already
-			if ( $user->isBlockedFromCreateAccount() ) {
-				MediaWikiServices::getInstance()->getBlockManager()->trackBlockWithCookie( $user );
-			}
-			throw new ErrorPageError( 'createacct-error', $status->getMessage() );
+			$formatter = $this->formatterFactory->getStatusFormatter( $this->getContext() );
+			throw new ErrorPageError(
+				'createacct-error',
+				$formatter->getMessage( $status )
+			);
 		}
 	}
 
@@ -81,7 +103,7 @@ class SpecialCreateAccount extends LoginSignupSpecialPage {
 	}
 
 	public function getDescription() {
-		return $this->msg( 'createaccount' )->text();
+		return $this->msg( 'createaccount' );
 	}
 
 	protected function isSignup() {
@@ -99,10 +121,11 @@ class SpecialCreateAccount extends LoginSignupSpecialPage {
 		$session = $this->getRequest()->getSession();
 		$user = $this->targetUser ?: $this->getUser();
 
+		$injected_html = '';
 		if ( $direct ) {
 			# Only save preferences if the user is not creating an account for someone else.
 			if ( !$this->proxyAccountCreation ) {
-				Hooks::run( 'AddNewAccount', [ $user, false ] );
+				$this->getHookRunner()->onAddNewAccount( $user, false );
 
 				// If the user does not have a session cookie at this point, they probably need to
 				// do something to their browser.
@@ -115,10 +138,12 @@ class SpecialCreateAccount extends LoginSignupSpecialPage {
 			} else {
 				$byEmail = false; // FIXME no way to set this
 
-				Hooks::run( 'AddNewAccount', [ $user, $byEmail ] );
+				$this->getHookRunner()->onAddNewAccount( $user, $byEmail );
 
 				$out = $this->getOutput();
-				$out->setPageTitle( $this->msg( $byEmail ? 'accmailtitle' : 'accountcreated' ) );
+				// @phan-suppress-next-line PhanImpossibleCondition
+				$out->setPageTitleMsg( $this->msg( $byEmail ? 'accmailtitle' : 'accountcreated' ) );
+				// @phan-suppress-next-line PhanImpossibleCondition
 				if ( $byEmail ) {
 					$out->addWikiMsg( 'accmailtext', $user->getName(), $user->getEmail() );
 				} else {
@@ -132,23 +157,23 @@ class SpecialCreateAccount extends LoginSignupSpecialPage {
 				);
 				return;
 			}
+			$this->getHookRunner()->onUserLoginComplete( $user, $injected_html, $direct );
 		}
 
 		$this->clearToken();
 
 		# Run any hooks; display injected HTML
-		$injected_html = '';
 		$welcome_creation_msg = 'welcomecreation-msg';
-		Hooks::run( 'UserLoginComplete', [ &$user, &$injected_html, $direct ] );
-
 		/**
 		 * Let any extensions change what message is shown.
 		 * @see https://www.mediawiki.org/wiki/Manual:Hooks/BeforeWelcomeCreation
 		 * @since 1.18
 		 */
-		Hooks::run( 'BeforeWelcomeCreation', [ &$welcome_creation_msg, &$injected_html ] );
+		$this->getHookRunner()->onBeforeWelcomeCreation( $welcome_creation_msg, $injected_html );
 
-		$this->showSuccessPage( 'signup', $this->msg( 'welcomeuser', $this->getUser()->getName() ),
+		$this->showSuccessPage( 'signup',
+			// T308471: ensure username is plaintext (aka escaped)
+			$this->msg( 'welcomeuser' )->plaintextParams( $this->getUser()->getName() ),
 			$welcome_creation_msg, $injected_html, $extraMessages );
 	}
 
@@ -157,7 +182,7 @@ class SpecialCreateAccount extends LoginSignupSpecialPage {
 	}
 
 	protected function clearToken() {
-		return $this->getRequest()->getSession()->resetToken( 'createaccount' );
+		$this->getRequest()->getSession()->resetToken( 'createaccount' );
 	}
 
 	protected function getTokenName() {
@@ -165,14 +190,18 @@ class SpecialCreateAccount extends LoginSignupSpecialPage {
 	}
 
 	protected function getGroupName() {
-		return 'login';
+		return 'users';
 	}
 
-	protected function logAuthResult( $success, $status = null ) {
+	protected function logAuthResult( $success, UserIdentity $performer, $status = null ) {
 		LoggerFactory::getInstance( 'authevents' )->info( 'Account creation attempt', [
 			'event' => 'accountcreation',
 			'successful' => $success,
-			'status' => $status,
+			'accountType' => $this->identityUtils->getShortUserTypeInternal( $performer ),
+			'status' => strval( $status ),
 		] );
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( SpecialCreateAccount::class, 'SpecialCreateAccount' );

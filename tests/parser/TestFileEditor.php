@@ -1,13 +1,20 @@
 <?php
 
 class TestFileEditor {
+	/** @var string[] */
 	private $lines;
+	/** @var int */
 	private $numLines;
+	/** @var array<string,true> */
 	private $deletions;
+	/** @var array<string,array<string,array>> */
 	private $changes;
-	private $pos;
+	/** @var int */
+	private $pos = 0;
+	/** @var callable|false */
 	private $warningCallback;
-	private $result;
+	/** @var string */
+	private $result = '';
 
 	public static function edit( $text, array $deletions, array $changes, $warningCallback = null ) {
 		$editor = new self( $text, $deletions, $changes, $warningCallback );
@@ -18,11 +25,9 @@ class TestFileEditor {
 	private function __construct( $text, array $deletions, array $changes, $warningCallback ) {
 		$this->lines = explode( "\n", $text );
 		$this->numLines = count( $this->lines );
-		$this->deletions = array_flip( $deletions );
+		$this->deletions = array_fill_keys( $deletions, true );
 		$this->changes = $changes;
-		$this->pos = 0;
 		$this->warningCallback = $warningCallback;
-		$this->result = '';
 	}
 
 	private function execute() {
@@ -34,7 +39,6 @@ class TestFileEditor {
 					break;
 				case 'hooks':
 				case 'functionhooks':
-				case 'transparenthooks':
 					$this->parseHooks();
 					break;
 				default:
@@ -89,14 +93,10 @@ class TestFileEditor {
 
 				// Add trailing line breaks to the "end" section, to allow for neat deletions
 				$trail = '';
-				for ( $i = 0; $i < $this->numLines - $this->pos - 1; $i++ ) {
-					if ( $this->lines[$this->pos + $i] === '' ) {
-						$trail .= "\n";
-					} else {
-						break;
-					}
+				while ( $this->lines[$this->pos] === '' && $this->pos < $this->numLines - 1 ) {
+					$trail .= "\n";
+					$this->pos++;
 				}
-				$this->pos += strlen( $trail );
 
 				$test[] = [
 					'name' => 'end',
@@ -118,7 +118,7 @@ class TestFileEditor {
 			}
 		}
 
-		throw new Exception( 'Unexpected end of file' );
+		throw new OutOfBoundsException( 'Unexpected end of file' );
 	}
 
 	private function parseHooks() {
@@ -134,7 +134,7 @@ class TestFileEditor {
 		} while ( $this->pos < $this->numLines && $nextHeading !== $expectedEnd );
 
 		if ( $nextHeading !== $expectedEnd ) {
-			throw new Exception( 'Unexpected end of file' );
+			throw new UnexpectedValueException( 'Unexpected end of file' );
 		}
 		$this->emitHooks( $heading, $contents );
 	}
@@ -173,7 +173,7 @@ class TestFileEditor {
 							$test[$i]['deleted'] = true;
 							break;
 						default:
-							throw new Exception( "Unknown op: ${change['op']}" );
+							throw new UnexpectedValueException( "Unknown op: {$change['op']}" );
 					}
 					// Acknowledge
 					// Note that we use the old section name for the rename op

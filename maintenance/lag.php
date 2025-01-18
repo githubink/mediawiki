@@ -21,9 +21,11 @@
  * @ingroup Maintenance
  */
 
-require_once __DIR__ . '/Maintenance.php';
+use MediaWiki\Maintenance\Maintenance;
 
-use MediaWiki\MediaWikiServices;
+// @codeCoverageIgnoreStart
+require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script to show database lag.
@@ -31,6 +33,10 @@ use MediaWiki\MediaWikiServices;
  * @ingroup Maintenance
  */
 class DatabaseLag extends Maintenance {
+
+	/** @var bool */
+	protected $stopReporting = false;
+
 	public function __construct() {
 		parent::__construct();
 		$this->addDescription( 'Shows database lag' );
@@ -38,36 +44,50 @@ class DatabaseLag extends Maintenance {
 	}
 
 	public function execute() {
-		$lb = MediaWikiServices::getInstance()->getDBLoadBalancer();
+		$lb = $this->getServiceContainer()->getDBLoadBalancer();
 		if ( $this->hasOption( 'r' ) ) {
-			echo 'time     ';
+			$this->output( 'time     ' );
 
 			$serverCount = $lb->getServerCount();
 			for ( $i = 1; $i < $serverCount; $i++ ) {
 				$hostname = $lb->getServerName( $i );
-				printf( "%-12s ", $hostname );
+				$this->output( sprintf( "%-12s ", $hostname ) );
 			}
-			echo "\n";
+			$this->output( "\n" );
 
-			while ( 1 ) {
+			do {
 				$lags = $lb->getLagTimes();
 				unset( $lags[0] );
-				echo gmdate( 'H:i:s' ) . ' ';
+				$this->output( gmdate( 'H:i:s' ) . ' ' );
 				foreach ( $lags as $lag ) {
-					printf( "%-12s ", $lag === false ? 'false' : $lag );
+					$this->output(
+						sprintf(
+							"%-12s ",
+							$lag === false ? 'replication stopped or errored' : $lag
+						)
+					);
 				}
-				echo "\n";
+				$this->output( "\n" );
 				sleep( 5 );
-			}
+			} while ( !$this->stopReporting );
+
 		} else {
 			$lags = $lb->getLagTimes();
 			foreach ( $lags as $i => $lag ) {
 				$name = $lb->getServerName( $i );
-				$this->output( sprintf( "%-20s %s\n", $name, $lag === false ? 'false' : $lag ) );
+				$this->output(
+					sprintf(
+						"%-20s %s\n",
+						$name,
+						$lag === false ? 'replication stopped or errored' : $lag
+					)
+				);
 			}
 		}
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = DatabaseLag::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

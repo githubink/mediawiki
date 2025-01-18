@@ -1,10 +1,21 @@
 <?php
 
 use MediaWiki\Block\BlockRestrictionStore;
+use MediaWiki\Block\BlockUtils;
 use MediaWiki\Block\DatabaseBlock;
-use MediaWiki\Block\Restriction\PageRestriction;
 use MediaWiki\Block\Restriction\NamespaceRestriction;
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Block\Restriction\PageRestriction;
+use MediaWiki\DAO\WikiAwareEntity;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Tests\User\TempUser\TempUserTestTrait;
+use MediaWiki\User\User;
+use MediaWiki\User\UserIdentity;
+use MediaWiki\User\UserIdentityValue;
+use MediaWiki\User\UserNameUtils;
+use Wikimedia\Rdbms\IDatabase;
+use Wikimedia\Rdbms\ILoadBalancer;
+use Wikimedia\Rdbms\LBFactory;
+use Wikimedia\Timestamp\ConvertibleTimestamp;
 
 /**
  * @group Database
@@ -12,53 +23,126 @@ use MediaWiki\MediaWikiServices;
  * @coversDefaultClass \MediaWiki\Block\DatabaseBlock
  */
 class DatabaseBlockTest extends MediaWikiLangTestCase {
+	use TempUserTestTrait;
 
-	/**
-	 * @return User
-	 */
-	private function getUserForBlocking() {
-		$testUser = $this->getMutableTestUser();
-		$user = $testUser->getUser();
-		$user->addToDatabase();
-		TestUser::setPasswordForUser( $user, 'UTBlockeePassword' );
-		$user->saveSettings();
-		return $user;
+	public function addDBData() {
+		$blockList = [
+			[ 'target' => '70.2.0.0/16',
+				'type' => DatabaseBlock::TYPE_RANGE,
+				'desc' => 'Range Hardblock',
+				'ACDisable' => false,
+				'isHardblock' => true,
+				'isAutoBlocking' => false,
+			],
+			[ 'target' => '2001:4860:4001:0:0:0:0:0/48',
+				'type' => DatabaseBlock::TYPE_RANGE,
+				'desc' => 'Range6 Hardblock',
+				'ACDisable' => false,
+				'isHardblock' => true,
+				'isAutoBlocking' => false,
+			],
+			[ 'target' => '60.2.0.0/16',
+				'type' => DatabaseBlock::TYPE_RANGE,
+				'desc' => 'Range Softblock with AC Disabled',
+				'ACDisable' => true,
+				'isHardblock' => false,
+				'isAutoBlocking' => false,
+			],
+			[ 'target' => '50.2.0.0/16',
+				'type' => DatabaseBlock::TYPE_RANGE,
+				'desc' => 'Range Softblock',
+				'ACDisable' => false,
+				'isHardblock' => false,
+				'isAutoBlocking' => false,
+			],
+			[ 'target' => '50.1.1.1',
+				'type' => DatabaseBlock::TYPE_IP,
+				'desc' => 'Exact Softblock',
+				'ACDisable' => false,
+				'isHardblock' => false,
+				'isAutoBlocking' => false,
+			],
+		];
+
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blocker = $this->getTestUser()->getUser();
+		foreach ( $blockList as $insBlock ) {
+			$block = new DatabaseBlock();
+			$block->setTarget( $insBlock['target'] );
+			$block->setBlocker( $blocker );
+			$block->setReason( $insBlock['desc'] );
+			$block->setExpiry( 'infinity' );
+			$block->isCreateAccountBlocked( $insBlock['ACDisable'] );
+			$block->isHardblock( $insBlock['isHardblock'] );
+			$block->isAutoblocking( $insBlock['isAutoBlocking'] );
+			$blockStore->insertBlock( $block );
+		}
 	}
 
 	/**
-	 * @param User $user
+	 * @return UserIdentity
+	 */
+	private function getUserForBlocking() {
+		return $this->getTestUser()->getUserIdentity();
+	}
+
+	/**
+	 * @param UserIdentity $user
 	 *
 	 * @return DatabaseBlock
-	 * @throws MWException
 	 */
-	private function addBlockForUser( User $user ) {
-		// Delete the last round's block if it's still there
-		$oldBlock = DatabaseBlock::newFromTarget( $user->getName() );
-		if ( $oldBlock ) {
-			// An old block will prevent our new one from saving.
-			$oldBlock->delete();
-		}
+	private function addBlockForUser( UserIdentity $user ) {
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
 
 		$blockOptions = [
-			'address' => $user->getName(),
-			'user' => $user->getId(),
-			'by' => $this->getTestSysop()->getUser()->getId(),
+			'address' => $user,
+			'by' => $this->getTestSysop()->getUser(),
 			'reason' => 'Parce que',
 			'expiry' => time() + 100500,
 		];
 		$block = new DatabaseBlock( $blockOptions );
 
-		$block->insert();
+		$blockStore->insertBlock( $block );
 		// save up ID for use in assertion. Since ID is an autoincrement,
 		// its value might change depending on the order the tests are run.
 		// ApiBlockTest insert its own blocks!
 		if ( !$block->getId() ) {
-			throw new MWException( "Failed to insert block for BlockTest; old leftover block remaining?" );
+			throw new RuntimeException( "Failed to insert block for BlockTest; old leftover block remaining?" );
 		}
 
-		$this->addXffBlocks();
-
 		return $block;
+	}
+
+	/**
+	 * @covers ::newFromTarget
+	 */
+	public function testHardBlocks() {
+		// Set up temp user config
+		$this->enableAutoCreateTempUser();
+
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blocker = $this->getTestUser()->getUser();
+
+		$block = new DatabaseBlock();
+		$block->setTarget( '1.2.3.4' );
+		$block->setBlocker( $blocker );
+		$block->setReason( 'test' );
+		$block->setExpiry( 'infinity' );
+		$block->isHardblock( false );
+		$blockStore->insertBlock( $block );
+
+		$this->assertFalse(
+			(bool)DatabaseBlock::newFromTarget( '~1' ),
+			'Temporary user is not blocked directly'
+		);
+		$this->assertTrue(
+			(bool)DatabaseBlock::newFromTarget( '~1', '1.2.3.4' ),
+			'Temporary user is blocked by soft block'
+		);
+		$this->assertFalse(
+			(bool)DatabaseBlock::newFromTarget( $blocker, '1.2.3.4' ),
+			'Logged-in user is not blocked by soft block'
+		);
 	}
 
 	/**
@@ -78,6 +162,7 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 	 * @covers ::newFromID
 	 */
 	public function testINewFromIDReturnsCorrectBlock() {
+		$this->hideDeprecated( DatabaseBlock::class . '::newFromID' );
 		$user = $this->getUserForBlocking();
 		$block = $this->addBlockForUser( $user );
 
@@ -92,17 +177,13 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 	 * @covers ::__construct
 	 */
 	public function testT28425BlockTimestampDefaultsToTime() {
+		$madeAt = wfTimestamp( TS_MW );
+		ConvertibleTimestamp::setFakeTime( $madeAt );
+
 		$user = $this->getUserForBlocking();
 		$block = $this->addBlockForUser( $user );
-		$madeAt = wfTimestamp( TS_MW );
 
-		// delta to stop one-off errors when things happen to go over a second mark.
-		$delta = abs( $madeAt - $block->getTimestamp() );
-		$this->assertLessThan(
-			2,
-			$delta,
-			"If no timestamp is specified, the block is recorded as time()"
-		);
+		$this->assertSame( $madeAt, $block->getTimestamp() );
 	}
 
 	/**
@@ -138,29 +219,25 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 	 * @covers ::newFromTarget
 	 */
 	public function testNewFromTargetRangeBlocks( $targets, $ip, $expectedTarget ) {
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
 		$blocker = $this->getTestSysop()->getUser();
 
 		foreach ( $targets as $target ) {
 			$block = new DatabaseBlock();
 			$block->setTarget( $target );
 			$block->setBlocker( $blocker );
-			$block->insert();
+			$blockStore->insertBlock( $block );
 		}
 
 		// Should find the block with the narrowest range
-		$blockTarget = DatabaseBlock::newFromTarget( $this->getTestUser()->getUser(), $ip )->getTarget();
+		$block = DatabaseBlock::newFromTarget( $this->getTestUser()->getUserIdentity(), $ip );
 		$this->assertSame(
-			$blockTarget instanceof User ? $blockTarget->getName() : $blockTarget,
-			$expectedTarget
+			$expectedTarget,
+			$block->getTargetName()
 		);
-
-		foreach ( $targets as $target ) {
-			$block = DatabaseBlock::newFromTarget( $target );
-			$block->delete();
-		}
 	}
 
-	function provideNewFromTargetRangeBlocks() {
+	public static function provideNewFromTargetRangeBlocks() {
 		return [
 			'Blocks to IPv4 ranges' => [
 				[ '0.0.0.0/20', '0.0.0.0/30', '0.0.0.0/25' ],
@@ -213,11 +290,10 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 		$u = User::newFromName( $username );
 		$u->addToDatabase();
 		$userId = $u->getId();
-		$this->assertNotEquals( 0, $userId, 'sanity' );
+		$this->assertNotEquals( 0, $userId, 'Check user id is not 0' );
 		TestUser::setPasswordForUser( $u, 'NotRandomPass' );
 		unset( $u );
 
-		// Sanity check
 		$this->assertNull(
 			DatabaseBlock::newFromTarget( $username ),
 			"$username should not be blocked"
@@ -225,26 +301,25 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 
 		// Reload user
 		$u = User::newFromName( $username );
-		$this->assertFalse(
-			$u->isBlockedFromCreateAccount(),
+		$this->assertTrue(
+			$u->isDefinitelyAllowed( 'createaccount' ),
 			"Our sandbox user should be able to create account before being blocked"
 		);
 
 		// Foreign perspective (blockee not on current wiki)...
 		$blockOptions = [
 			'address' => $username,
-			'user' => $userId,
 			'reason' => 'crosswiki block...',
 			'timestamp' => wfTimestampNow(),
-			'expiry' => $this->db->getInfinity(),
+			'expiry' => $this->getDb()->getInfinity(),
 			'createAccount' => true,
 			'enableAutoblock' => true,
 			'hideName' => true,
 			'blockEmail' => true,
-			'byText' => 'm>MetaWikiUser',
+			'by' => UserIdentityValue::newExternal( 'm', 'MetaWikiUser' ),
 		];
 		$block = new DatabaseBlock( $blockOptions );
-		$block->insert();
+		$this->getServiceContainer()->getDatabaseBlockStore()->insertBlock( $block );
 
 		// Reload block from DB
 		$userBlock = DatabaseBlock::newFromTarget( $username );
@@ -261,129 +336,10 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 
 		// Reload user
 		$u = User::newFromName( $username );
-		$this->assertTrue(
-			(bool)$u->isBlockedFromCreateAccount(),
+		$this->assertFalse(
+			$u->isDefinitelyAllowed( 'createaccount' ),
 			"Our sandbox user '$username' should NOT be able to create account"
 		);
-	}
-
-	/**
-	 * @covers ::insert
-	 */
-	public function testCrappyCrossWikiBlocks() {
-		// Delete the last round's block if it's still there
-		$oldBlock = DatabaseBlock::newFromTarget( 'UserOnForeignWiki' );
-		if ( $oldBlock ) {
-			// An old block will prevent our new one from saving.
-			$oldBlock->delete();
-		}
-
-		// Local perspective (blockee on current wiki)...
-		$user = User::newFromName( 'UserOnForeignWiki' );
-		$user->addToDatabase();
-		$userId = $user->getId();
-		$this->assertNotEquals( 0, $userId, 'sanity' );
-
-		// Foreign perspective (blockee not on current wiki)...
-		$blockOptions = [
-			'address' => 'UserOnForeignWiki',
-			'user' => $user->getId(),
-			'reason' => 'crosswiki block...',
-			'timestamp' => wfTimestampNow(),
-			'expiry' => $this->db->getInfinity(),
-			'createAccount' => true,
-			'enableAutoblock' => true,
-			'hideName' => true,
-			'blockEmail' => true,
-			'byText' => 'Meta>MetaWikiUser',
-		];
-		$block = new DatabaseBlock( $blockOptions );
-
-		$res = $block->insert( $this->db );
-		$this->assertTrue( (bool)$res['id'], 'Block succeeded' );
-
-		$user = null; // clear
-
-		$block = DatabaseBlock::newFromID( $res['id'] );
-		$this->assertEquals(
-			'UserOnForeignWiki',
-			$block->getTarget()->getName(),
-			'Correct blockee name'
-		);
-		$this->assertEquals( $userId, $block->getTarget()->getId(), 'Correct blockee id' );
-		$this->assertEquals( 'Meta>MetaWikiUser', $block->getBlocker()->getName(),
-			'Correct blocker name' );
-		$this->assertEquals( 'Meta>MetaWikiUser', $block->getByName(), 'Correct blocker name' );
-		$this->assertEquals( 0, $block->getBy(), 'Correct blocker id' );
-	}
-
-	protected function addXffBlocks() {
-		static $inited = false;
-
-		if ( $inited ) {
-			return;
-		}
-
-		$inited = true;
-
-		$blockList = [
-			[ 'target' => '70.2.0.0/16',
-				'type' => DatabaseBlock::TYPE_RANGE,
-				'desc' => 'Range Hardblock',
-				'ACDisable' => false,
-				'isHardblock' => true,
-				'isAutoBlocking' => false,
-			],
-			[ 'target' => '2001:4860:4001::/48',
-				'type' => DatabaseBlock::TYPE_RANGE,
-				'desc' => 'Range6 Hardblock',
-				'ACDisable' => false,
-				'isHardblock' => true,
-				'isAutoBlocking' => false,
-			],
-			[ 'target' => '60.2.0.0/16',
-				'type' => DatabaseBlock::TYPE_RANGE,
-				'desc' => 'Range Softblock with AC Disabled',
-				'ACDisable' => true,
-				'isHardblock' => false,
-				'isAutoBlocking' => false,
-			],
-			[ 'target' => '50.2.0.0/16',
-				'type' => DatabaseBlock::TYPE_RANGE,
-				'desc' => 'Range Softblock',
-				'ACDisable' => false,
-				'isHardblock' => false,
-				'isAutoBlocking' => false,
-			],
-			[ 'target' => '50.1.1.1',
-				'type' => DatabaseBlock::TYPE_IP,
-				'desc' => 'Exact Softblock',
-				'ACDisable' => false,
-				'isHardblock' => false,
-				'isAutoBlocking' => false,
-			],
-		];
-
-		$blocker = $this->getTestUser()->getUser();
-		foreach ( $blockList as $insBlock ) {
-			$target = $insBlock['target'];
-
-			if ( $insBlock['type'] === DatabaseBlock::TYPE_IP ) {
-				$target = User::newFromName( IP::sanitizeIP( $target ), false )->getName();
-			} elseif ( $insBlock['type'] === DatabaseBlock::TYPE_RANGE ) {
-				$target = IP::sanitizeRange( $target );
-			}
-
-			$block = new DatabaseBlock();
-			$block->setTarget( $target );
-			$block->setBlocker( $blocker );
-			$block->setReason( $insBlock['desc'] );
-			$block->setExpiry( 'infinity' );
-			$block->isCreateAccountBlocked( $insBlock['ACDisable'] );
-			$block->isHardblock( $insBlock['isHardblock'] );
-			$block->isAutoblocking( $insBlock['isAutoBlocking'] );
-			$block->insert();
-		}
 	}
 
 	public static function providerXff() {
@@ -434,7 +390,6 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 	/**
 	 * @dataProvider providerXff
 	 * @covers ::getBlocksForIPList
-	 * @covers ::chooseBlock
 	 */
 	public function testBlocksOnXff( $xff, $exCount, $exResult ) {
 		$user = $this->getUserForBlocking();
@@ -442,11 +397,7 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 
 		$list = array_map( 'trim', explode( ',', $xff ) );
 		$xffblocks = DatabaseBlock::getBlocksForIPList( $list, true );
-		$this->assertEquals( $exCount, count( $xffblocks ), 'Number of blocks for ' . $xff );
-		$block = DatabaseBlock::chooseBlock( $xffblocks, $list );
-		$this->assertEquals(
-			$exResult, $block->getReason(), 'Correct block type for XFF header ' . $xff
-		);
+		$this->assertCount( $exCount, $xffblocks, 'Number of blocks for ' . $xff );
 	}
 
 	/**
@@ -457,30 +408,101 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 		$sysop = $this->getTestSysop()->getUser();
 
 		$block = new DatabaseBlock( [
-			'address' => $badActor->getName(),
-			'user' => $badActor->getId(),
-			'by' => $sysop->getId(),
+			'address' => $badActor,
+			'by' => $sysop,
 			'expiry' => 'infinity',
 		] );
-		$block->insert();
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
-		$blockQuery = DatabaseBlock::getQueryInfo();
-		$row = $this->db->select(
-			$blockQuery['tables'],
-			$blockQuery['fields'],
-			[
-				'ipb_id' => $block->getId(),
-			],
-			__METHOD__,
-			[],
-			$blockQuery['joins']
-		)->fetchObject();
+		$blockQuery = $blockStore->getQueryInfo();
+		$row = $this->getDb()->newSelectQueryBuilder()
+			->queryInfo( $blockQuery )
+			->where( [
+				'bl_id' => $block->getId(),
+			] )
+			->caller( __METHOD__ )
+			->fetchRow();
 
 		$block = DatabaseBlock::newFromRow( $row );
 		$this->assertInstanceOf( DatabaseBlock::class, $block );
 		$this->assertEquals( $block->getBy(), $sysop->getId() );
-		$this->assertEquals( $block->getTarget()->getName(), $badActor->getName() );
-		$block->delete();
+		$this->assertEquals( $block->getTargetName(), $badActor->getName() );
+		$this->assertEquals( $block->getTargetName(), $badActor->getName() );
+		$this->assertTrue( $block->isBlocking( $badActor ), 'Is blocking expected user' );
+		$this->assertEquals( $block->getTargetUserIdentity()->getId(), $badActor->getId() );
+	}
+
+	/**
+	 * @covers ::getTargetName()
+	 * @covers ::getTargetUserIdentity()
+	 * @covers ::isBlocking()
+	 * @covers ::getBlocker()
+	 * @covers ::getByName()
+	 */
+	public function testCrossWikiBlocking() {
+		$this->overrideConfigValue( MainConfigNames::LocalDatabases, [ 'm' ] );
+		$dbMock = $this->createMock( IDatabase::class );
+		$dbMock->method( 'decodeExpiry' )->willReturn( 'infinity' );
+		$lbMock = $this->createMock( ILoadBalancer::class );
+		$lbMock->method( 'getConnection' )
+			->with( DB_REPLICA, [], 'm' )
+			->willReturn( $dbMock );
+		$lbFactoryMock = $this->createMock( LBFactory::class );
+		$lbFactoryMock
+			->method( 'getMainLB' )
+			->with( 'm' )
+			->willReturn( $lbMock );
+		$this->setService( 'DBLoadBalancerFactory', $lbFactoryMock );
+
+		$target = UserIdentityValue::newExternal( 'm', 'UserOnForeignWiki', 'm' );
+
+		$blockUtilsMock = $this->createMock( BlockUtils::class );
+		$blockUtilsMock
+			->method( 'parseBlockTarget' )
+			->with( $target )
+			->willReturn( [ $target, DatabaseBlock::TYPE_USER ] );
+		$this->setService( 'BlockUtils', $blockUtilsMock );
+
+		$blocker = UserIdentityValue::newExternal( 'm', 'MetaWikiUser', 'm' );
+
+		$userNameUtilsMock = $this->createMock( UserNameUtils::class );
+		$userNameUtilsMock
+			->method( 'isUsable' )
+			->with( $blocker->getName() )
+			->willReturn( false );
+		$this->setService( 'UserNameUtils', $userNameUtilsMock );
+
+		$blockOptions = [
+			'address' => $target,
+			'wiki' => 'm',
+			'reason' => 'testing crosswiki blocking',
+			'timestamp' => wfTimestampNow(),
+			'createAccount' => true,
+			'enableAutoblock' => true,
+			'hideName' => true,
+			'blockEmail' => true,
+			'by' => $blocker,
+		];
+		$block = new DatabaseBlock( $blockOptions );
+
+		$this->assertEquals(
+			'm>UserOnForeignWiki',
+			$block->getTargetName(),
+			'Correct blockee name'
+		);
+		$this->assertEquals(
+			'm>UserOnForeignWiki',
+			$block->getTargetUserIdentity()->getName(),
+			'Correct blockee name'
+		);
+		$this->assertTrue( $block->isBlocking( 'm>UserOnForeignWiki' ), 'Is blocking blockee' );
+		$this->assertEquals(
+			'm>MetaWikiUser',
+			$block->getBlocker()->getName(),
+			'Correct blocker name'
+		);
+		$this->assertEquals( 'm>MetaWikiUser', $block->getByName(), 'Correct blocker name' );
 	}
 
 	/**
@@ -495,6 +517,28 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 			'sitewide' => false,
 		] );
 		$this->assertFalse( $block->equals( $partial ) );
+	}
+
+	/**
+	 * @covers ::getWikiId
+	 */
+	public function testGetWikiId() {
+		$this->overrideConfigValue( MainConfigNames::LocalDatabases, [ 'foo' ] );
+		$dbMock = $this->createMock( IDatabase::class );
+		$dbMock->method( 'decodeExpiry' )->willReturn( 'infinity' );
+		$lbMock = $this->createMock( ILoadBalancer::class );
+		$lbMock->method( 'getConnection' )->willReturn( $dbMock );
+		$lbFactoryMock = $this->createMock( LBFactory::class );
+		$lbFactoryMock->method( 'getMainLB' )->willReturn( $lbMock );
+		$this->setService( 'DBLoadBalancerFactory', $lbFactoryMock );
+
+		$block = new DatabaseBlock( [ 'wiki' => 'foo' ] );
+		$this->assertSame( 'foo', $block->getWikiId() );
+
+		$this->resetServices();
+
+		$localBlock = new DatabaseBlock();
+		$this->assertSame( WikiAwareEntity::LOCAL, $localBlock->getWikiId() );
 	}
 
 	/**
@@ -540,70 +584,66 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 	 * @covers ::insert
 	 */
 	public function testRestrictionsFromDatabase() {
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
 		$badActor = $this->getTestUser()->getUser();
 		$sysop = $this->getTestSysop()->getUser();
 
 		$block = new DatabaseBlock( [
-			'address' => $badActor->getName(),
-			'user' => $badActor->getId(),
-			'by' => $sysop->getId(),
+			'address' => $badActor,
+			'by' => $sysop,
 			'expiry' => 'infinity',
 		] );
 		$page = $this->getExistingTestPage( 'Foo' );
 		$restriction = new PageRestriction( 0, $page->getId() );
 		$block->setRestrictions( [ $restriction ] );
-		$block->insert();
+		$blockStore->insertBlock( $block );
 
 		// Refresh the block from the database.
-		$block = DatabaseBlock::newFromID( $block->getId() );
+		$block = $blockStore->newFromID( $block->getId() );
 		$restrictions = $block->getRestrictions();
 		$this->assertCount( 1, $restrictions );
 		$this->assertTrue( $restriction->equals( $restrictions[0] ) );
-		$block->delete();
 	}
 
 	/**
+	 * TODO: Move to DatabaseBlockStoreTest
+	 *
 	 * @covers ::insert
 	 */
 	public function testInsertExistingBlock() {
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
 		$badActor = $this->getTestUser()->getUser();
 		$sysop = $this->getTestSysop()->getUser();
 
 		$block = new DatabaseBlock( [
-			'address' => $badActor->getName(),
-			'user' => $badActor->getId(),
-			'by' => $sysop->getId(),
+			'address' => $badActor,
+			'by' => $sysop,
 			'expiry' => 'infinity',
 		] );
 		$page = $this->getExistingTestPage( 'Foo' );
 		$restriction = new PageRestriction( 0, $page->getId() );
 		$block->setRestrictions( [ $restriction ] );
-		$block->insert();
+		$blockStore->insertBlock( $block );
 
-		// Insert the block again, which should result in a failur
+		// Insert the block again, which should result in a failure
 		$result = $block->insert();
 
 		$this->assertFalse( $result );
 
 		// Ensure that there are no restrictions where the blockId is 0.
-		$count = $this->db->selectRowCount(
-			'ipblocks_restrictions',
-			'*',
-			[ 'ir_ipb_id' => 0 ],
-			__METHOD__
-		);
+		$count = $this->getDb()->newSelectQueryBuilder()
+			->select( '*' )
+			->from( 'ipblocks_restrictions' )
+			->where( [ 'ir_ipb_id' => 0 ] )
+			->caller( __METHOD__ )->fetchRowCount();
 		$this->assertSame( 0, $count );
-
-		$block->delete();
 	}
 
 	/**
 	 * @covers ::appliesToTitle
 	 */
 	public function testAppliesToTitleReturnsTrueOnSitewideBlock() {
-		$this->setMwGlobals( [
-			'wgBlockDisablesLogin' => false,
-		] );
+		$this->overrideConfigValue( MainConfigNames::BlockDisablesLogin, false );
 		$user = $this->getTestUser()->getUser();
 		$block = new DatabaseBlock( [
 			'expiry' => wfTimestamp( TS_MW, wfTimestamp() + ( 40 * 60 * 60 ) ),
@@ -611,9 +651,11 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 			'sitewide' => true
 		] );
 
-		$block->setTarget( $user );
+		$block->setTarget( new UserIdentityValue( $user->getId(), $user->getName() ) );
 		$block->setBlocker( $this->getTestSysop()->getUser() );
-		$block->insert();
+
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
 		$title = $this->getExistingTestPage( 'Foo' )->getTitle();
 
@@ -622,17 +664,13 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 		// appliesToTitle() ignores allowUsertalk
 		$title = $user->getTalkPage();
 		$this->assertTrue( $block->appliesToTitle( $title ) );
-
-		$block->delete();
 	}
 
 	/**
 	 * @covers ::appliesToTitle
 	 */
 	public function testAppliesToTitleOnPartialBlock() {
-		$this->setMwGlobals( [
-			'wgBlockDisablesLogin' => false,
-		] );
+		$this->overrideConfigValue( MainConfigNames::BlockDisablesLogin, false );
 		$user = $this->getTestUser()->getUser();
 		$block = new DatabaseBlock( [
 			'expiry' => wfTimestamp( TS_MW, wfTimestamp() + ( 40 * 60 * 60 ) ),
@@ -642,7 +680,9 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 
 		$block->setTarget( $user );
 		$block->setBlocker( $this->getTestSysop()->getUser() );
-		$block->insert();
+
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
 		$pageFoo = $this->getExistingTestPage( 'Foo' );
 		$pageBar = $this->getExistingTestPage( 'Bar' );
@@ -655,8 +695,6 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 		$this->assertTrue( $block->appliesToTitle( $pageFoo->getTitle() ) );
 		$this->assertFalse( $block->appliesToTitle( $pageBar->getTitle() ) );
 		$this->assertTrue( $block->appliesToTitle( $pageJohn->getTitle() ) );
-
-		$block->delete();
 	}
 
 	/**
@@ -664,9 +702,7 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 	 * @covers ::appliesToPage
 	 */
 	public function testAppliesToReturnsTrueOnSitewideBlock() {
-		$this->setMwGlobals( [
-			'wgBlockDisablesLogin' => false,
-		] );
+		$this->overrideConfigValue( MainConfigNames::BlockDisablesLogin, false );
 		$user = $this->getTestUser()->getUser();
 		$block = new DatabaseBlock( [
 			'expiry' => wfTimestamp( TS_MW, wfTimestamp() + ( 40 * 60 * 60 ) ),
@@ -676,24 +712,22 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 
 		$block->setTarget( $user );
 		$block->setBlocker( $this->getTestSysop()->getUser() );
-		$block->insert();
+
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
 		$title = $this->getExistingTestPage()->getTitle();
 
 		$this->assertTrue( $block->appliesToPage( $title->getArticleID() ) );
 		$this->assertTrue( $block->appliesToNamespace( NS_MAIN ) );
 		$this->assertTrue( $block->appliesToNamespace( NS_USER_TALK ) );
-
-		$block->delete();
 	}
 
 	/**
 	 * @covers ::appliesToPage
 	 */
 	public function testAppliesToPageOnPartialPageBlock() {
-		$this->setMwGlobals( [
-			'wgBlockDisablesLogin' => false,
-		] );
+		$this->overrideConfigValue( MainConfigNames::BlockDisablesLogin, false );
 		$user = $this->getTestUser()->getUser();
 		$block = new DatabaseBlock( [
 			'expiry' => wfTimestamp( TS_MW, wfTimestamp() + ( 40 * 60 * 60 ) ),
@@ -703,7 +737,9 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 
 		$block->setTarget( $user );
 		$block->setBlocker( $this->getTestSysop()->getUser() );
-		$block->insert();
+
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
 		$title = $this->getExistingTestPage()->getTitle();
 
@@ -714,17 +750,13 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 		$this->getBlockRestrictionStore()->insert( [ $pageRestriction ] );
 
 		$this->assertTrue( $block->appliesToPage( $title->getArticleID() ) );
-
-		$block->delete();
 	}
 
 	/**
 	 * @covers ::appliesToNamespace
 	 */
 	public function testAppliesToNamespaceOnPartialNamespaceBlock() {
-		$this->setMwGlobals( [
-			'wgBlockDisablesLogin' => false,
-		] );
+		$this->overrideConfigValue( MainConfigNames::BlockDisablesLogin, false );
 		$user = $this->getTestUser()->getUser();
 		$block = new DatabaseBlock( [
 			'expiry' => wfTimestamp( TS_MW, wfTimestamp() + ( 40 * 60 * 60 ) ),
@@ -734,34 +766,27 @@ class DatabaseBlockTest extends MediaWikiLangTestCase {
 
 		$block->setTarget( $user );
 		$block->setBlocker( $this->getTestSysop()->getUser() );
-		$block->insert();
+
+		$blockStore = $this->getServiceContainer()->getDatabaseBlockStore();
+		$blockStore->insertBlock( $block );
 
 		$namespaceRestriction = new NamespaceRestriction( $block->getId(), NS_MAIN );
 		$this->getBlockRestrictionStore()->insert( [ $namespaceRestriction ] );
 
 		$this->assertTrue( $block->appliesToNamespace( NS_MAIN ) );
 		$this->assertFalse( $block->appliesToNamespace( NS_USER ) );
-
-		$block->delete();
 	}
 
 	/**
 	 * @covers ::appliesToRight
 	 */
-	public function testBlockAllowsPurge() {
-		$this->setMwGlobals( [
-			'wgBlockDisablesLogin' => false,
-		] );
+	public function testBlockAllowsRead() {
+		$this->overrideConfigValue( MainConfigNames::BlockDisablesLogin, false );
 		$block = new DatabaseBlock();
-		$this->assertFalse( $block->appliesToRight( 'purge' ) );
+		$this->assertFalse( $block->appliesToRight( 'read' ) );
 	}
 
-	/**
-	 * Get an instance of BlockRestrictionStore
-	 *
-	 * @return BlockRestrictionStore
-	 */
-	protected function getBlockRestrictionStore() : BlockRestrictionStore {
-		return MediaWikiServices::getInstance()->getBlockRestrictionStore();
+	protected function getBlockRestrictionStore(): BlockRestrictionStore {
+		return $this->getServiceContainer()->getBlockRestrictionStore();
 	}
 }

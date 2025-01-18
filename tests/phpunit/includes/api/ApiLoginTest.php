@@ -1,8 +1,18 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+namespace MediaWiki\Tests\Api;
+
+use MediaWiki\Api\ApiErrorFormatter;
+use MediaWiki\Auth\AbstractSecondaryAuthenticationProvider;
+use MediaWiki\Auth\AuthenticationResponse;
+use MediaWiki\Auth\UsernameAuthenticationRequest;
+use MediaWiki\MainConfigNames;
 use MediaWiki\Session\BotPasswordSessionProvider;
 use MediaWiki\Session\SessionManager;
+use MediaWiki\Session\Token;
+use MediaWiki\User\BotPassword;
+use MediaWiki\User\User;
+use MWRestrictions;
 use Wikimedia\TestingAccessWrapper;
 
 /**
@@ -10,14 +20,9 @@ use Wikimedia\TestingAccessWrapper;
  * @group Database
  * @group medium
  *
- * @covers ApiLogin
+ * @covers \MediaWiki\Api\ApiLogin
  */
 class ApiLoginTest extends ApiTestCase {
-	public function setUp() {
-		parent::setUp();
-
-		$this->tablesUsed[] = 'bot_passwords';
-	}
 
 	public static function provideEnableBotPasswords() {
 		return [
@@ -30,7 +35,10 @@ class ApiLoginTest extends ApiTestCase {
 	 * @dataProvider provideEnableBotPasswords
 	 */
 	public function testExtendedDescription( $enableBotPasswords ) {
-		$this->setMwGlobals( 'wgEnableBotPasswords', $enableBotPasswords );
+		$this->overrideConfigValue(
+			MainConfigNames::EnableBotPasswords,
+			$enableBotPasswords
+		);
 		$ret = $this->doApiRequest( [
 			'action' => 'paraminfo',
 			'modules' => 'login',
@@ -52,8 +60,8 @@ class ApiLoginTest extends ApiTestCase {
 		$ret = $this->doApiRequest( [
 			'action' => 'login',
 			'lgname' => '',
-			'lgpassword' => self::$users['sysop']->getPassword(),
-			'lgtoken' => (string)( new MediaWiki\Session\Token( 'foobar', '' ) ),
+			'lgpassword' => $this->getTestSysop()->getPassword(),
+			'lgtoken' => (string)( new Token( 'foobar', '' ) ),
 		], $session );
 		$this->assertSame( 'Failed', $ret[0]['login']['result'] );
 	}
@@ -62,7 +70,10 @@ class ApiLoginTest extends ApiTestCase {
 	 * @dataProvider provideEnableBotPasswords
 	 */
 	public function testDeprecatedUserLogin( $enableBotPasswords ) {
-		$this->setMwGlobals( 'wgEnableBotPasswords', $enableBotPasswords );
+		$this->overrideConfigValue(
+			MainConfigNames::EnableBotPasswords,
+			$enableBotPasswords
+		);
 
 		$user = $this->getTestUser();
 
@@ -130,36 +141,82 @@ class ApiLoginTest extends ApiTestCase {
 	}
 
 	public function testBadToken() {
-		$user = self::$users['sysop'];
-		$userName = $user->getUser()->getName();
-		$password = $user->getPassword();
-		$user->getUser()->logout();
+		$testUser = $this->getTestSysop();
+		$userName = $testUser->getUser()->getName();
+		$password = $testUser->getPassword();
+		$testUser->getUser()->logout();
 
 		$ret = $this->doUserLogin( $userName, $password, [ 'lgtoken' => 'invalid token' ] );
 
 		$this->assertSame( 'WrongToken', $ret[0]['login']['result'] );
 	}
 
+	public function testLostSession() {
+		$testUser = $this->getTestSysop();
+		$userName = $testUser->getUser()->getName();
+		$password = $testUser->getPassword();
+		$testUser->getUser()->logout();
+
+		$ret = $this->doApiRequest( [
+			'action' => 'query',
+			'meta' => 'tokens',
+			'type' => 'login',
+		] );
+
+		$this->assertArrayNotHasKey( 'warnings', $ret );
+
+		// Lose the session
+		SessionManager::getGlobalSession()->clear();
+		$ret[2] = [];
+
+		$ret = $this->doApiRequest( [
+			'action' => 'login',
+			'lgtoken' => $ret[0]['query']['tokens']['logintoken'],
+			'lgname' => $userName,
+			'lgpassword' => $password,
+			'errorformat' => 'raw',
+		], $ret[2] );
+
+		$this->assertSame( [
+			'result' => 'Failed',
+			'reason' => [
+				'code' => 'sessionlost',
+				'key' => 'authpage-cannot-login-continue',
+				'params' => [],
+			],
+		], $ret[0]['login'] );
+	}
+
 	public function testBadPass() {
-		$user = self::$users['sysop'];
-		$userName = $user->getUser()->getName();
-		$user->getUser()->logout();
+		$user = $this->getTestSysop()->getUser();
+		$userName = $user->getName();
+		$user->logout();
 
-		$ret = $this->doUserLogin( $userName, 'bad' );
+		$ret = $this->doUserLogin( $userName, 'bad', [ 'errorformat' => 'raw' ] );
 
-		$this->assertSame( 'Failed', $ret[0]['login']['result'] );
+		$this->assertSame( [
+			'result' => 'Failed',
+			'reason' => [
+				'code' => 'wrongpassword',
+				'key' => 'wrongpassword',
+				'params' => [],
+			],
+		], $ret[0]['login'] );
 	}
 
 	/**
 	 * @dataProvider provideEnableBotPasswords
 	 */
 	public function testGoodPass( $enableBotPasswords ) {
-		$this->setMwGlobals( 'wgEnableBotPasswords', $enableBotPasswords );
+		$this->overrideConfigValue(
+			MainConfigNames::EnableBotPasswords,
+			$enableBotPasswords
+		);
 
-		$user = self::$users['sysop'];
-		$userName = $user->getUser()->getName();
-		$password = $user->getPassword();
-		$user->getUser()->logout();
+		$testUser = $this->getTestSysop();
+		$userName = $testUser->getUser()->getName();
+		$password = $testUser->getPassword();
+		$testUser->getUser()->logout();
 
 		$ret = $this->doUserLogin( $userName, $password );
 
@@ -176,13 +233,16 @@ class ApiLoginTest extends ApiTestCase {
 	 * @dataProvider provideEnableBotPasswords
 	 */
 	public function testUnsupportedAuthResponseType( $enableBotPasswords ) {
-		$this->setMwGlobals( 'wgEnableBotPasswords', $enableBotPasswords );
+		$this->overrideConfigValue(
+			MainConfigNames::EnableBotPasswords,
+			$enableBotPasswords
+		);
 
 		$mockProvider = $this->createMock(
-			MediaWiki\Auth\AbstractSecondaryAuthenticationProvider::class );
+			AbstractSecondaryAuthenticationProvider::class );
 		$mockProvider->method( 'beginSecondaryAuthentication' )->willReturn(
-			MediaWiki\Auth\AuthenticationResponse::newUI(
-				[ new MediaWiki\Auth\UsernameAuthenticationRequest ],
+			AuthenticationResponse::newUI(
+				[ new UsernameAuthenticationRequest ],
 				// Slightly silly message here
 				wfMessage( 'mainpage' )
 			)
@@ -192,16 +252,16 @@ class ApiLoginTest extends ApiTestCase {
 
 		$this->mergeMwGlobalArrayValue( 'wgAuthManagerConfig', [
 			'secondaryauth' => [ [
-				'factory' => function () use ( $mockProvider ) {
+				'factory' => static function () use ( $mockProvider ) {
 					return $mockProvider;
 				},
 			] ],
 		] );
 
-		$user = self::$users['sysop'];
-		$userName = $user->getUser()->getName();
-		$password = $user->getPassword();
-		$user->getUser()->logout();
+		$testUser = $this->getTestSysop();
+		$userName = $testUser->getUser()->getName();
+		$password = $testUser->getPassword();
+		$testUser->getUser()->logout();
 
 		$ret = $this->doUserLogin( $userName, $password );
 
@@ -213,72 +273,24 @@ class ApiLoginTest extends ApiTestCase {
 	}
 
 	/**
-	 * @todo Should this test just be deleted?
-	 * @group Broken
-	 */
-	public function testGotCookie() {
-		$this->markTestIncomplete( "The server can't do external HTTP requests, "
-			. "and the internal one won't give cookies" );
-
-		global $wgServer, $wgScriptPath;
-
-		$user = self::$users['sysop'];
-		$userName = $user->getUser()->getName();
-		$password = $user->getPassword();
-
-		$req = MWHttpRequest::factory(
-			self::$apiUrl . '?action=login&format=json',
-			[
-				'method' => 'POST',
-				'postData' => [
-					'lgname' => $userName,
-					'lgpassword' => $password,
-				],
-			],
-			__METHOD__
-		);
-		$req->execute();
-
-		$content = json_decode( $req->getContent() );
-
-		$this->assertSame( 'NeedToken', $content->login->result );
-
-		$req->setData( [
-			'lgtoken' => $content->login->token,
-			'lgname' => $userName,
-			'lgpassword' => $password,
-		] );
-		$req->execute();
-
-		$cj = $req->getCookieJar();
-		$serverName = parse_url( $wgServer, PHP_URL_HOST );
-		$this->assertNotEquals( false, $serverName );
-		$serializedCookie = $cj->serializeToHttpRequest( $wgScriptPath, $serverName );
-		$this->assertRegExp(
-			'/_session=[^;]*; .*UserID=[0-9]*; .*UserName=' . $userName . '; .*Token=/',
-			$serializedCookie
-		);
-	}
-
-	/**
-	 * @return [ $username, $password ] suitable for passing to an API request for successful login
+	 * @return array [ $username, $password ] suitable for passing to an API request for successful login
 	 */
 	private function setUpForBotPassword() {
 		global $wgSessionProviders;
 
-		$this->setMwGlobals( [
+		$this->overrideConfigValues( [
 			// We can't use mergeMwGlobalArrayValue because it will overwrite the existing entry
 			// with index 0
-			'wgSessionProviders' => array_merge( $wgSessionProviders, [
+			MainConfigNames::SessionProviders => array_merge( $wgSessionProviders, [
 				[
 					'class' => BotPasswordSessionProvider::class,
 					'args' => [ [ 'priority' => 40 ] ],
+					'services' => [ 'GrantsInfo' ],
 				],
 			] ),
-			'wgEnableBotPasswords' => true,
-			'wgBotPasswordsDatabase' => false,
-			'wgCentralIdLookupProvider' => 'local',
-			'wgGrantPermissions' => [
+			MainConfigNames::EnableBotPasswords => true,
+			MainConfigNames::CentralIdLookupProvider => 'local',
+			MainConfigNames::GrantPermissions => [
 				'test' => [ 'read' => true ],
 			],
 		] );
@@ -291,34 +303,34 @@ class ApiLoginTest extends ApiTestCase {
 			$manager->sessionProviders = $tmp + $manager->getProviders();
 		}
 		$this->assertNotNull(
-			SessionManager::singleton()->getProvider( BotPasswordSessionProvider::class ),
-			'sanity check'
+			SessionManager::singleton()->getProvider( BotPasswordSessionProvider::class )
 		);
 
-		$user = self::$users['sysop'];
-		$centralId = CentralIdLookup::factory()->centralIdFromLocalUser( $user->getUser() );
-		$this->assertNotSame( 0, $centralId, 'sanity check' );
+		$user = $this->getTestSysop()->getUser();
+		$centralId = $this->getServiceContainer()
+			->getCentralIdLookup()
+			->centralIdFromLocalUser( $user );
+		$this->assertNotSame( 0, $centralId );
 
 		$password = 'ngfhmjm64hv0854493hsj5nncjud2clk';
-		$passwordFactory = MediaWikiServices::getInstance()->getPasswordFactory();
+		$passwordFactory = $this->getServiceContainer()->getPasswordFactory();
 		// A is unsalted MD5 (thus fast) ... we don't care about security here, this is test only
 		$passwordHash = $passwordFactory->newFromPlaintext( $password );
 
-		$dbw = wfGetDB( DB_MASTER );
-		$dbw->insert(
-			'bot_passwords',
-			[
+		$this->getDb()->newInsertQueryBuilder()
+			->insertInto( 'bot_passwords' )
+			->row( [
 				'bp_user' => $centralId,
 				'bp_app_id' => 'foo',
 				'bp_password' => $passwordHash->toString(),
 				'bp_token' => '',
 				'bp_restrictions' => MWRestrictions::newDefault()->toJson(),
 				'bp_grants' => '["test"]',
-			],
-			__METHOD__
-		);
+			] )
+			->caller( __METHOD__ )
+			->execute();
 
-		$lgName = $user->getUser()->getName() . BotPassword::getSeparator() . 'foo';
+		$lgName = $user->getName() . BotPassword::getSeparator() . 'foo';
 
 		return [ $lgName, $password ];
 	}
@@ -330,14 +342,21 @@ class ApiLoginTest extends ApiTestCase {
 	}
 
 	public function testBotPasswordThrottled() {
-		global $wgPasswordAttemptThrottle;
+		// Undo high count from DevelopmentSettings.php
+		$throttle = [
+			[ 'count' => 5, 'seconds' => 30 ],
+			[ 'count' => 100, 'seconds' => 60 * 60 * 48 ],
+		];
 
 		$this->setGroupPermissions( 'sysop', 'noratelimit', false );
-		$this->setMwGlobals( 'wgMainCacheType', 'hash' );
+		$this->overrideConfigValue(
+			MainConfigNames::PasswordAttemptThrottle,
+			$throttle
+		);
 
-		list( $name, $password ) = $this->setUpForBotPassword();
+		[ $name, $password ] = $this->setUpForBotPassword();
 
-		for ( $i = 0; $i < $wgPasswordAttemptThrottle[0]['count']; $i++ ) {
+		for ( $i = 0; $i < $throttle[0]['count']; $i++ ) {
 			$this->doUserLogin( $name, 'incorrectpasswordincorrectpassword' );
 		}
 
@@ -346,12 +365,12 @@ class ApiLoginTest extends ApiTestCase {
 		$this->assertSame( [
 			'result' => 'Failed',
 			'reason' => ApiErrorFormatter::stripMarkup( wfMessage( 'login-throttled' )->
-				durationParams( $wgPasswordAttemptThrottle[0]['seconds'] )->text() ),
+				durationParams( $throttle[0]['seconds'] )->text() ),
 		], $ret[0]['login'] );
 	}
 
 	public function testBotPasswordLocked() {
-		$this->setTemporaryHook( 'UserIsLocked', function ( User $unused, &$isLocked ) {
+		$this->setTemporaryHook( 'UserIsLocked', static function ( User $unused, &$isLocked ) {
 			$isLocked = true;
 			return true;
 		} );
@@ -366,7 +385,7 @@ class ApiLoginTest extends ApiTestCase {
 
 	public function testNoSameOriginSecurity() {
 		$this->setTemporaryHook( 'RequestHasSameOriginSecurity',
-			function () {
+			static function () {
 				return false;
 			}
 		);

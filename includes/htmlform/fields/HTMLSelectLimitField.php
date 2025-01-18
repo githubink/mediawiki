@@ -1,7 +1,11 @@
 <?php
 
+namespace MediaWiki\HTMLForm\Field;
+
 /**
  * A limit dropdown, which accepts any valid number
+ *
+ * @stable to extend
  */
 class HTMLSelectLimitField extends HTMLSelectField {
 	/**
@@ -17,7 +21,7 @@ class HTMLSelectLimitField extends HTMLSelectField {
 			return true;
 		}
 
-		// Let folks pick an explicit limit not from our list, as long as it's a real numbr.
+		// Let folks pick an explicit limit not from our list, as long as it's a real number.
 		if ( !in_array( $value, $this->mParams['options'] )
 			&& $value == intval( $value )
 			&& $value > 0
@@ -33,3 +37,6 @@ class HTMLSelectLimitField extends HTMLSelectField {
 		return true;
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( HTMLSelectLimitField::class, 'HTMLSelectLimitField' );

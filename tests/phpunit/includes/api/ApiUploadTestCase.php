@@ -1,19 +1,32 @@
 <?php
 
+namespace MediaWiki\Tests\Api;
+
+use Exception;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Page\File\FileDeleteForm;
+use MediaWiki\Title\Title;
+use Wikimedia\FileBackend\FSFile\FSFile;
+use Wikimedia\Rdbms\IDBAccessObject;
+
 /**
  * Abstract class to support upload tests
  */
 abstract class ApiUploadTestCase extends ApiTestCase {
+
+	/**
+	 * @since 1.37
+	 * @var array Used to fake $_FILES in tests and given to MediaWiki\Request\FauxRequest
+	 */
+	protected $requestDataFiles = [];
+
 	/**
 	 * Fixture -- run before every test
 	 */
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
-		$this->setMwGlobals( [
-			'wgEnableUploads' => true,
-		] );
-
+		$this->overrideConfigValue( MainConfigNames::EnableUploads, true );
 		$this->clearFakeUploads();
 	}
 
@@ -26,30 +39,30 @@ abstract class ApiUploadTestCase extends ApiTestCase {
 	 */
 	public function deleteFileByTitle( $title ) {
 		if ( $title->exists() ) {
-			$file = wfFindFile( $title, [ 'ignoreRedirect' => true ] );
+			$file = $this->getServiceContainer()->getRepoGroup()
+				->findFile( $title, [ 'ignoreRedirect' => true ] );
 			$noOldArchive = ""; // yes this really needs to be set this way
 			$comment = "removing for test";
 			$restrictDeletedVersions = false;
+			$user = $this->getTestSysop()->getUser();
 			$status = FileDeleteForm::doDelete(
 				$title,
 				$file,
 				$noOldArchive,
 				$comment,
-				$restrictDeletedVersions
+				$restrictDeletedVersions,
+				$user
 			);
 
 			if ( !$status->isGood() ) {
 				return false;
 			}
 
-			$page = WikiPage::factory( $title );
-			$page->doDeleteArticle( "removing for test" );
-
-			// see if it now doesn't exist; reload
-			$title = Title::newFromText( $title->getText(), NS_FILE );
+			$page = $this->getServiceContainer()->getWikiPageFactory()->newFromTitle( $title );
+			$this->deletePage( $page, "removing for test" );
 		}
 
-		return !( $title && $title instanceof Title && $title->exists() );
+		return !( $title && $title instanceof Title && $title->exists( IDBAccessObject::READ_LATEST ) );
 	}
 
 	/**
@@ -73,7 +86,7 @@ abstract class ApiUploadTestCase extends ApiTestCase {
 	 */
 	public function deleteFileByContent( $filePath ) {
 		$hash = FSFile::getSha1Base36FromPath( $filePath );
-		$dupes = RepoGroup::singleton()->findBySha1( $hash );
+		$dupes = $this->getServiceContainer()->getRepoGroup()->findBySha1( $hash );
 		$success = true;
 		foreach ( $dupes as $dupe ) {
 			$success &= $this->deleteFileByTitle( $dupe->getTitle() );
@@ -94,59 +107,69 @@ abstract class ApiUploadTestCase extends ApiTestCase {
 	 * @throws Exception
 	 * @return bool
 	 */
-	function fakeUploadFile( $fieldName, $fileName, $type, $filePath ) {
+	protected function fakeUploadFile( $fieldName, $fileName, $type, $filePath ) {
 		$tmpName = $this->getNewTempFile();
-		if ( !file_exists( $filePath ) ) {
-			throw new Exception( "$filePath doesn't exist!" );
+		if ( !is_file( $filePath ) ) {
+			$this->fail( "$filePath doesn't exist!" );
 		}
 
 		if ( !copy( $filePath, $tmpName ) ) {
-			throw new Exception( "couldn't copy $filePath to $tmpName" );
+			$this->fail( "couldn't copy $filePath to $tmpName" );
 		}
 
 		clearstatcache();
 		$size = filesize( $tmpName );
 		if ( $size === false ) {
-			throw new Exception( "couldn't stat $tmpName" );
+			$this->fail( "couldn't stat $tmpName" );
 		}
 
-		$_FILES[$fieldName] = [
+		$this->requestDataFiles[$fieldName] = [
 			'name' => $fileName,
 			'type' => $type,
 			'tmp_name' => $tmpName,
 			'size' => $size,
-			'error' => null
+			'error' => UPLOAD_ERR_OK,
 		];
 
 		return true;
 	}
 
-	function fakeUploadChunk( $fieldName, $fileName, $type, & $chunkData ) {
+	public function fakeUploadChunk( $fieldName, $fileName, $type, &$chunkData ) {
 		$tmpName = $this->getNewTempFile();
 		// copy the chunk data to temp location:
 		if ( !file_put_contents( $tmpName, $chunkData ) ) {
-			throw new Exception( "couldn't copy chunk data to $tmpName" );
+			$this->fail( "couldn't copy chunk data to $tmpName" );
 		}
 
 		clearstatcache();
 		$size = filesize( $tmpName );
 		if ( $size === false ) {
-			throw new Exception( "couldn't stat $tmpName" );
+			$this->fail( "couldn't stat $tmpName" );
 		}
 
-		$_FILES[$fieldName] = [
+		$this->requestDataFiles[$fieldName] = [
 			'name' => $fileName,
 			'type' => $type,
 			'tmp_name' => $tmpName,
 			'size' => $size,
-			'error' => null
+			'error' => UPLOAD_ERR_OK,
 		];
+	}
+
+	/** @inheritDoc */
+	protected function buildFauxRequest( $params, $session ) {
+		$request = parent::buildFauxRequest( $params, $session );
+		$request->setUploadData( $this->requestDataFiles );
+		return $request;
 	}
 
 	/**
 	 * Remove traces of previous fake uploads
 	 */
-	function clearFakeUploads() {
-		$_FILES = [];
+	public function clearFakeUploads() {
+		$this->requestDataFiles = [];
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( ApiUploadTestCase::class, 'ApiUploadTestCase' );

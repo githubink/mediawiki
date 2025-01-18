@@ -18,15 +18,17 @@
  * @file
  */
 
-namespace MediaWiki\Logger;
+namespace MediaWiki\Tests\Logger;
 
-use MediaWikiTestCase;
+use MediaWiki\Logger\LegacyLogger;
+use MediaWiki\MainConfigNames;
+use MediaWikiIntegrationTestCase;
 use Psr\Log\LogLevel;
 
-class LegacyLoggerTest extends MediaWikiTestCase {
+class LegacyLoggerTest extends MediaWikiIntegrationTestCase {
 
 	/**
-	 * @covers MediaWiki\Logger\LegacyLogger::interpolate
+	 * @covers \MediaWiki\Logger\LegacyLogger::interpolate
 	 * @dataProvider provideInterpolate
 	 */
 	public function testInterpolate( $message, $context, $expect ) {
@@ -34,9 +36,10 @@ class LegacyLoggerTest extends MediaWikiTestCase {
 			$expect, LegacyLogger::interpolate( $message, $context ) );
 	}
 
-	public function provideInterpolate() {
+	public static function provideInterpolate() {
 		$e = new \Exception( 'boom!' );
 		$d = new \DateTime();
+		$err = new \Error( 'Test error' );
 		return [
 			[
 				'no-op',
@@ -121,35 +124,24 @@ class LegacyLoggerTest extends MediaWikiTestCase {
 				],
 				'[Object stdClass]',
 			],
+			[
+				'{exception}',
+				[
+					'exception' => $err,
+				],
+				'[Error ' . get_class( $err ) . '( ' .
+					$err->getFile() . ':' . $err->getLine() . ') ' .
+					$err->getMessage() . ']',
+			],
 		];
 	}
 
 	/**
-	 * @covers MediaWiki\Logger\LegacyLogger::interpolate
-	 */
-	public function testInterpolate_Error() {
-		// @todo Merge this into provideInterpolate once we drop HHVM support
-		if ( !class_exists( \Error::class ) ) {
-			$this->markTestSkipped( 'Error class does not exist' );
-		}
-
-		$err = new \Error( 'Test error' );
-		$message = '{exception}';
-		$context = [ 'exception' => $err ];
-		$expect = '[Error ' . get_class( $err ) . '( ' .
-			$err->getFile() . ':' . $err->getLine() . ') ' .
-			$err->getMessage() . ']';
-
-		$this->assertEquals(
-			$expect, LegacyLogger::interpolate( $message, $context ) );
-	}
-
-	/**
-	 * @covers MediaWiki\Logger\LegacyLogger::shouldEmit
+	 * @covers \MediaWiki\Logger\LegacyLogger::shouldEmit
 	 * @dataProvider provideShouldEmit
 	 */
 	public function testShouldEmit( $level, $config, $expected ) {
-		$this->setMwGlobals( 'wgDebugLogGroups', [ 'fakechannel' => $config ] );
+		$this->overrideConfigValue( MainConfigNames::DebugLogGroups, [ 'fakechannel' => $config ] );
 		$this->assertEquals(
 			$expected,
 			LegacyLogger::shouldEmit( 'fakechannel', 'some message', $level, [] )
@@ -174,20 +166,17 @@ class LegacyLoggerTest extends MediaWikiTestCase {
 				$dest + [ 'level' => LogLevel::CRITICAL ],
 				false,
 			],
-		];
-
-		if ( class_exists( '\Monolog\Logger' ) ) {
-			$tests[] = [
+			[
 				\Monolog\Logger::INFO,
 				$dest + [ 'level' => LogLevel::INFO ],
 				true,
-			];
-			$tests[] = [
+			],
+			[
 				\Monolog\Logger::WARNING,
 				$dest + [ 'level' => LogLevel::EMERGENCY ],
 				false,
-			];
-		}
+			]
+		];
 
 		return $tests;
 	}

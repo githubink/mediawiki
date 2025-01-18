@@ -2,15 +2,20 @@
 
 namespace MediaWiki\Widget;
 
+use OOUI\Widget;
+
 /**
  * Complex title input widget.
  *
  * @copyright 2011-2015 MediaWiki Widgets Team and others; see AUTHORS.txt
  * @license MIT
  */
-class ComplexTitleInputWidget extends \OOUI\Widget {
-
+class ComplexTitleInputWidget extends Widget {
+	/** @var array */
+	protected $config;
+	/** @var NamespaceInputWidget|null */
 	protected $namespace = null;
+	/** @var TitleInputWidget|null */
 	protected $title = null;
 
 	/**
@@ -20,6 +25,7 @@ class ComplexTitleInputWidget extends \OOUI\Widget {
 	 *   - array $config['namespace'] Configuration for the NamespaceInputWidget dropdown
 	 *     with list of namespaces
 	 *   - array $config['title'] Configuration for the TitleInputWidget text field
+	 * @phan-param array{namespace?:array,title?:array} $config
 	 */
 	public function __construct( array $config = [] ) {
 		// Configuration initialization

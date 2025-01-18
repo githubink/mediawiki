@@ -1,63 +1,96 @@
 <?php
 
-use MediaWiki\Interwiki\InterwikiLookup;
+use MediaWiki\Tests\Unit\DummyServicesTrait;
+use MediaWiki\Title\Title;
+use MediaWiki\User\ExternalUserNames;
 
 /**
- * @covers ExternalUserNames
+ * @covers \MediaWiki\User\ExternalUserNames
+ * @group Database
  */
-class ExternalUserNamesTest extends MediaWikiTestCase {
+class ExternalUserNamesTest extends MediaWikiIntegrationTestCase {
+	use DummyServicesTrait;
 
-	public function provideGetUserLinkTitle() {
+	public static function provideGetUserLinkTitle() {
 		return [
-			[ 'valid:>User1', Title::makeTitle( NS_MAIN, ':User:User1', '', 'valid' ) ],
 			[
+				'Valid user name from known import source',
+				'valid:>User1',
+				Title::makeTitle( NS_MAIN, ':User:User1', '', 'valid' )
+			],
+			[
+				'Valid user name that looks like an import source, from known import source',
 				'valid:valid:>User1',
 				Title::makeTitle( NS_MAIN, 'valid::User:User1', '', 'valid' )
 			],
 			[
+				'Local IP address',
 				'127.0.0.1',
 				Title::makeTitle( NS_SPECIAL, 'Contributions/127.0.0.1', '', '' )
 			],
-			[ 'invalid:>User1', null ]
+			[
+				'Valid user name from unknown import source',
+				'invalid:>User1',
+				null
+			],
+			[
+				'Corrupt local user name with linebreak',
+				"Foo\nBar",
+				null
+			],
+			[
+				'Corrupt local user name with terminal underscore',
+				'Barf_',
+				null
+			],
+			[
+				'Corrupt local user name with initial lowercase',
+				'abcd',
+				null
+			],
+			[
+				'Corrupt local user name with slash',
+				'For/Bar',
+				null
+			],
+			[
+				'Corrupt local user name with octothorpe',
+				'For#Bar',
+				null
+			],
 		];
 	}
 
 	/**
-	 * @covers ExternalUserNames::getUserLinkTitle
+	 * @covers \MediaWiki\User\ExternalUserNames::getUserLinkTitle
 	 * @dataProvider provideGetUserLinkTitle
 	 */
-	public function testGetUserLinkTitle( $username, $expected ) {
+	public function testGetUserLinkTitle( $caseDescription, $username, $expected ) {
 		$this->setContentLang( 'en' );
 
-		$interwikiLookupMock = $this->getMockBuilder( InterwikiLookup::class )
-			->getMock();
-
-		$interwikiValueMap = [
-			[ 'valid', true ],
-			[ 'invalid', false ]
-		];
-		$interwikiLookupMock->expects( $this->any() )
-			->method( 'isValidInterwiki' )
-			->will( $this->returnValueMap( $interwikiValueMap ) );
-
-		$this->setService( 'InterwikiLookup', $interwikiLookupMock );
+		$interwikiLookup = $this->getDummyInterwikiLookup( [ 'valid' ] );
+		$this->setService( 'InterwikiLookup', $interwikiLookup );
 
 		$this->assertEquals(
 			$expected,
-			ExternalUserNames::getUserLinkTitle( $username )
+			ExternalUserNames::getUserLinkTitle( $username ),
+			$caseDescription
 		);
 	}
 
-	public function provideApplyPrefix() {
+	public static function provideApplyPrefix() {
 		return [
 			[ 'User1', 'prefix', 'prefix>User1' ],
 			[ 'User1', 'prefix:>', 'prefix>User1' ],
 			[ 'User1', 'prefix:', 'prefix>User1' ],
+			[ 'user1', 'prefix', 'prefix>user1' ],
+			[ '0', 'prefix', 'prefix>0' ],
+			[ 'Unknown user', 'prefix', 'Unknown user' ],
 		];
 	}
 
 	/**
-	 * @covers ExternalUserNames::applyPrefix
+	 * @covers \MediaWiki\User\ExternalUserNames::applyPrefix
 	 * @dataProvider provideApplyPrefix
 	 */
 	public function testApplyPrefix( $username, $prefix, $expected ) {
@@ -69,7 +102,24 @@ class ExternalUserNamesTest extends MediaWikiTestCase {
 		);
 	}
 
-	public function provideAddPrefix() {
+	/**
+	 * @covers \MediaWiki\User\ExternalUserNames::applyPrefix
+	 */
+	public function testApplyPrefix_existingUser() {
+		$testName = $this->getTestUser()->getUser()->getName();
+		$testName2 = lcfirst( $testName );
+		$this->assertNotSame( $testName, $testName2 );
+
+		$externalUserNames = new ExternalUserNames( 'p', false );
+		$this->assertSame( "p>$testName", $externalUserNames->applyPrefix( $testName ) );
+		$this->assertSame( "p>$testName2", $externalUserNames->applyPrefix( $testName2 ) );
+
+		$externalUserNames = new ExternalUserNames( 'p', true );
+		$this->assertSame( $testName, $externalUserNames->applyPrefix( $testName ) );
+		$this->assertSame( $testName2, $externalUserNames->applyPrefix( $testName2 ) );
+	}
+
+	public static function provideAddPrefix() {
 		return [
 			[ 'User1', 'prefix', 'prefix>User1' ],
 			[ 'User2', 'prefix2', 'prefix2>User2' ],
@@ -78,7 +128,7 @@ class ExternalUserNamesTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers ExternalUserNames::addPrefix
+	 * @covers \MediaWiki\User\ExternalUserNames::addPrefix
 	 * @dataProvider provideAddPrefix
 	 */
 	public function testAddPrefix( $username, $prefix, $expected ) {
@@ -90,7 +140,7 @@ class ExternalUserNamesTest extends MediaWikiTestCase {
 		);
 	}
 
-	public function provideIsExternal() {
+	public static function provideIsExternal() {
 		return [
 			[ 'User1', false ],
 			[ '>User1', true ],
@@ -100,7 +150,7 @@ class ExternalUserNamesTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers ExternalUserNames::isExternal
+	 * @covers \MediaWiki\User\ExternalUserNames::isExternal
 	 * @dataProvider provideIsExternal
 	 */
 	public function testIsExternal( $username, $expected ) {
@@ -110,7 +160,7 @@ class ExternalUserNamesTest extends MediaWikiTestCase {
 		);
 	}
 
-	public function provideGetLocal() {
+	public static function provideGetLocal() {
 		return [
 			[ 'User1', 'User1' ],
 			[ '>User2', 'User2' ],
@@ -120,7 +170,7 @@ class ExternalUserNamesTest extends MediaWikiTestCase {
 	}
 
 	/**
-	 * @covers ExternalUserNames::getLocal
+	 * @covers \MediaWiki\User\ExternalUserNames::getLocal
 	 * @dataProvider provideGetLocal
 	 */
 	public function testGetLocal( $username, $expected ) {

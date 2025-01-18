@@ -16,20 +16,25 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Database
  */
-
 namespace Wikimedia\Rdbms;
 
+use Liuggio\StatsdClient\Factory\StatsdDataFactoryInterface;
 use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use RuntimeException;
+use Wikimedia\ObjectCache\BagOStuff;
+use Wikimedia\ObjectCache\IStoreKeyEncoder;
+use Wikimedia\ObjectCache\WANObjectCache;
+use Wikimedia\Rdbms\Platform\ISQLPlatform;
 use Wikimedia\ScopedCallback;
-use BagOStuff;
-use WANObjectCache;
+use Wikimedia\Stats\NullStatsdDataFactory;
 
 /**
  * Basic DB load monitor with no external dependencies
- * Uses memcached to cache the replication lag for a short time
+ *
+ * This uses both local server and local datacenter caches for DB server state information.
+ *
  *
  * @ingroup Database
  */
@@ -41,203 +46,320 @@ class LoadMonitor implements ILoadMonitor {
 	/** @var WANObjectCache */
 	protected $wanCache;
 	/** @var LoggerInterface */
-	protected $replLogger;
+	protected $logger;
+	/** @var StatsdDataFactoryInterface */
+	protected $statsd;
+	/** @var int|float */
+	private $maxConnCount;
+	private int $totalConnectionsAdjustment;
 
-	/** @var float Moving average ratio (e.g. 0.1 for 10% weight to new weight) */
-	private $movingAveRatio;
-	/** @var int Amount of replication lag in seconds before warnings are logged */
-	private $lagWarnThreshold;
+	/** @var float|null */
+	private $wallClockOverride;
 
-	/** @var int cache key version */
-	const VERSION = 1;
-	/** @var int Default 'max lag' in seconds when unspecified */
-	const LAG_WARN_THRESHOLD = 10;
+	/** @var bool Whether the "server states" cache key is in the process of being updated */
+	private $serverStatesKeyLocked = false;
+
+	/** Cache key version */
+	private const VERSION = 3;
+
+	/** Target time-till-refresh for DB server states */
+	private const STATE_TARGET_TTL = 10;
+	/** Seconds to persist DB server states on cache (fresh or stale) */
+	private const STATE_PRESERVE_TTL = 60;
 
 	/**
-	 * @param ILoadBalancer $lb
-	 * @param BagOStuff $srvCache
-	 * @param WANObjectCache $wCache
-	 * @param array $options
-	 *   - movingAveRatio: moving average constant for server weight updates based on lag
-	 *   - lagWarnThreshold: how many seconds of lag trigger warnings
+	 * @inheritDoc
 	 */
-	public function __construct(
-		ILoadBalancer $lb, BagOStuff $srvCache, WANObjectCache $wCache, array $options = []
-	) {
+	public function __construct( ILoadBalancer $lb, BagOStuff $srvCache, WANObjectCache $wCache, $options ) {
 		$this->lb = $lb;
 		$this->srvCache = $srvCache;
 		$this->wanCache = $wCache;
-		$this->replLogger = new NullLogger();
+		$this->logger = new NullLogger();
+		$this->statsd = new NullStatsdDataFactory();
+		if ( isset( $options['maxConnCount'] ) ) {
+			$this->maxConnCount = (int)( $options['maxConnCount'] );
+		} else {
+			$this->maxConnCount = INF;
+		}
 
-		$this->movingAveRatio = $options['movingAveRatio'] ?? 0.1;
-		$this->lagWarnThreshold = $options['lagWarnThreshold'] ?? self::LAG_WARN_THRESHOLD;
+		$this->totalConnectionsAdjustment = (int)( $options['totalConnectionsAdjustment'] ?? 10 );
 	}
 
 	public function setLogger( LoggerInterface $logger ) {
-		$this->replLogger = $logger;
+		$this->logger = $logger;
 	}
 
-	final public function scaleLoads( array &$weightByServer, $domain ) {
+	public function setStatsdDataFactory( StatsdDataFactoryInterface $statsFactory ) {
+		$this->statsd = $statsFactory;
+	}
+
+	public function scaleLoads( array &$weightByServer ) {
+		if ( count( $weightByServer ) <= 1 ) {
+			// Single-server group; relative adjustments are pointless
+			return;
+		}
+
 		$serverIndexes = array_keys( $weightByServer );
-		$states = $this->getServerStates( $serverIndexes, $domain );
-		$newScalesByServer = $states['weightScales'];
+		$stateByServerIndex = $this->getServerStates( $serverIndexes );
+		$totalConnections = 0;
+		$totalWeights = 0;
+		$circuitBreakingEnabled = true;
 		foreach ( $weightByServer as $i => $weight ) {
-			if ( isset( $newScalesByServer[$i] ) ) {
-				$weightByServer[$i] = $weight * $newScalesByServer[$i];
-			} else { // server recently added to config?
-				$host = $this->lb->getServerName( $i );
-				$this->replLogger->error( __METHOD__ . ": host $host not in cache" );
+			$serverState = $stateByServerIndex[$i];
+			$totalConnections += (int)$serverState[self::STATE_CONN_COUNT] * $serverState[self::STATE_UP];
+			$totalWeights += $weight;
+
+			// Set up circuit breaking. If at least one replica can take more connections
+			// allow the flow.
+			if (
+				$serverState[self::STATE_UP] &&
+				$weight > 0 &&
+				$serverState[self::STATE_CONN_COUNT] < $this->maxConnCount
+			) {
+				$circuitBreakingEnabled = false;
 			}
 		}
-	}
 
-	final public function getLagTimes( array $serverIndexes, $domain ) {
-		return $this->getServerStates( $serverIndexes, $domain )['lagTimes'];
-	}
-
-	protected function getServerStates( array $serverIndexes, $domain ) {
-		$writerIndex = $this->lb->getWriterIndex();
-		if ( count( $serverIndexes ) == 1 && reset( $serverIndexes ) == $writerIndex ) {
-			# Single server only, just return zero without caching
-			return [
-				'lagTimes' => [ $writerIndex => 0 ],
-				'weightScales' => [ $writerIndex => 1.0 ]
-			];
+		if ( $circuitBreakingEnabled ) {
+			throw new DBUnexpectedError(
+				null, 'Database servers in ' . $this->lb->getClusterName() . ' are overloaded. ' .
+				'In order to protect application servers, the circuit breaking to databases of this section ' .
+				'have been activated. Please try again a few seconds.'
+			);
 		}
 
-		$key = $this->getCacheKey( $serverIndexes );
-		# Randomize TTLs to reduce stampedes (4.0 - 5.0 sec)
-		$ttl = mt_rand( 4e6, 5e6 ) / 1e6;
-		# Keep keys around longer as fallbacks
-		$staleTTL = 60;
-
-		# (a) Check the local APC cache
-		$value = $this->srvCache->get( $key );
-		if ( $value && $value['timestamp'] > ( microtime( true ) - $ttl ) ) {
-			$this->replLogger->debug( __METHOD__ . ": got lag times ($key) from local cache" );
-			return $value; // cache hit
-		}
-		$staleValue = $value ?: false;
-
-		# (b) Check the shared cache and backfill APC
-		$value = $this->wanCache->get( $key );
-		if ( $value && $value['timestamp'] > ( microtime( true ) - $ttl ) ) {
-			$this->srvCache->set( $key, $value, $staleTTL );
-			$this->replLogger->debug( __METHOD__ . ": got lag times ($key) from main cache" );
-
-			return $value; // cache hit
-		}
-		$staleValue = $value ?: $staleValue;
-
-		# (c) Cache key missing or expired; regenerate and backfill
-		if ( $this->srvCache->lock( $key, 0, 10 ) ) {
-			# Let only this process update the cache value on this server
-			$sCache = $this->srvCache;
-			/** @noinspection PhpUnusedLocalVariableInspection */
-			$unlocker = new ScopedCallback( function () use ( $sCache, $key ) {
-				$sCache->unlock( $key );
-			} );
-		} elseif ( $staleValue ) {
-			# Could not acquire lock but an old cache exists, so use it
-			return $staleValue;
-		}
-
-		$lagTimes = [];
-		$weightScales = [];
-		$movAveRatio = $this->movingAveRatio;
-		foreach ( $serverIndexes as $i ) {
-			if ( $i == $this->lb->getWriterIndex() ) {
-				$lagTimes[$i] = 0; // master always has no lag
-				$weightScales[$i] = 1.0; // nominal weight
+		foreach ( $weightByServer as $i => $weight ) {
+			if (
+				// host is down or
+				!$stateByServerIndex[$i][self::STATE_UP] ||
+				// host is primary or explicitly set to zero
+				$weight <= 0
+			) {
+				$weightByServer[$i] = 0;
 				continue;
 			}
+			$connRatio = $stateByServerIndex[$i][self::STATE_CONN_COUNT] /
+				( $totalConnections + $this->totalConnectionsAdjustment );
+			$weightRatio = $weight / $totalWeights;
+			$diffRatio = $connRatio - $weightRatio;
+			$adjustedRatio = max( $weightRatio - ( $diffRatio / 2.0 ), 0 );
+			$weightByServer[$i] = (int)round( $totalWeights * $adjustedRatio );
+		}
+	}
 
-			# Handles with open transactions are avoided since they might be subject
-			# to REPEATABLE-READ snapshots, which could affect the lag estimate query.
-			$flags = ILoadBalancer::CONN_TRX_AUTOCOMMIT | ILoadBalancer::CONN_SILENCE_ERRORS;
-			$conn = $this->lb->getAnyOpenConnection( $i, $flags );
-			if ( $conn ) {
-				$close = false; // already open
+	protected function getServerStates( array $serverIndexes ): array {
+		$stateByServerIndex = array_fill_keys( $serverIndexes, null );
+		// Perform any cache regenerations in randomized order so that the
+		// DB servers will each have similarly up-to-date state cache entries.
+		$shuffledServerIndexes = $serverIndexes;
+		shuffle( $shuffledServerIndexes );
+
+		foreach ( $shuffledServerIndexes as $i ) {
+			$key = $this->makeStateKey( $this->srvCache, $i );
+			$state = $this->srvCache->get( $key ) ?: null;
+			if ( $this->isStateFresh( $state ) ) {
+				$this->logger->debug(
+					__METHOD__ . ": fresh local cache hit for '{db_server}'",
+					[ 'db_server' => $this->lb->getServerName( $i ) ]
+				);
 			} else {
-				// Get a connection to this server without triggering other server connections
-				$conn = $this->lb->getServerConnection( $i, ILoadBalancer::DOMAIN_ANY, $flags );
-				$close = true; // new connection
+				$lock = $this->srvCache->getScopedLock( $key, 0, 10 );
+				if ( $lock || !$state ) {
+					$state = $this->getStateFromWanCache( $i, $state );
+					$this->srvCache->set( $key, $state, self::STATE_PRESERVE_TTL );
+				}
 			}
-
-			$lastWeight = $staleValue['weightScales'][$i] ?? 1.0;
-			$coefficient = $this->getWeightScale( $i, $conn ?: null );
-			$newWeight = $movAveRatio * $coefficient + ( 1 - $movAveRatio ) * $lastWeight;
-
-			// Scale from 10% to 100% of nominal weight
-			$weightScales[$i] = max( $newWeight, 0.10 );
-
-			$host = $this->lb->getServerName( $i );
-
-			if ( !$conn ) {
-				$lagTimes[$i] = false;
-				$this->replLogger->error(
-					__METHOD__ . ": host {db_server} is unreachable",
-					[ 'db_server' => $host ]
-				);
-				continue;
-			}
-
-			$lagTimes[$i] = $conn->getLag();
-			if ( $lagTimes[$i] === false ) {
-				$this->replLogger->error(
-					__METHOD__ . ": host {db_server} is not replicating?",
-					[ 'db_server' => $host ]
-				);
-			} elseif ( $lagTimes[$i] > $this->lagWarnThreshold ) {
-				$this->replLogger->warning(
-					"Server {host} has {lag} seconds of lag (>= {maxlag})",
-					[
-						'host' => $host,
-						'lag' => $lagTimes[$i],
-						'maxlag' => $this->lagWarnThreshold
-					]
-				);
-			}
-
-			if ( $close ) {
-				# Close the connection to avoid sleeper connections piling up.
-				# Note that the caller will pick one of these DBs and reconnect,
-				# which is slightly inefficient, but this only matters for the lag
-				# time cache miss cache, which is far less common that cache hits.
-				$this->lb->closeConnection( $conn );
-			}
+			$stateByServerIndex[$i] = $state;
 		}
+		return $stateByServerIndex;
+	}
 
-		# Add a timestamp key so we know when it was cached
-		$value = [
-			'lagTimes' => $lagTimes,
-			'weightScales' => $weightScales,
-			'timestamp' => microtime( true )
-		];
-		$this->wanCache->set( $key, $value, $staleTTL );
-		$this->srvCache->set( $key, $value, $staleTTL );
-		$this->replLogger->info( __METHOD__ . ": re-calculated lag times ($key)" );
+	protected function getStateFromWanCache( $i, ?array $srvPrevState ) {
+		$hit = true;
+		$key = $this->makeStateKey( $this->wanCache, $i );
+		$state = $this->wanCache->getWithSetCallback(
+			$key,
+			self::STATE_PRESERVE_TTL,
+			function ( $wanPrevState ) use ( $srvPrevState, $i, &$hit ) {
+				$prevState = $wanPrevState ?: $srvPrevState ?: null;
+				$hit = false;
+				return $this->computeServerState( $i, $prevState );
+			},
+			[ 'lockTSE' => 30 ]
+		);
+		if ( $hit ) {
+			$this->logger->debug(
+				__METHOD__ . ": WAN cache hit for '{db_server}'",
+				[ 'db_server' => $this->lb->getServerName( $i ) ]
+			);
+		} else {
+			$this->logger->info(
+				__METHOD__ . ": mutex acquired; regenerated cache for '{db_server}'",
+				[ 'db_server' => $this->lb->getServerName( $i ) ]
+			);
+		}
+		return $state;
+	}
 
-		return $value;
+	protected function makeStateKey( IStoreKeyEncoder $cache, int $i ) {
+		return $cache->makeGlobalKey(
+			'rdbms-gauge',
+			self::VERSION,
+			$this->lb->getClusterName(),
+			$this->lb->getServerName( ServerInfo::WRITER_INDEX ),
+			$this->lb->getServerName( $i )
+		);
 	}
 
 	/**
-	 * @param int $index Server index
-	 * @param IDatabase|null $conn Connection handle or null on connection failure
-	 * @return float
+	 * @param int $i
+	 * @param array|null $previousState
+	 * @return array<string,mixed>
+	 * @phan-return array{up:float,conn_count:float|int|false,time:float}
+	 * @throws DBAccessError
 	 */
-	protected function getWeightScale( $index, IDatabase $conn = null ) {
-		return $conn ? 1.0 : 0.0;
+	protected function computeServerState( int $i, ?array $previousState ) {
+		$startTime = $this->getCurrentTime();
+		// Double check for circular recursion in computeServerStates()/getWeightScale().
+		// Mainly, connection attempts should use LoadBalancer::getServerConnection()
+		// rather than something that will pick a server based on the server states.
+		$this->acquireServerStatesLoopGuard();
+
+		$cluster = $this->lb->getClusterName();
+		$serverName = $this->lb->getServerName( $i );
+		$statServerName = str_replace( '.', '_', $serverName );
+
+		$newState = $this->newInitialServerState();
+
+		if ( $this->lb->getServerInfo( $i )['load'] <= 0 ) {
+			// Callers only use this server when they have *no choice* anyway (e.g. primary)
+			$newState[self::STATE_AS_OF] = $this->getCurrentTime();
+			// Avoid connecting, especially since it might reside in a remote datacenter
+			return $newState;
+		}
+
+		// Get a new, untracked, connection in order to gauge server health
+		$flags = ILoadBalancer::CONN_UNTRACKED_GAUGE | ILoadBalancer::CONN_SILENCE_ERRORS;
+		// Get a connection to this server without triggering other server connections
+		$conn = $this->lb->getServerConnection( $i, ILoadBalancer::DOMAIN_ANY, $flags );
+		// Determine the number of open connections in this server
+		if ( $conn ) {
+			try {
+				$connCount = $this->getConnCountForDb( $conn );
+			} catch ( DBError $e ) {
+				$connCount = false;
+			}
+		} else {
+			$connCount = false;
+		}
+		// Only keep one connection open at a time
+		if ( $conn ) {
+			$conn->close( __METHOD__ );
+		}
+
+		$endTime = $this->getCurrentTime();
+		$newState[self::STATE_AS_OF] = $endTime;
+		$newState[self::STATE_CONN_COUNT] = $connCount;
+		$newState[self::STATE_UP] = $conn ? 1.0 : 0.0;
+		if ( $previousState ) {
+			$newState[self::STATE_CONN_COUNT] = ( $previousState[self::STATE_CONN_COUNT] + $connCount ) / 2;
+		}
+
+		if ( $connCount === false ) {
+			$this->logger->error(
+				__METHOD__ . ": host {db_server} is not up?",
+				[ 'db_server' => $serverName ]
+			);
+		} else {
+			$this->statsd->timing( "loadbalancer.connCount.$cluster.$statServerName", $connCount );
+			if ( $connCount > $this->maxConnCount ) {
+				$this->logger->warning(
+					"Server {db_server} has {conn_count} open connections (>= {max_conn})",
+					[
+						'db_server' => $serverName,
+						'conn_count' => $connCount,
+						'max_conn' => $this->maxConnCount
+					]
+				);
+			}
+		}
+
+		return $newState;
 	}
 
-	private function getCacheKey( array $serverIndexes ) {
-		sort( $serverIndexes );
-		// Lag is per-server, not per-DB, so key on the master DB name
-		return $this->srvCache->makeGlobalKey(
-			'lag-times',
-			self::VERSION,
-			$this->lb->getServerName( $this->lb->getWriterIndex() ),
-			implode( '-', $serverIndexes )
+	/**
+	 * @return array<string,mixed>
+	 * @phan-return array{up:float,conn_count:int|int|false,time:float}
+	 */
+	protected function newInitialServerState() {
+		return [
+			// Moving average of connectivity; treat as good
+			self::STATE_UP => 1.0,
+			// Number of connections to that replica; treat as none
+			self::STATE_CONN_COUNT => 0,
+			// UNIX timestamp of state generation completion; treat as "outdated"
+			self::STATE_AS_OF => 0.0,
+		];
+	}
+
+	/**
+	 * @param array|null $state
+	 * @return bool
+	 */
+	private function isStateFresh( $state ) {
+		if ( !$state ) {
+			return false;
+		}
+		return $this->getCurrentTime() - $state[self::STATE_AS_OF] > self::STATE_TARGET_TTL;
+	}
+
+	/**
+	 * @return ScopedCallback
+	 */
+	private function acquireServerStatesLoopGuard() {
+		if ( $this->serverStatesKeyLocked ) {
+			throw new RuntimeException(
+				"Circular recursion detected while regenerating server states cache. " .
+				"This may indicate improper connection handling in " . get_class( $this )
+			);
+		}
+
+		$this->serverStatesKeyLocked = true; // lock
+
+		return new ScopedCallback( function () {
+			$this->serverStatesKeyLocked = false; // unlock
+		} );
+	}
+
+	/**
+	 * @return float UNIX timestamp
+	 * @codeCoverageIgnore
+	 */
+	protected function getCurrentTime() {
+		return $this->wallClockOverride ?: microtime( true );
+	}
+
+	/**
+	 * @param float|null &$time Mock UNIX timestamp for testing
+	 * @codeCoverageIgnore
+	 */
+	public function setMockTime( &$time ) {
+		$this->wallClockOverride =& $time;
+	}
+
+	private function getConnCountForDb( IDatabase $conn ): int {
+		if ( $conn->getType() !== 'mysql' ) {
+			return 0;
+		}
+		$query = new Query(
+			'SELECT COUNT(*) AS pcount FROM INFORMATION_SCHEMA.PROCESSLIST',
+			ISQLPlatform::QUERY_SILENCE_ERRORS | ISQLPlatform::QUERY_IGNORE_DBO_TRX | ISQLPlatform::QUERY_CHANGE_NONE,
+			'SELECT',
+			null,
+			'SELECT COUNT(*) AS pcount FROM INFORMATION_SCHEMA.PROCESSLIST'
 		);
+		$res = $conn->query( $query, __METHOD__ );
+		$row = $res ? $res->fetchObject() : false;
+		return $row ? (int)$row->pcount : 0;
 	}
 }

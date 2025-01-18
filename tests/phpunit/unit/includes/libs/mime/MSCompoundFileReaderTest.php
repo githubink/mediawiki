@@ -14,11 +14,20 @@
  * specific language governing permissions and limitations under the License.
  */
 
+namespace Wikimedia\Tests\Mime;
+
+use MediaWikiCoversValidator;
+use PHPUnit\Framework\TestCase;
+use Wikimedia\Mime\MSCompoundFileReader;
+
 /**
  * @group Media
- * @covers MSCompoundFileReader
+ * @group Mime
+ * @covers \Wikimedia\Mime\MSCompoundFileReader
  */
-class MSCompoundFileReaderTest extends PHPUnit\Framework\TestCase {
+class MSCompoundFileReaderTest extends TestCase {
+	use MediaWikiCoversValidator;
+
 	public static function provideValid() {
 		return [
 			[ 'calc.xls', 'application/vnd.ms-excel' ],
@@ -42,9 +51,9 @@ class MSCompoundFileReaderTest extends PHPUnit\Framework\TestCase {
 
 	public static function provideInvalid() {
 		return [
-			[ 'dir-beyond-end.xls', 'ERROR_READ_PAST_END' ],
-			[ 'fat-loop.xls', 'ERROR_INVALID_FORMAT' ],
-			[ 'invalid-signature.xls', 'ERROR_INVALID_SIGNATURE' ],
+			[ 'dir-beyond-end.xls', MSCompoundFileReader::ERROR_READ_PAST_END ],
+			[ 'fat-loop.xls', MSCompoundFileReader::ERROR_INVALID_FORMAT ],
+			[ 'invalid-signature.xls', MSCompoundFileReader::ERROR_INVALID_SIGNATURE ],
 		];
 	}
 
@@ -54,7 +63,6 @@ class MSCompoundFileReaderTest extends PHPUnit\Framework\TestCase {
 
 		$info = MSCompoundFileReader::readFile( "$IP/tests/phpunit/data/MSCompoundFileReader/$fileName" );
 		$this->assertFalse( $info['valid'] );
-		$this->assertSame( constant( MSCompoundFileReader::class . '::' . $expectedError ),
-			$info['errorCode'] );
+		$this->assertSame( $expectedError, $info['errorCode'] );
 	}
 }

@@ -1,7 +1,5 @@
 <?php
 /**
- * Per-process memory cache for storing items.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,20 +16,26 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Cache
  */
 
+namespace Wikimedia\ObjectCache;
+
+use InvalidArgumentException;
+
 /**
- * Simple store for keeping values in an associative array for the current process.
+ * Store data in a memory for the current request/process only.
  *
- * Data will not persist and is not shared with other processes.
+ * This keeps values in a simple associative array.
+ * Data will not persist and is not shared with other requests
+ * on the same server.
  *
+ * @newable
  * @ingroup Cache
  */
-class HashBagOStuff extends BagOStuff {
+class HashBagOStuff extends MediumSpecificBagOStuff {
 	/** @var mixed[] */
 	protected $bag = [];
-	/** @var int Max entries allowed */
+	/** @var int|double Max entries allowed, INF for unlimited */
 	protected $maxCacheKeys;
 
 	/** @var string CAS token prefix for this instance */
@@ -40,26 +44,35 @@ class HashBagOStuff extends BagOStuff {
 	/** @var int CAS token counter */
 	private static $casCounter = 0;
 
-	const KEY_VAL = 0;
-	const KEY_EXP = 1;
-	const KEY_CAS = 2;
+	public const KEY_VAL = 0;
+	public const KEY_EXP = 1;
+	public const KEY_CAS = 2;
 
 	/**
+	 * @stable to call
+	 *
 	 * @param array $params Additional parameters include:
 	 *   - maxKeys : only allow this many keys (using oldest-first eviction)
+	 *
+	 * @phpcs:ignore Generic.Files.LineLength
+	 * @phan-param array{logger?:\Psr\Log\LoggerInterface,asyncHandler?:callable,keyspace?:string,reportDupes?:bool,segmentationSize?:int,segmentedValueMaxSize?:int,maxKeys?:int} $params
 	 */
-	function __construct( $params = [] ) {
-		$params['segmentationSize'] = $params['segmentationSize'] ?? INF;
+	public function __construct( $params = [] ) {
+		$params['segmentationSize'] ??= INF;
 		parent::__construct( $params );
 
 		$this->token = microtime( true ) . ':' . mt_rand();
-		$this->maxCacheKeys = $params['maxKeys'] ?? INF;
-		if ( $this->maxCacheKeys <= 0 ) {
+		$maxKeys = $params['maxKeys'] ?? INF;
+		if ( $maxKeys !== INF && ( !is_int( $maxKeys ) || $maxKeys <= 0 ) ) {
 			throw new InvalidArgumentException( '$maxKeys parameter must be above zero' );
 		}
+		$this->maxCacheKeys = $maxKeys;
+
+		$this->attrMap[self::ATTR_DURABILITY] = self::QOS_DURABILITY_SCRIPT;
 	}
 
 	protected function doGet( $key, $flags = 0, &$casToken = null ) {
+		$getToken = ( $casToken === self::PASS_BY_REF );
 		$casToken = null;
 
 		if ( !$this->hasKey( $key ) || $this->expire( $key ) ) {
@@ -71,9 +84,12 @@ class HashBagOStuff extends BagOStuff {
 		unset( $this->bag[$key] );
 		$this->bag[$key] = $temp;
 
-		$casToken = $this->bag[$key][self::KEY_CAS];
+		$value = $this->bag[$key][self::KEY_VAL];
+		if ( $getToken && $value !== false ) {
+			$casToken = $this->bag[$key][self::KEY_CAS];
+		}
 
-		return $this->bag[$key][self::KEY_VAL];
+		return $value;
 	}
 
 	protected function doSet( $key, $value, $exptime = 0, $flags = 0 ) {
@@ -81,22 +97,22 @@ class HashBagOStuff extends BagOStuff {
 		unset( $this->bag[$key] );
 		$this->bag[$key] = [
 			self::KEY_VAL => $value,
-			self::KEY_EXP => $this->convertToExpiry( $exptime ),
+			self::KEY_EXP => $this->getExpirationAsTimestamp( $exptime ),
 			self::KEY_CAS => $this->token . ':' . ++self::$casCounter
 		];
 
 		if ( count( $this->bag ) > $this->maxCacheKeys ) {
-			reset( $this->bag );
-			$evictKey = key( $this->bag );
+			$evictKey = array_key_first( $this->bag );
 			unset( $this->bag[$evictKey] );
 		}
 
 		return true;
 	}
 
-	public function add( $key, $value, $exptime = 0, $flags = 0 ) {
+	protected function doAdd( $key, $value, $exptime = 0, $flags = 0 ) {
 		if ( $this->hasKey( $key ) && !$this->expire( $key ) ) {
-			return false; // key already set
+			// key already set
+			return false;
 		}
 
 		return $this->doSet( $key, $value, $exptime, $flags );
@@ -108,16 +124,18 @@ class HashBagOStuff extends BagOStuff {
 		return true;
 	}
 
-	public function incr( $key, $value = 1 ) {
-		$n = $this->get( $key );
-		if ( $this->isInteger( $n ) ) {
-			$n = max( $n + intval( $value ), 0 );
-			$this->bag[$key][self::KEY_VAL] = $n;
-
-			return $n;
+	protected function doIncrWithInit( $key, $exptime, $step, $init, $flags ) {
+		$curValue = $this->doGet( $key );
+		if ( $curValue === false ) {
+			$newValue = $this->doSet( $key, $init, $exptime ) ? $init : false;
+		} elseif ( $this->isInteger( $curValue ) ) {
+			$newValue = max( $curValue + $step, 0 );
+			$this->bag[$key][self::KEY_VAL] = $newValue;
+		} else {
+			$newValue = false;
 		}
 
-		return false;
+		return $newValue;
 	}
 
 	/**
@@ -129,6 +147,7 @@ class HashBagOStuff extends BagOStuff {
 
 	/**
 	 * @param string $key
+	 *
 	 * @return bool
 	 */
 	protected function expire( $key ) {
@@ -146,6 +165,7 @@ class HashBagOStuff extends BagOStuff {
 	 * Does this bag have a non-null value for the given key?
 	 *
 	 * @param string $key
+	 *
 	 * @return bool
 	 * @since 1.27
 	 */
@@ -153,3 +173,6 @@ class HashBagOStuff extends BagOStuff {
 		return isset( $this->bag[$key] );
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( HashBagOStuff::class, 'HashBagOStuff' );

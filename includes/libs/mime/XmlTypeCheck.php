@@ -1,12 +1,5 @@
 <?php
 /**
- * XML syntax and type checker.
- *
- * Since 1.24.2, it uses XMLReader instead of xml_parse, which gives us
- * more control over the expansion of XML entities. When passed to the
- * callback, entities will be fully expanded, but may report the XML is
- * invalid if expanding the entities are likely to cause a DoS.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -25,6 +18,23 @@
  * @file
  */
 
+namespace Wikimedia\Mime;
+
+use Exception;
+use XMLReader;
+
+/**
+ * XML syntax and type checker.
+ *
+ * Since MediaWiki 1.24.2, this uses XMLReader instead of xml_parse, which gives us
+ * more control over the expansion of XML entities. When passed to the
+ * callback, entities will be fully expanded, but may report the XML is
+ * invalid if expanding the entities are likely to cause a DoS.
+ *
+ * @newable
+ * @since 1.12.0
+ * @ingroup Mime
+ */
 class XmlTypeCheck {
 	/**
 	 * @var bool|null Will be set to true or false to indicate whether the file is
@@ -68,6 +78,9 @@ class XmlTypeCheck {
 	 */
 	protected $stackDepth = 0;
 
+	/** @var callable|null */
+	protected $filterCallback;
+
 	/**
 	 * @var array Additional parsing options
 	 */
@@ -104,7 +117,7 @@ class XmlTypeCheck {
 	 *        dtd_handler: Callback given the full text of the <!DOCTYPE declaration.
 	 *        require_safe_dtd: Only allow non-recursive entities in internal dtd (default true)
 	 */
-	function __construct( $input, $filterCallback = null, $isFile = true, $options = [] ) {
+	public function __construct( $input, $filterCallback = null, $isFile = true, $options = [] ) {
 		$this->filterCallback = $filterCallback;
 		$this->parserOptions = array_merge( $this->parserOptions, $options );
 		$this->validateFromInput( $input, $isFile );
@@ -150,7 +163,8 @@ class XmlTypeCheck {
 	}
 
 	/**
-	 * @param string $fname the filename
+	 * @param string $xml
+	 * @param bool $isFile
 	 */
 	private function validateFromInput( $xml, $isFile ) {
 		$reader = new XMLReader();
@@ -163,7 +177,8 @@ class XmlTypeCheck {
 			// Couldn't open the XML
 			$this->wellFormed = false;
 		} else {
-			$oldDisable = libxml_disable_entity_loader( true );
+			// phpcs:ignore Generic.PHP.NoSilencedErrors -- suppress deprecation per T268847
+			$oldDisable = @libxml_disable_entity_loader( true );
 			$reader->setParserProperty( XMLReader::SUBST_ENTITIES, true );
 			try {
 				$this->validate( $reader );
@@ -172,23 +187,24 @@ class XmlTypeCheck {
 				// thing. Maybe just an external entity refernce.
 				$this->wellFormed = false;
 				$reader->close();
-				libxml_disable_entity_loader( $oldDisable );
+				// phpcs:ignore Generic.PHP.NoSilencedErrors
+				@libxml_disable_entity_loader( $oldDisable );
 				throw $e;
 			}
 			$reader->close();
-			libxml_disable_entity_loader( $oldDisable );
+			// phpcs:ignore Generic.PHP.NoSilencedErrors
+			@libxml_disable_entity_loader( $oldDisable );
 		}
 	}
 
 	private function readNext( XMLReader $reader ) {
-		set_error_handler( [ $this, 'XmlErrorHandler' ] );
+		set_error_handler( function ( $line, $file ) {
+			$this->wellFormed = false;
+			return true;
+		} );
 		$ret = $reader->read();
 		restore_error_handler();
 		return $ret;
-	}
-
-	public function XmlErrorHandler( $errno, $errstr ) {
-		$this->wellFormed = false;
 	}
 
 	private function validate( $reader ) {
@@ -204,7 +220,7 @@ class XmlTypeCheck {
 				$this->processingInstructionHandler( $reader->name, $reader->value );
 			}
 			if ( $reader->nodeType === XMLReader::DOC_TYPE ) {
-				$this->DTDHandler( $reader );
+				$this->dtdHandler( $reader );
 			}
 		} while ( $reader->nodeType != XMLReader::ELEMENT );
 
@@ -317,18 +333,13 @@ class XmlTypeCheck {
 	}
 
 	private function elementClose() {
-		list( $name, $attribs ) = array_pop( $this->elementDataContext );
+		[ $name, $attribs ] = array_pop( $this->elementDataContext );
 		$data = array_pop( $this->elementData );
 		$this->stackDepth--;
 		$callbackReturn = false;
 
 		if ( is_callable( $this->filterCallback ) ) {
-			$callbackReturn = call_user_func(
-				$this->filterCallback,
-				$name,
-				$attribs,
-				$data
-			);
+			$callbackReturn = ( $this->filterCallback )( $name, $attribs, $data );
 		}
 		if ( $callbackReturn ) {
 			// Filter hit!
@@ -352,8 +363,8 @@ class XmlTypeCheck {
 	private function processingInstructionHandler( $target, $data ) {
 		$callbackReturn = false;
 		if ( $this->parserOptions['processing_instruction_handler'] ) {
-			$callbackReturn = call_user_func(
-				$this->parserOptions['processing_instruction_handler'],
+			// @phan-suppress-next-line PhanTypeInvalidCallable false positive
+			$callbackReturn = $this->parserOptions['processing_instruction_handler'](
 				$target,
 				$data
 			);
@@ -370,7 +381,7 @@ class XmlTypeCheck {
 	 *
 	 * @param XMLReader $reader Reader currently pointing at DOCTYPE node.
 	 */
-	private function DTDHandler( XMLReader $reader ) {
+	private function dtdHandler( XMLReader $reader ) {
 		$externalCallback = $this->parserOptions['external_dtd_handler'];
 		$generalCallback = $this->parserOptions['dtd_handler'];
 		$checkIfSafe = $this->parserOptions['require_safe_dtd'];
@@ -381,7 +392,7 @@ class XmlTypeCheck {
 		$callbackReturn = false;
 
 		if ( $generalCallback ) {
-			$callbackReturn = call_user_func( $generalCallback, $dtd );
+			$callbackReturn = $generalCallback( $dtd );
 		}
 		if ( $callbackReturn ) {
 			// Filter hit!
@@ -392,8 +403,7 @@ class XmlTypeCheck {
 
 		$parsedDTD = $this->parseDTD( $dtd );
 		if ( $externalCallback && isset( $parsedDTD['type'] ) ) {
-			$callbackReturn = call_user_func(
-				$externalCallback,
+			$callbackReturn = $externalCallback(
 				$parsedDTD['type'],
 				$parsedDTD['publicid'] ?? null,
 				$parsedDTD['systemid'] ?? null
@@ -403,7 +413,6 @@ class XmlTypeCheck {
 			// Filter hit!
 			$this->filterMatch = true;
 			$this->filterMatchType = $callbackReturn;
-			$callbackReturn = false;
 		}
 
 		if ( $checkIfSafe && isset( $parsedDTD['internal'] ) &&
@@ -422,7 +431,7 @@ class XmlTypeCheck {
 	 *  * Only contains entity definitions (e.g. No <!ATLIST )
 	 *  * Entity definitions are not "system" entities
 	 *  * Entity definitions are not "parameter" (i.e. %) entities
-	 *  * Entity definitions do not reference other entites except &amp;
+	 *  * Entity definitions do not reference other entities except &amp;
 	 *    and quotes. Entity aliases (where the entity contains only
 	 *    another entity are allowed)
 	 *  * Entity references aren't overly long (>255 bytes).
@@ -434,11 +443,10 @@ class XmlTypeCheck {
 	 * @return bool true if safe.
 	 */
 	private function checkDTDIsSafe( $internalSubset ) {
-		$offset = 0;
 		$res = preg_match(
 			'/^(?:\s*<!ENTITY\s+\S+\s+' .
 				'(?:"(?:&[^"%&;]{1,64};|(?:[^"%&]|&amp;|&quot;){0,255})"' .
-				'|\'(?:&[^"%&;]{1,64};|(?:[^\'%&]|&amp;|&apos;){0,255})\')\s*>' .
+				'|\'(?:&[^\'%&;]{1,64};|(?:[^\'%&]|&amp;|&apos;){0,255})\')\s*>' .
 				'|\s*<!--(?:[^-]|-[^-])*-->' .
 				'|\s*<!ATTLIST svg xmlns:xlink CDATA #FIXED ' .
 				'"http:\/\/www.w3.org\/1999\/xlink">)*\s*$/',
@@ -502,3 +510,6 @@ class XmlTypeCheck {
 		return $parsed;
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( XmlTypeCheck::class, 'XmlTypeCheck' );

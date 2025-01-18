@@ -1,17 +1,10 @@
 {
 	"root": true,
 	"extends": [
-		"wikimedia/server"
+		"wikimedia/selenium"
 	],
-	"env": {
-		"mocha": true
-	},
 	"globals": {
-		"browser": false,
-		"mw": false
-	},
-	"rules": {
-		"no-console": "off",
-		"prefer-template": "off"
+		"mw": "readonly",
+		"document": "readonly"
 	}
 }

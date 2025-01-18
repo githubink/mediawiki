@@ -20,24 +20,24 @@
  * @file
  */
 
+use MediaWiki\Password\UserPasswordPolicy;
+use MediaWiki\Status\Status;
+use MediaWiki\User\User;
+
 /**
  * @group Database
- * @covers UserPasswordPolicy
+ * @covers \MediaWiki\Password\UserPasswordPolicy
  */
-class UserPasswordPolicyTest extends MediaWikiTestCase {
+class UserPasswordPolicyTest extends MediaWikiIntegrationTestCase {
 
-	protected $tablesUsed = [ 'user', 'user_groups' ];
-
-	protected $policies = [
+	private const POLICIES = [
 		'checkuser' => [
 			'MinimalPasswordLength' => [ 'value' => 10, 'forceChange' => true ],
 			'MinimumPasswordLengthToLogin' => 6,
-			'PasswordCannotMatchUsername' => true,
 		],
 		'sysop' => [
 			'MinimalPasswordLength' => [ 'value' => 8, 'suggestChangeOnLogin' => true ],
 			'MinimumPasswordLengthToLogin' => 1,
-			'PasswordCannotMatchUsername' => true,
 		],
 		'bureaucrat' => [
 			'MinimalPasswordLength' => [
@@ -45,28 +45,27 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 				'suggestChangeOnLogin' => false,
 				'forceChange' => true,
 			],
-			'PasswordCannotMatchUsername' => true,
 		],
 		'default' => [
 			'MinimalPasswordLength' => 4,
 			'MinimumPasswordLengthToLogin' => 1,
-			'PasswordCannotMatchBlacklist' => true,
+			'PasswordCannotMatchDefaults' => true,
 			'MaximalPasswordLength' => 4096,
-			// test null handling
-			'PasswordCannotMatchUsername' => null,
+			'PasswordCannotBeSubstringInUsername' => true,
 		],
 	];
 
-	protected $checks = [
-		'MinimalPasswordLength' => 'PasswordPolicyChecks::checkMinimalPasswordLength',
-		'MinimumPasswordLengthToLogin' => 'PasswordPolicyChecks::checkMinimumPasswordLengthToLogin',
-		'PasswordCannotMatchUsername' => 'PasswordPolicyChecks::checkPasswordCannotMatchUsername',
-		'PasswordCannotMatchBlacklist' => 'PasswordPolicyChecks::checkPasswordCannotMatchBlacklist',
-		'MaximalPasswordLength' => 'PasswordPolicyChecks::checkMaximalPasswordLength',
+	private const CHECKS = [
+		'MinimalPasswordLength' => 'MediaWiki\Password\PasswordPolicyChecks::checkMinimalPasswordLength',
+		'MinimumPasswordLengthToLogin' => 'MediaWiki\Password\PasswordPolicyChecks::checkMinimumPasswordLengthToLogin',
+		'PasswordCannotBeSubstringInUsername' =>
+			'MediaWiki\Password\PasswordPolicyChecks::checkPasswordCannotBeSubstringInUsername',
+		'PasswordCannotMatchDefaults' => 'MediaWiki\Password\PasswordPolicyChecks::checkPasswordCannotMatchDefaults',
+		'MaximalPasswordLength' => 'MediaWiki\Password\PasswordPolicyChecks::checkMaximalPasswordLength',
 	];
 
 	private function getUserPasswordPolicy() {
-		return new UserPasswordPolicy( $this->policies, $this->checks );
+		return new UserPasswordPolicy( self::POLICIES, self::CHECKS );
 	}
 
 	public function testGetPoliciesForUser() {
@@ -77,8 +76,8 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 			[
 				'MinimalPasswordLength' => [ 'value' => 8, 'suggestChangeOnLogin' => true ],
 				'MinimumPasswordLengthToLogin' => 1,
-				'PasswordCannotMatchUsername' => true,
-				'PasswordCannotMatchBlacklist' => true,
+				'PasswordCannotBeSubstringInUsername' => true,
+				'PasswordCannotMatchDefaults' => true,
 				'MaximalPasswordLength' => 4096,
 			],
 			$upp->getPoliciesForUser( $user )
@@ -93,8 +92,8 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 					'suggestChangeOnLogin' => true
 				],
 				'MinimumPasswordLengthToLogin' => 6,
-				'PasswordCannotMatchUsername' => true,
-				'PasswordCannotMatchBlacklist' => true,
+				'PasswordCannotBeSubstringInUsername' => true,
+				'PasswordCannotMatchDefaults' => true,
 				'MaximalPasswordLength' => 4096,
 			],
 			$upp->getPoliciesForUser( $user )
@@ -103,9 +102,9 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 
 	public function testGetPoliciesForGroups() {
 		$effective = UserPasswordPolicy::getPoliciesForGroups(
-			$this->policies,
+			self::POLICIES,
 			[ 'user', 'checkuser', 'sysop' ],
-			$this->policies['default']
+			self::POLICIES['default']
 		);
 
 		$this->assertArrayEquals(
@@ -116,8 +115,8 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 					'suggestChangeOnLogin' => true
 				],
 				'MinimumPasswordLengthToLogin' => 6,
-				'PasswordCannotMatchUsername' => true,
-				'PasswordCannotMatchBlacklist' => true,
+				'PasswordCannotBeSubstringInUsername' => true,
+				'PasswordCannotMatchDefaults' => true,
 				'MaximalPasswordLength' => 4096,
 			],
 			$effective
@@ -137,7 +136,7 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 		$this->assertSame( $expectedStatus->getValue(), $status->getValue(), 'flags' );
 	}
 
-	public function provideCheckUserPassword() {
+	public static function provideCheckUserPassword() {
 		$success = Status::newGood( [] );
 		$warning = Status::newGood( [] );
 		$forceChange = Status::newGood( [ 'forceChange' => true ] );
@@ -190,14 +189,13 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 		];
 	}
 
-	public function testCheckUserPassword_blacklist() {
+	public function testCheckUserPassword_disallowed() {
 		$upp = $this->getUserPasswordPolicy();
 		$user = User::newFromName( 'Useruser' );
 		$user->addToDatabase();
 
 		$status = $upp->checkUserPassword( $user, 'Passpass' );
-		$this->assertFalse( $status->isGood(), 'password invalid' );
-		$this->assertTrue( $status->isOK(), 'can login' );
+		$this->assertStatusWarning( 'password-login-forbidden', $status );
 	}
 
 	/**
@@ -210,7 +208,7 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 		);
 	}
 
-	public function provideMaxOfPolicies() {
+	public static function provideMaxOfPolicies() {
 		return [
 			'Basic max in p1' => [
 				[ 'MinimalPasswordLength' => 8 ], // p1
@@ -228,24 +226,24 @@ class UserPasswordPolicyTest extends MediaWikiTestCase {
 				], // p1
 				[
 					'MinimalPasswordLength' => 2,
-					'PasswordCannotMatchUsername' => 1,
+					'PasswordCannotBeSubstringInUsername' => 1,
 				], // p2
 				[
 					'MinimalPasswordLength' => 8,
-					'PasswordCannotMatchUsername' => 1,
+					'PasswordCannotBeSubstringInUsername' => 1,
 				], // max
 			],
 			'Missing items in p2' => [
 				[
 					'MinimalPasswordLength' => 8,
-					'PasswordCannotMatchUsername' => 1,
+					'PasswordCannotBeSubstringInUsername' => 1,
 				], // p1
 				[
 					'MinimalPasswordLength' => 2,
 				], // p2
 				[
 					'MinimalPasswordLength' => 8,
-					'PasswordCannotMatchUsername' => 1,
+					'PasswordCannotBeSubstringInUsername' => 1,
 				], // max
 			],
 			'complex value in p1' => [

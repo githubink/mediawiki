@@ -16,8 +16,10 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Deployment
+ * @ingroup Installer
  */
+
+namespace MediaWiki\Installer;
 
 class WebInstallerUpgrade extends WebInstallerPage {
 
@@ -48,29 +50,16 @@ class WebInstallerUpgrade extends WebInstallerPage {
 			return 'output';
 		}
 
-		// wgDBtype is generally valid here because otherwise the previous page
-		// (connect) wouldn't have declared its happiness
-		$type = $this->getVar( 'wgDBtype' );
-		$installer = $this->parent->getDBInstaller( $type );
-
-		if ( !$installer->needsUpgrade() ) {
+		if ( !$this->parent->needsUpgrade() ) {
 			return 'skip';
 		}
 
 		if ( $this->parent->request->wasPosted() ) {
-			$installer->preUpgrade();
-
 			$this->startLiveBox();
-			$result = $installer->doUpgrade();
+			$result = $this->parent->doUpgrade();
 			$this->endLiveBox();
 
 			if ( $result ) {
-				// If they're going to possibly regenerate LocalSettings, we
-				// need to create the upgrade/secret keys. T28481
-				if ( !$this->getVar( '_ExistingDBSettings' ) ) {
-					$this->parent->generateKeys();
-				}
-				$this->setVar( '_UpgradeDone', true );
 				$this->showDoneMessage();
 			} else {
 				$this->startForm();
@@ -83,7 +72,7 @@ class WebInstallerUpgrade extends WebInstallerPage {
 
 		$this->startForm();
 		$this->addHTML( $this->parent->getInfoBox(
-			wfMessage( 'config-can-upgrade', $GLOBALS['wgVersion'] )->plain() ) );
+			wfMessage( 'config-can-upgrade', MW_VERSION )->plain() ) );
 		$this->endForm();
 
 		return null;
@@ -103,7 +92,7 @@ class WebInstallerUpgrade extends WebInstallerPage {
 				wfMessage( $msg,
 					$this->getVar( 'wgServer' ) .
 					$this->getVar( 'wgScriptPath' ) . '/index.php'
-				)->plain(), 'tick-32.png'
+				)->plain()
 			)
 		);
 		$this->parent->restoreLinkPopups();

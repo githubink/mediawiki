@@ -1,14 +1,13 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\MainConfigNames;
+use Wikimedia\Rdbms\Platform\ISQLPlatform;
 
 /**
- * @covers Interwiki
- *
- * @group MediaWiki
+ * @covers \Interwiki
  * @group Database
  */
-class InterwikiTest extends MediaWikiTestCase {
+class InterwikiTest extends MediaWikiIntegrationTestCase {
 
 	public function testConstructor() {
 		$interwiki = new Interwiki(
@@ -20,7 +19,7 @@ class InterwikiTest extends MediaWikiTestCase {
 			0
 		);
 
-		$this->setContentLang( 'qqx' );
+		$this->overrideConfigValue( MainConfigNames::LanguageCode, 'qqx' );
 
 		$this->assertSame( '(interwiki-name-xyz)', $interwiki->getName() );
 		$this->assertSame( '(interwiki-desc-xyz)', $interwiki->getDescription() );
@@ -44,16 +43,16 @@ class InterwikiTest extends MediaWikiTestCase {
 	//// tests for static data access methods below ///////////////////////////////////////////////
 
 	private function populateDB( $iwrows ) {
-		$dbw = wfGetDB( DB_MASTER );
-		$dbw->delete( 'interwiki', '*', __METHOD__ );
-		$dbw->insert( 'interwiki', array_values( $iwrows ), __METHOD__ );
-		$this->tablesUsed[] = 'interwiki';
-	}
-
-	private function setWgInterwikiCache( $interwikiCache ) {
-		$this->overrideMwServices();
-		MediaWikiServices::getInstance()->resetServiceForTesting( 'InterwikiLookup' );
-		$this->setMwGlobals( 'wgInterwikiCache', $interwikiCache );
+		$dbw = $this->getDb();
+		$dbw->newDeleteQueryBuilder()
+			->deleteFrom( 'interwiki' )
+			->where( ISQLPlatform::ALL_ROWS )
+			->caller( __METHOD__ )->execute();
+		$dbw->newInsertQueryBuilder()
+			->insertInto( 'interwiki' )
+			->rows( $iwrows )
+			->caller( __METHOD__ )
+			->execute();
 	}
 
 	public function testDatabaseStorage() {
@@ -79,9 +78,9 @@ class InterwikiTest extends MediaWikiTestCase {
 
 		$this->populateDB( [ $dewiki, $zzwiki ] );
 
-		$this->setWgInterwikiCache( false );
+		$this->overrideConfigValue( MainConfigNames::InterwikiCache, false );
 
-		$interwikiLookup = MediaWikiServices::getInstance()->getInterwikiLookup();
+		$interwikiLookup = $this->getServiceContainer()->getInterwikiLookup();
 		$this->assertEquals(
 			[ $dewiki, $zzwiki ],
 			$interwikiLookup->getAllPrefixes(),

@@ -21,6 +21,9 @@
  * @ingroup Upload
  */
 
+use MediaWiki\Request\WebRequest;
+use MediaWiki\Request\WebRequestUpload;
+
 /**
  * Implements regular file uploads
  *
@@ -36,22 +39,23 @@ class UploadFromFile extends UploadBase {
 	/**
 	 * @param WebRequest &$request
 	 */
-	function initializeFromRequest( &$request ) {
+	public function initializeFromRequest( &$request ) {
 		$upload = $request->getUpload( 'wpUploadFile' );
 		$desiredDestName = $request->getText( 'wpDestFile' );
 		if ( !$desiredDestName ) {
 			$desiredDestName = $upload->getName();
 		}
 
+		// @phan-suppress-next-line PhanTypeMismatchArgumentNullable getName only null on failure
 		$this->initialize( $desiredDestName, $upload );
 	}
 
 	/**
-	 * Initialize from a filename and a WebRequestUpload
+	 * Initialize from a filename and a MediaWiki\Request\WebRequestUpload
 	 * @param string $name
 	 * @param WebRequestUpload $webRequestUpload
 	 */
-	function initialize( $name, $webRequestUpload ) {
+	public function initialize( $name, $webRequestUpload ) {
 		$this->mUpload = $webRequestUpload;
 		$this->initializePathInfo( $name,
 			$this->mUpload->getTempName(), $this->mUpload->getSize() );
@@ -61,7 +65,7 @@ class UploadFromFile extends UploadBase {
 	 * @param WebRequest $request
 	 * @return bool
 	 */
-	static function isValidRequest( $request ) {
+	public static function isValidRequest( $request ) {
 		# Allow all requests, even if no file is present, so that an error
 		# because a post_max_size or upload_max_filesize overflow
 		return true;
@@ -80,7 +84,7 @@ class UploadFromFile extends UploadBase {
 	public function verifyUpload() {
 		# Check for a post_max_size or upload_max_size overflow, so that a
 		# proper error can be shown to the user
-		if ( is_null( $this->mTempPath ) || $this->isEmptyFile() ) {
+		if ( $this->mTempPath === null || $this->isEmptyFile() ) {
 			if ( $this->mUpload->isIniSizeOverflow() ) {
 				return [
 					'status' => UploadBase::FILE_TOO_LARGE,

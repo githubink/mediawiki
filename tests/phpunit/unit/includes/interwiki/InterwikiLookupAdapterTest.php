@@ -1,11 +1,13 @@
 <?php
 
 use MediaWiki\Interwiki\InterwikiLookupAdapter;
+use MediaWiki\Site\MediaWikiSite;
+use MediaWiki\Site\Site;
+use MediaWiki\Site\SiteList;
+use MediaWiki\Site\SiteLookup;
 
 /**
- * @covers MediaWiki\Interwiki\InterwikiLookupAdapter
- *
- * @group MediaWiki
+ * @covers \MediaWiki\Interwiki\InterwikiLookupAdapter
  * @group Interwiki
  */
 class InterwikiLookupAdapterTest extends \MediaWikiUnitTestCase {
@@ -15,7 +17,7 @@ class InterwikiLookupAdapterTest extends \MediaWikiUnitTestCase {
 	 */
 	private $interwikiLookup;
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
 		$this->interwikiLookup = new InterwikiLookupAdapter(
@@ -96,13 +98,10 @@ class InterwikiLookupAdapterTest extends \MediaWikiUnitTestCase {
 	}
 
 	private function getSiteLookup( SiteList $sites ) {
-		$siteLookup = $this->getMockBuilder( SiteLookup::class )
-			->disableOriginalConstructor()
-			->getMock();
+		$siteLookup = $this->createMock( SiteLookup::class );
 
-		$siteLookup->expects( $this->any() )
-			->method( 'getSites' )
-			->will( $this->returnValue( $sites ) );
+		$siteLookup->method( 'getSites' )
+			->willReturn( $sites );
 
 		return $siteLookup;
 	}
@@ -119,7 +118,6 @@ class InterwikiLookupAdapterTest extends \MediaWikiUnitTestCase {
 		$site = new MediaWikiSite();
 		$site->setGlobalId( 'enwiktionary' );
 		$site->setGroup( 'wiktionary' );
-		$site->setLanguageCode( 'en' );
 		$site->addNavigationId( 'enwiktionary' );
 		$site->addInterwikiId( 'enwt' );
 		$site->setSource( 'local' );

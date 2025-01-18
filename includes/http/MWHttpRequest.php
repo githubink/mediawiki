@@ -18,9 +18,15 @@
  * @file
  */
 
-use Psr\Log\LoggerInterface;
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Request\WebRequest;
+use MediaWiki\Status\Status;
+use MediaWiki\Utils\UrlUtils;
 use Psr\Log\LoggerAwareInterface;
+use Psr\Log\LoggerInterface;
 use Psr\Log\NullLogger;
+use Wikimedia\Http\TelemetryHeadersInterface;
 
 /**
  * This wrapper class will call out to curl (if available) or fallback
@@ -30,29 +36,44 @@ use Psr\Log\NullLogger;
  * PHP's HTTP extension.
  */
 abstract class MWHttpRequest implements LoggerAwareInterface {
-	const SUPPORTS_FILE_POSTS = false;
+	public const SUPPORTS_FILE_POSTS = false;
 
 	/**
 	 * @var int|string
 	 */
 	protected $timeout = 'default';
 
+	/** @var string|null */
 	protected $content;
+	/** @var bool|null */
 	protected $headersOnly = null;
+	/** @var array|null */
 	protected $postData = null;
+	/** @var string|null */
 	protected $proxy = null;
+	/** @var bool */
 	protected $noProxy = false;
+	/** @var bool */
 	protected $sslVerifyHost = true;
+	/** @var bool */
 	protected $sslVerifyCert = true;
+	/** @var string|null */
 	protected $caInfo = null;
+	/** @var string */
 	protected $method = "GET";
+	/** @var array */
 	protected $reqHeaders = [];
+	/** @var string */
 	protected $url;
+	/** @var array|false */
 	protected $parsedUrl;
 	/** @var callable */
 	protected $callback;
+	/** @var int */
 	protected $maxRedirects = 5;
+	/** @var bool */
 	protected $followRedirects = false;
+	/** @var int */
 	protected $connectTimeout;
 
 	/**
@@ -60,9 +81,13 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	 */
 	protected $cookieJar;
 
+	/** @var array */
 	protected $headerList = [];
+	/** @var string */
 	protected $respVersion = "0.9";
+	/** @var string */
 	protected $respStatus = "200 Ok";
+	/** @var string[][] */
 	protected $respHeaders = [];
 
 	/** @var StatusValue */
@@ -83,39 +108,38 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	 */
 	protected $logger;
 
+	private UrlUtils $urlUtils;
+
 	/**
 	 * @param string $url Url to use. If protocol-relative, will be expanded to an http:// URL
-	 * @param array $options (optional) extra params to pass (see HttpRequestFactory::create())
-	 * @param string $caller The method making this request, for profiling
+	 * @param array $options extra params to pass (see HttpRequestFactory::create())
+	 * @phpcs:ignore Generic.Files.LineLength
+	 * @phan-param array{timeout?:int|string,connectTimeout?:int|string,postData?:array,proxy?:string,noProxy?:bool,sslVerifyHost?:bool,sslVerifyCert?:bool,caInfo?:string,maxRedirects?:int,followRedirects?:bool,userAgent?:string,logger?:LoggerInterface,username?:string,password?:string,originalRequest?:WebRequest|array{ip:string,userAgent:string},method?:string} $options
+	 * @param string $caller The method making this request, for profiling @phan-mandatory-param
 	 * @param Profiler|null $profiler An instance of the profiler for profiling, or null
 	 * @throws Exception
 	 */
 	public function __construct(
-		$url, array $options = [], $caller = __METHOD__, Profiler $profiler = null
+		$url, array $options, $caller = __METHOD__, ?Profiler $profiler = null
 	) {
-		global $wgHTTPTimeout, $wgHTTPConnectTimeout;
-
-		$this->url = wfExpandUrl( $url, PROTO_HTTP );
-		$this->parsedUrl = wfParseUrl( $this->url );
+		$this->urlUtils = MediaWikiServices::getInstance()->getUrlUtils();
+		if ( !array_key_exists( 'timeout', $options )
+			|| !array_key_exists( 'connectTimeout', $options ) ) {
+			throw new InvalidArgumentException( "timeout and connectionTimeout options are required" );
+		}
+		$this->url = $this->urlUtils->expand( $url, PROTO_HTTP ) ?? false;
+		$this->parsedUrl = $this->urlUtils->parse( (string)$this->url ) ?? false;
 
 		$this->logger = $options['logger'] ?? new NullLogger();
+		$this->timeout = $options['timeout'];
+		$this->connectTimeout = $options['connectTimeout'];
 
-		if ( !$this->parsedUrl || !Http::isValidURI( $this->url ) ) {
+		if ( !$this->parsedUrl || !self::isValidURI( $this->url ) ) {
 			$this->status = StatusValue::newFatal( 'http-invalid-url', $url );
 		} else {
 			$this->status = StatusValue::newGood( 100 ); // continue
 		}
 
-		if ( isset( $options['timeout'] ) && $options['timeout'] != 'default' ) {
-			$this->timeout = $options['timeout'];
-		} else {
-			$this->timeout = $wgHTTPTimeout;
-		}
-		if ( isset( $options['connectTimeout'] ) && $options['connectTimeout'] != 'default' ) {
-			$this->connectTimeout = $options['connectTimeout'];
-		} else {
-			$this->connectTimeout = $wgHTTPConnectTimeout;
-		}
 		if ( isset( $options['userAgent'] ) ) {
 			$this->setUserAgent( $options['userAgent'] );
 		}
@@ -129,8 +153,6 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 			$this->setOriginalRequest( $options['originalRequest'] );
 		}
 
-		$this->setHeader( 'X-Request-Id', WebRequest::getRequestId() );
-
 		$members = [ "postData", "proxy", "noProxy", "sslVerifyHost", "caInfo",
 				"method", "followRedirects", "maxRedirects", "sslVerifyCert", "callback" ];
 
@@ -139,6 +161,7 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 				// ensure that MWHttpRequest::method is always
 				// uppercased. T38137
 				if ( $o == 'method' ) {
+					// @phan-suppress-next-line PhanTypePossiblyInvalidDimOffset False positive
 					$options[$o] = strtoupper( $options[$o] );
 				}
 				$this->$o = $options[$o];
@@ -154,9 +177,6 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 		$this->profileName = $caller;
 	}
 
-	/**
-	 * @param LoggerInterface $logger
-	 */
 	public function setLogger( LoggerInterface $logger ) {
 		$this->logger = $logger;
 	}
@@ -168,25 +188,6 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	 */
 	public static function canMakeRequests() {
 		return function_exists( 'curl_init' ) || wfIniGetBool( 'allow_url_fopen' );
-	}
-
-	/**
-	 * Generate a new request object
-	 * @deprecated since 1.34, use HttpRequestFactory instead
-	 * @param string $url Url to use
-	 * @param array|null $options (optional) extra params to pass (see HttpRequestFactory::create())
-	 * @param string $caller The method making this request, for profiling
-	 * @throws DomainException
-	 * @return MWHttpRequest
-	 * @see MWHttpRequest::__construct
-	 */
-	public static function factory( $url, array $options = null, $caller = __METHOD__ ) {
-		if ( $options === null ) {
-			$options = [];
-		}
-		return \MediaWiki\MediaWikiServices::getInstance()
-			->getHttpRequestFactory()
-			->create( $url, $options, $caller );
 	}
 
 	/**
@@ -209,38 +210,88 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	}
 
 	/**
+	 * Add Telemetry information to the request
+	 *
+	 * @param TelemetryHeadersInterface $telemetry
+	 * @return void
+	 */
+	public function addTelemetry( TelemetryHeadersInterface $telemetry ): void {
+		foreach ( $telemetry->getRequestHeaders() as $header => $value ) {
+			$this->setHeader( $header, $value );
+		}
+	}
+
+	/**
 	 * Take care of setting up the proxy (do nothing if "noProxy" is set)
 	 *
 	 * @return void
 	 */
 	protected function proxySetup() {
-		// If there is an explicit proxy set and proxies are not disabled, then use it
-		if ( $this->proxy && !$this->noProxy ) {
+		$httpProxy = MediaWikiServices::getInstance()->getMainConfig()->get(
+			MainConfigNames::HTTPProxy );
+		$localHTTPProxy = MediaWikiServices::getInstance()->getMainConfig()->get(
+			MainConfigNames::LocalHTTPProxy );
+		// If proxies are disabled, clear any other proxy
+		if ( $this->noProxy ) {
+			$this->proxy = '';
 			return;
 		}
 
-		// Otherwise, fallback to $wgHTTPProxy if this is not a machine
-		// local URL and proxies are not disabled
-		if ( self::isLocalURL( $this->url ) || $this->noProxy ) {
-			$this->proxy = '';
+		// If there is an explicit proxy already set, use it
+		if ( $this->proxy ) {
+			return;
+		}
+
+		// Otherwise, fallback to $wgLocalHTTPProxy for local URLs
+		// or $wgHTTPProxy for everything else
+		if ( self::isLocalURL( $this->url ) ) {
+			if ( $localHTTPProxy !== false ) {
+				$this->setReverseProxy( $localHTTPProxy );
+			}
 		} else {
-			global $wgHTTPProxy;
-			$this->proxy = (string)$wgHTTPProxy;
+			$this->proxy = (string)$httpProxy;
 		}
 	}
 
 	/**
-	 * Check if the URL can be served by localhost
+	 * Enable use of a reverse proxy in which the hostname is
+	 * passed as a "Host" header, and the request is sent to the
+	 * proxy's host:port instead.
+	 *
+	 * Note that any custom port in the request URL will be lost
+	 * and cookies and redirects may not work properly.
+	 *
+	 * @param string $proxy URL of proxy
+	 */
+	protected function setReverseProxy( string $proxy ) {
+		$parsedProxy = $this->urlUtils->parse( $proxy );
+		if ( $parsedProxy === null ) {
+			throw new InvalidArgumentException( "Invalid reverseProxy configured: $proxy" );
+		}
+		// Set the current host in the Host header
+		$this->setHeader( 'Host', $this->parsedUrl['host'] );
+		// Replace scheme, host and port in the request
+		$this->parsedUrl['scheme'] = $parsedProxy['scheme'];
+		$this->parsedUrl['host'] = $parsedProxy['host'];
+		if ( isset( $parsedProxy['port'] ) ) {
+			$this->parsedUrl['port'] = $parsedProxy['port'];
+		} else {
+			unset( $this->parsedUrl['port'] );
+		}
+		$this->url = UrlUtils::assemble( $this->parsedUrl );
+		// Mark that we're already using a proxy
+		$this->noProxy = true;
+	}
+
+	/**
+	 * Check if the URL can be served by a local endpoint
 	 *
 	 * @param string $url Full url to check
 	 * @return bool
 	 */
 	private static function isLocalURL( $url ) {
-		global $wgCommandLineMode, $wgLocalVirtualHosts;
-
-		if ( $wgCommandLineMode ) {
-			return false;
-		}
+		$localVirtualHosts = MediaWikiServices::getInstance()->getMainConfig()->get(
+			MainConfigNames::LocalVirtualHosts );
 
 		// Extract host part
 		$matches = [];
@@ -261,7 +312,7 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 					$domain = $domainPart . '.' . $domain;
 				}
 
-				if ( in_array( $domain, $wgLocalVirtualHosts ) ) {
+				if ( in_array( $domain, $localVirtualHosts ) ) {
 					return true;
 				}
 			}
@@ -271,7 +322,6 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	}
 
 	/**
-	 * Set the user agent
 	 * @param string $UA
 	 */
 	public function setUserAgent( $UA ) {
@@ -329,7 +379,7 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	 * @throws InvalidArgumentException
 	 */
 	public function setCallback( $callback ) {
-		return $this->doSetCallback( $callback );
+		$this->doSetCallback( $callback );
 	}
 
 	/**
@@ -340,7 +390,7 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	 * @throws InvalidArgumentException
 	 */
 	protected function doSetCallback( $callback ) {
-		if ( is_null( $callback ) ) {
+		if ( $callback === null ) {
 			$callback = [ $this, 'read' ];
 		} elseif ( !is_callable( $callback ) ) {
 			$this->status->fatal( 'http-internal-error' );
@@ -366,7 +416,7 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	/**
 	 * Take care of whatever is necessary to perform the URI request.
 	 *
-	 * @return StatusValue
+	 * @return Status
 	 * @note currently returns Status for B/C
 	 */
 	public function execute() {
@@ -387,7 +437,8 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 		}
 
 		if ( !isset( $this->reqHeaders['User-Agent'] ) ) {
-			$this->setUserAgent( Http::userAgent() );
+			$http = MediaWikiServices::getInstance()->getHttpRequestFactory();
+			$this->setUserAgent( $http->getUserAgent() );
 		}
 	}
 
@@ -432,10 +483,10 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 			$this->parseHeader();
 		}
 
-		if ( ( (int)$this->respStatus > 0 && (int)$this->respStatus < 400 ) ) {
+		if ( (int)$this->respStatus > 0 && (int)$this->respStatus < 400 ) {
 			$this->status->setResult( true, (int)$this->respStatus );
 		} else {
-			list( $code, $message ) = explode( " ", $this->respStatus, 2 );
+			[ $code, $message ] = explode( " ", $this->respStatus, 2 );
 			$this->status->setResult( false, (int)$this->respStatus );
 			$this->status->fatal( "http-bad-status", $code, $message );
 		}
@@ -515,8 +566,6 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 	 * Tells the MWHttpRequest object to use this pre-loaded CookieJar.
 	 *
 	 * To read response cookies from the jar, getCookieJar must be called first.
-	 *
-	 * @param CookieJar $jar
 	 */
 	public function setCookieJar( CookieJar $jar ) {
 		$this->cookieJar = $jar;
@@ -566,8 +615,12 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 
 		if ( isset( $this->respHeaders['set-cookie'] ) ) {
 			$url = parse_url( $this->getFinalUrl() );
-			foreach ( $this->respHeaders['set-cookie'] as $cookie ) {
-				$this->cookieJar->parseCookieResponseHeader( $cookie, $url['host'] );
+			if ( !isset( $url['host'] ) ) {
+				$this->status->fatal( 'http-invalid-url', $this->getFinalUrl() );
+			} else {
+				foreach ( $this->respHeaders['set-cookie'] as $cookie ) {
+					$this->cookieJar->parseCookieResponseHeader( $cookie, $url['host'] );
+				}
 			}
 		}
 	}
@@ -601,7 +654,7 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 			for ( $i = $countLocations - 1; $i >= 0; $i-- ) {
 				$url = parse_url( $locations[$i] );
 
-				if ( isset( $url['host'] ) ) {
+				if ( isset( $url['scheme'] ) && isset( $url['host'] ) ) {
 					$domain = $url['scheme'] . '://' . $url['host'];
 					break; // found correct URI (with host)
 				} else {
@@ -616,7 +669,7 @@ abstract class MWHttpRequest implements LoggerAwareInterface {
 				return $domain . $locations[$countLocations - 1];
 			}
 			$url = parse_url( $this->url );
-			if ( isset( $url['host'] ) ) {
+			if ( isset( $url['scheme'] ) && isset( $url['host'] ) ) {
 				return $url['scheme'] . '://' . $url['host'] .
 					$locations[$countLocations - 1];
 			}

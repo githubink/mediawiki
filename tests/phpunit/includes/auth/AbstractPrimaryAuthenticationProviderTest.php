@@ -1,42 +1,55 @@
 <?php
 
-namespace MediaWiki\Auth;
+namespace MediaWiki\Tests\Auth;
+
+use BadMethodCallException;
+use MediaWiki\Auth\AbstractPrimaryAuthenticationProvider;
+use MediaWiki\Auth\AuthenticationRequest;
+use MediaWiki\Auth\AuthenticationResponse;
+use MediaWiki\Auth\AuthManager;
+use MediaWiki\Auth\PrimaryAuthenticationProvider;
+use MediaWiki\Tests\Unit\Auth\AuthenticationProviderTestTrait;
+use MediaWiki\Tests\Unit\DummyServicesTrait;
+use MediaWiki\User\User;
+use MediaWikiIntegrationTestCase;
+use StatusValue;
 
 /**
  * @group AuthManager
  * @covers \MediaWiki\Auth\AbstractPrimaryAuthenticationProvider
  */
-class AbstractPrimaryAuthenticationProviderTest extends \MediaWikiTestCase {
+class AbstractPrimaryAuthenticationProviderTest extends MediaWikiIntegrationTestCase {
+	use DummyServicesTrait;
+	use AuthenticationProviderTestTrait;
+
 	public function testAbstractPrimaryAuthenticationProvider() {
-		$user = \User::newFromName( 'UTSysop' );
+		$user = $this->createMock( User::class );
 
 		$provider = $this->getMockForAbstractClass( AbstractPrimaryAuthenticationProvider::class );
 
 		try {
 			$provider->continuePrimaryAuthentication( [] );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \BadMethodCallException $ex ) {
+		} catch ( BadMethodCallException $ex ) {
 		}
 
 		try {
 			$provider->continuePrimaryAccountCreation( $user, $user, [] );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \BadMethodCallException $ex ) {
+		} catch ( BadMethodCallException $ex ) {
 		}
-
-		$req = $this->getMockForAbstractClass( AuthenticationRequest::class );
 
 		$this->assertTrue( $provider->providerAllowsPropertyChange( 'foo' ) );
 		$this->assertEquals(
-			\StatusValue::newGood(),
+			StatusValue::newGood(),
 			$provider->testForAccountCreation( $user, $user, [] )
 		);
 		$this->assertEquals(
-			\StatusValue::newGood(),
+			StatusValue::newGood(),
 			$provider->testUserForCreation( $user, AuthManager::AUTOCREATE_SOURCE_SESSION )
 		);
 		$this->assertEquals(
-			\StatusValue::newGood(),
+			StatusValue::newGood(),
 			$provider->testUserForCreation( $user, false )
 		);
 
@@ -52,8 +65,8 @@ class AbstractPrimaryAuthenticationProviderTest extends \MediaWikiTestCase {
 
 		$provider->expects( $this->once() )
 			->method( 'testUserExists' )
-			->with( $this->equalTo( 'foo' ) )
-			->will( $this->returnValue( true ) );
+			->with( 'foo' )
+			->willReturn( true );
 		$this->assertTrue( $provider->testUserCanAuthenticate( 'foo' ) );
 	}
 
@@ -61,27 +74,25 @@ class AbstractPrimaryAuthenticationProviderTest extends \MediaWikiTestCase {
 		$reqs = [];
 		for ( $i = 0; $i < 3; $i++ ) {
 			$reqs[$i] = $this->createMock( AuthenticationRequest::class );
-			$reqs[$i]->done = false;
 		}
+		$username = 'TestProviderRevokeAccessForUser';
 
 		$provider = $this->getMockForAbstractClass( AbstractPrimaryAuthenticationProvider::class );
 		$provider->expects( $this->once() )->method( 'getAuthenticationRequests' )
 			->with(
 				$this->identicalTo( AuthManager::ACTION_REMOVE ),
-				$this->identicalTo( [ 'username' => 'UTSysop' ] )
+				$this->identicalTo( [ 'username' => $username ] )
 			)
-			->will( $this->returnValue( $reqs ) );
+			->willReturn( $reqs );
 		$provider->expects( $this->exactly( 3 ) )->method( 'providerChangeAuthenticationData' )
-			->will( $this->returnCallback( function ( $req ) {
-				$this->assertSame( 'UTSysop', $req->username );
-				$this->assertFalse( $req->done );
-				$req->done = true;
-			} ) );
+			->willReturnCallback( function ( $req ) use ( $username ) {
+				$this->assertSame( $username, $req->username );
+			} );
 
-		$provider->providerRevokeAccessForUser( 'UTSysop' );
+		$provider->providerRevokeAccessForUser( $username );
 
 		foreach ( $reqs as $i => $req ) {
-			$this->assertTrue( $req->done, "#$i" );
+			$this->assertNotNull( $req->username, "#$i" );
 		}
 	}
 
@@ -92,25 +103,25 @@ class AbstractPrimaryAuthenticationProviderTest extends \MediaWikiTestCase {
 	 */
 	public function testPrimaryAccountLink( $type, $msg ) {
 		$provider = $this->getMockForAbstractClass( AbstractPrimaryAuthenticationProvider::class );
-		$provider->expects( $this->any() )->method( 'accountCreationType' )
-			->will( $this->returnValue( $type ) );
+		$provider->method( 'accountCreationType' )
+			->willReturn( $type );
 
 		$class = AbstractPrimaryAuthenticationProvider::class;
 		$msg1 = "{$class}::beginPrimaryAccountLink $msg";
 		$msg2 = "{$class}::continuePrimaryAccountLink is not implemented.";
 
-		$user = \User::newFromName( 'Whatever' );
+		$user = User::newFromName( 'Whatever' );
 
 		try {
 			$provider->beginPrimaryAccountLink( $user, [] );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \BadMethodCallException $ex ) {
+		} catch ( BadMethodCallException $ex ) {
 			$this->assertSame( $msg1, $ex->getMessage() );
 		}
 		try {
 			$provider->continuePrimaryAccountLink( $user, [] );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \BadMethodCallException $ex ) {
+		} catch ( BadMethodCallException $ex ) {
 			$this->assertSame( $msg2, $ex->getMessage() );
 		}
 	}
@@ -137,22 +148,11 @@ class AbstractPrimaryAuthenticationProviderTest extends \MediaWikiTestCase {
 	 */
 	public function testProviderNormalizeUsername( $name, $expect ) {
 		// fake interwiki map for the 'Interwiki prefix' testcase
-		$this->mergeMwGlobalArrayValue( 'wgHooks', [
-			'InterwikiLoadPrefix' => [
-				function ( $prefix, &$iwdata ) {
-					if ( $prefix === 'interwiki' ) {
-						$iwdata = [
-							'iw_url' => 'http://example.com/',
-							'iw_local' => 0,
-							'iw_trans' => 0,
-						];
-						return false;
-					}
-				},
-			],
-		] );
+		$interwikiLookup = $this->getDummyInterwikiLookup( [ 'interwiki' ] );
+		$this->setService( 'InterwikiLookup', $interwikiLookup );
 
 		$provider = $this->getMockForAbstractClass( AbstractPrimaryAuthenticationProvider::class );
+		$this->initProvider( $provider, null, null, null, null, $this->getServiceContainer()->getUserNameUtils() );
 		$this->assertSame( $expect, $provider->providerNormalizeUsername( $name ) );
 	}
 

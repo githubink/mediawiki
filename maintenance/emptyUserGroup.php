@@ -22,40 +22,47 @@
  * @ingroup Maintenance
  */
 
-require_once __DIR__ . '/Maintenance.php';
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\User\User;
 
-use MediaWiki\MediaWikiServices;
+// @codeCoverageIgnoreStart
+require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 class EmptyUserGroup extends Maintenance {
 	public function __construct() {
 		parent::__construct();
 		$this->addDescription( 'Remove all users from a given user group' );
 		$this->addArg( 'group', 'Group to be removed', true );
+		$this->setBatchSize( 100 );
 	}
 
 	public function execute() {
 		$group = $this->getArg( 0 );
+		$userGroupManager = $this->getServiceContainer()->getUserGroupManager();
 
-		$lb = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
+		$totalCount = 0;
+		$this->output( "Removing users from $group...\n" );
+		while ( true ) {
+			$users = User::findUsersByGroup( $group, $this->getBatchSize() );
+			if ( iterator_count( $users ) === 0 ) {
+				break;
+			}
 
-		$users = User::findUsersByGroup( $group );
-
-		$count = iterator_count( $users );
-
-		$this->output( "Removing $count users from $group..." );
-
-		/**
-		 * @var User $user
-		 */
-		foreach ( $users as $user ) {
-			$user->removeGroup( $group );
-
-			$lb->waitForReplication();
+			foreach ( $users as $user ) {
+				$totalCount += (int)$userGroupManager->removeUserFromGroup( $user, $group );
+			}
+			$this->waitForReplication();
 		}
-
-		$this->output( " Done!\n" );
+		if ( $totalCount ) {
+			$this->output( "  ...done! Removed $totalCount users in total.\n" );
+		} else {
+			$this->output( "  ...nothing to do, group was empty.\n" );
+		}
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = EmptyUserGroup::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

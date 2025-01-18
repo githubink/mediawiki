@@ -20,12 +20,16 @@
  * @file
  */
 
+namespace MediaWiki\Config;
+
 /**
  * Interface for mutable configuration instances
  *
+ * @stable to implement
+ *
  * @since 1.24
  */
-interface MutableConfig {
+interface MutableConfig extends Config {
 
 	/**
 	 * Set a configuration variable such a "Sitename" to something like "My Wiki"
@@ -36,3 +40,6 @@ interface MutableConfig {
 	 */
 	public function set( $name, $value );
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( MutableConfig::class, 'MutableConfig' );

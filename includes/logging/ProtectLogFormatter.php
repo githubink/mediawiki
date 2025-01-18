@@ -22,7 +22,8 @@
  * @since 1.26
  */
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Message\Message;
+use MediaWiki\Title\Title;
 
 /**
  * This class formats protect log entries.
@@ -87,21 +88,22 @@ class ProtectLogFormatter extends LogFormatter {
 			return '';
 		}
 
-		// Show history link for all changes after the protection
+		// Show history link for pages that exist otherwise show nothing
 		$title = $this->entry->getTarget();
-		$links = [
-			$linkRenderer->makeLink( $title,
+		$links = [];
+		if ( $title->exists() ) {
+			$links[] = $linkRenderer->makeLink( $title,
 				$this->msg( 'hist' )->text(),
 				[],
 				[
 					'action' => 'history',
 					'offset' => $this->entry->getTimestamp(),
 				]
-			)
-		];
+			);
+		}
 
 		// Show change protection link
-		if ( $this->context->getUser()->isAllowed( 'protect' ) ) {
+		if ( $this->context->getAuthority()->isAllowed( 'protect' ) ) {
 			$links[] = $linkRenderer->makeKnownLink(
 				$title,
 				$this->msg( 'protect_change' )->text(),
@@ -110,8 +112,13 @@ class ProtectLogFormatter extends LogFormatter {
 			);
 		}
 
-		return $this->msg( 'parentheses' )->rawParams(
-			$this->context->getLanguage()->pipeList( $links ) )->escaped();
+		if ( !$links ) {
+			return '';
+		} else {
+			return $this->msg( 'parentheses' )->rawParams(
+				$this->context->getLanguage()->pipeList( $links )
+			)->escaped();
+		}
 	}
 
 	protected function getParametersForApi() {
@@ -150,7 +157,7 @@ class ProtectLogFormatter extends LogFormatter {
 	public function formatParametersForApi() {
 		$ret = parent::formatParametersForApi();
 		if ( isset( $ret['details'] ) && is_array( $ret['details'] ) ) {
-			$contLang = MediaWikiServices::getInstance()->getContentLanguage();
+			$contLang = $this->getContentLanguage();
 			foreach ( $ret['details'] as &$detail ) {
 				if ( isset( $detail['expiry'] ) ) {
 					$detail['expiry'] = $contLang->
@@ -165,7 +172,7 @@ class ProtectLogFormatter extends LogFormatter {
 	/**
 	 * Create the protect description to show in the log formatter
 	 *
-	 * @param array $details
+	 * @param array[] $details
 	 * @return string
 	 */
 	public function createProtectDescription( array $details ) {

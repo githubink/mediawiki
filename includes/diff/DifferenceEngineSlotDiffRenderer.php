@@ -20,6 +20,10 @@
  * @file
  * @ingroup DifferenceEngine
  */
+use MediaWiki\Content\Content;
+use MediaWiki\Context\DerivativeContext;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Output\OutputPage;
 
 /**
  * B/C adapter for turning a DifferenceEngine into a SlotDiffRenderer.
@@ -38,18 +42,22 @@ class DifferenceEngineSlotDiffRenderer extends SlotDiffRenderer {
 
 		// Set state to loaded. This should not matter to any of the methods invoked by
 		// the adapter, but just in case a load does get triggered somehow, make sure it's a no-op.
-		$fakeContent = ContentHandler::getForModelID( CONTENT_MODEL_WIKITEXT )->makeEmptyContent();
+		$fakeContent = MediaWikiServices::getInstance()
+				->getContentHandlerFactory()
+				->getContentHandler( CONTENT_MODEL_WIKITEXT )
+				->makeEmptyContent();
 		$this->differenceEngine->setContent( $fakeContent, $fakeContent );
 
 		$this->differenceEngine->markAsSlotDiffRenderer();
 	}
 
 	/** @inheritDoc */
-	public function getDiff( Content $oldContent = null, Content $newContent = null ) {
+	public function getDiff( ?Content $oldContent = null, ?Content $newContent = null ) {
 		$this->normalizeContents( $oldContent, $newContent );
 		return $this->differenceEngine->generateContentDiffBody( $oldContent, $newContent );
 	}
 
+	/** @inheritDoc */
 	public function addModules( OutputPage $output ) {
 		$oldContext = null;
 		if ( $output !== $this->differenceEngine->getOutput() ) {
@@ -64,6 +72,7 @@ class DifferenceEngineSlotDiffRenderer extends SlotDiffRenderer {
 		}
 	}
 
+	/** @inheritDoc */
 	public function getExtraCacheKeys() {
 		return $this->differenceEngine->getExtraCacheKeys();
 	}

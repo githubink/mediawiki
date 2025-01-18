@@ -1,6 +1,7 @@
 <?php
 
-use Wikimedia\ScopedCallback;
+use Wikimedia\Parsoid\ParserTests\Test as ParserTest;
+use Wikimedia\Parsoid\ParserTests\TestMode as ParserTestMode;
 
 /**
  * This is the TestCase subclass for running a single parser test via the
@@ -14,53 +15,60 @@ use Wikimedia\ScopedCallback;
  * @group Parser
  * @group ParserTests
  *
- * @covers Parser
- * @covers BlockLevelPass
- * @covers CoreParserFunctions
- * @covers CoreTagHooks
- * @covers Sanitizer
- * @covers Preprocessor
- * @covers Preprocessor_DOM
- * @covers Preprocessor_Hash
- * @covers DateFormatter
- * @covers LinkHolderArray
- * @covers StripState
- * @covers ParserOptions
- * @covers ParserOutput
+ * @covers \MediaWiki\Parser\Parser
+ * @covers \MediaWiki\Parser\BlockLevelPass
+ * @covers \MediaWiki\Parser\CoreParserFunctions
+ * @covers \MediaWiki\Parser\CoreTagHooks
+ * @covers \MediaWiki\Parser\Sanitizer
+ * @covers \MediaWiki\Parser\Preprocessor
+ * @covers \MediaWiki\Parser\Preprocessor_Hash
+ * @covers \MediaWiki\Parser\DateFormatter
+ * @covers \MediaWiki\Parser\LinkHolderArray
+ * @covers \MediaWiki\Parser\StripState
+ * @covers \MediaWiki\Parser\ParserOptions
+ * @covers \MediaWiki\Parser\ParserOutput
  */
 class ParserIntegrationTest extends PHPUnit\Framework\TestCase {
 
 	use MediaWikiCoversValidator;
+	use MediaWikiTestCaseTrait;
 
-	/** @var array */
+	/** @var ParserTest */
 	private $ptTest;
+
+	/** @var ParserTestMode */
+	private $ptMode;
 
 	/** @var ParserTestRunner */
 	private $ptRunner;
 
-	/** @var ScopedCallback */
-	private $ptTeardownScope;
+	/** @var string|null */
+	private $skipMessage;
 
-	public function __construct( $runner, $fileName, $test ) {
-		parent::__construct( 'testParse', [ '[details omitted]' ],
-			basename( $fileName ) . ': ' . $test['desc'] );
+	public function __construct(
+		ParserTestRunner $runner,
+		string $fileName,
+		ParserTest $test,
+		ParserTestMode $mode,
+		?string $skipMessage = null
+	) {
+		parent::__construct(
+			'testParse',
+			[ "$mode" ],
+			basename( $fileName ) . ': ' . $test->testName
+		);
 		$this->ptTest = $test;
+		$this->ptMode = $mode;
 		$this->ptRunner = $runner;
+		$this->skipMessage = $skipMessage;
 	}
 
 	public function testParse() {
-		$this->ptRunner->getRecorder()->setTestCase( $this );
-		$result = $this->ptRunner->runTest( $this->ptTest );
-		$this->assertEquals( $result->expected, $result->actual );
-	}
-
-	public function setUp() {
-		$this->ptTeardownScope = $this->ptRunner->staticSetup();
-	}
-
-	public function tearDown() {
-		if ( $this->ptTeardownScope ) {
-			ScopedCallback::consume( $this->ptTeardownScope );
+		if ( $this->skipMessage !== null ) {
+			$this->markTestSkipped( $this->skipMessage );
 		}
+		$this->ptRunner->getRecorder()->setTestCase( $this );
+		$result = $this->ptRunner->runTest( $this->ptTest, $this->ptMode );
+		$this->assertEquals( $result->expected, $result->actual );
 	}
 }

@@ -4,22 +4,17 @@
  * @group Media
  */
 class GIFMetadataExtractorTest extends \MediaWikiUnitTestCase {
-
-	protected function setUp() {
-		parent::setUp();
-
-		$this->mediaPath = __DIR__ . '/../../../data/media/';
-	}
+	private const FILE_PATH = __DIR__ . '/../../../data/media/';
 
 	/**
 	 * Put in a file, and see if the metadata coming out is as expected.
 	 * @param string $filename
 	 * @param array $expected The extracted metadata.
 	 * @dataProvider provideGetMetadata
-	 * @covers GIFMetadataExtractor::getMetadata
+	 * @covers \GIFMetadataExtractor::getMetadata
 	 */
 	public function testGetMetadata( $filename, $expected ) {
-		$actual = GIFMetadataExtractor::getMetadata( $this->mediaPath . $filename );
+		$actual = GIFMetadataExtractor::getMetadata( self::FILE_PATH . $filename );
 		$this->assertEquals( $expected, $actual );
 	}
 
@@ -77,6 +72,9 @@ EOF;
 			[
 				'nonanimated.gif',
 				[
+					'width' => 45,
+					'height' => 30,
+					'bits' => 1,
 					'comment' => [ 'GIF test file ⁕ Created with GIMP' ],
 					'duration' => 0.1,
 					'frameCount' => 1,
@@ -87,6 +85,9 @@ EOF;
 			[
 				'animated.gif',
 				[
+					'width' => 45,
+					'height' => 30,
+					'bits' => 1,
 					'comment' => [ 'GIF test file . Created with GIMP' ],
 					'duration' => 2.4,
 					'frameCount' => 4,
@@ -98,6 +99,9 @@ EOF;
 			[
 				'animated-xmp.gif',
 				[
+					'width' => 45,
+					'height' => 30,
+					'bits' => 1,
 					'xmp' => $xmpNugget,
 					'duration' => 2.4,
 					'frameCount' => 4,

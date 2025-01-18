@@ -1,7 +1,5 @@
 <?php
 /**
- * Implements Special:ListDuplicatedFiles
- *
  * Copyright © 2013 Brian Wolff
  *
  * This program is free software; you can redistribute it and/or modify
@@ -20,28 +18,43 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
+ */
+
+namespace MediaWiki\Specials;
+
+use MediaWiki\Cache\LinkBatchFactory;
+use MediaWiki\SpecialPage\QueryPage;
+use MediaWiki\SpecialPage\SpecialPage;
+use MediaWiki\Title\Title;
+use Skin;
+use stdClass;
+use Wikimedia\Rdbms\IConnectionProvider;
+use Wikimedia\Rdbms\IDatabase;
+use Wikimedia\Rdbms\IResultWrapper;
+
+/**
+ * List all files where the current version is a duplicate of the current
+ * version of another file.
+ *
  * @ingroup SpecialPage
  * @author Brian Wolff
  */
+class SpecialListDuplicatedFiles extends QueryPage {
 
-use Wikimedia\Rdbms\IResultWrapper;
-use Wikimedia\Rdbms\IDatabase;
-
-/**
- * Special:ListDuplicatedFiles Lists all files where the current version is
- *   a duplicate of the current version of some other file.
- * @ingroup SpecialPage
- */
-class ListDuplicatedFilesPage extends QueryPage {
-	function __construct( $name = 'ListDuplicatedFiles' ) {
-		parent::__construct( $name );
+	public function __construct(
+		IConnectionProvider $dbProvider,
+		LinkBatchFactory $linkBatchFactory
+	) {
+		parent::__construct( 'ListDuplicatedFiles' );
+		$this->setDatabaseProvider( $dbProvider );
+		$this->setLinkBatchFactory( $linkBatchFactory );
 	}
 
 	public function isExpensive() {
 		return true;
 	}
 
-	function isSyndicated() {
+	public function isSyndicated() {
 		return false;
 	}
 
@@ -77,16 +90,16 @@ class ListDuplicatedFilesPage extends QueryPage {
 	 * @param IDatabase $db
 	 * @param IResultWrapper $res
 	 */
-	function preprocessResults( $db, $res ) {
+	public function preprocessResults( $db, $res ) {
 		$this->executeLBFromResultWrapper( $res );
 	}
 
 	/**
 	 * @param Skin $skin
-	 * @param object $result Result row
+	 * @param stdClass $result Result row
 	 * @return string
 	 */
-	function formatResult( $skin, $result ) {
+	public function formatResult( $skin, $result ) {
 		// Future version might include a list of the first 5 duplicates
 		// perhaps separated by an "↔".
 		$image1 = Title::makeTitle( $result->namespace, $result->title );
@@ -100,7 +113,15 @@ class ListDuplicatedFilesPage extends QueryPage {
 		return $msg->parse();
 	}
 
+	public function execute( $par ) {
+		$this->addHelpLink( 'Help:Managing_files' );
+		parent::execute( $par );
+	}
+
 	protected function getGroupName() {
 		return 'media';
 	}
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( SpecialListDuplicatedFiles::class, 'SpecialListDuplicatedFiles' );

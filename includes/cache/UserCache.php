@@ -21,38 +21,73 @@
  * @ingroup Cache
  */
 
+namespace MediaWiki\Cache;
+
+use MediaWiki\MediaWikiServices;
+use Psr\Log\LoggerInterface;
+use Wikimedia\Rdbms\IConnectionProvider;
+
 /**
  * @since 1.20
+ * @deprecated since 1.43, use ActorStore
  */
 class UserCache {
-	protected $cache = []; // (uid => property => value)
-	protected $typesCached = []; // (uid => cache type => 1)
+	/** @var array (uid => property => value) */
+	protected $cache = [];
+	/** @var array (uid => cache type => 1) */
+	protected $typesCached = [];
+
+	/** @var LoggerInterface */
+	private $logger;
+
+	/** @var LinkBatchFactory */
+	private $linkBatchFactory;
+
+	/** @var IConnectionProvider */
+	private $dbProvider;
 
 	/**
+	 * @deprecated since 1.43, use MediaWikiServices::getInstance()->getUserCache()
 	 * @return UserCache
 	 */
 	public static function singleton() {
-		static $instance = null;
-		if ( $instance === null ) {
-			$instance = new self();
-		}
-
-		return $instance;
+		wfDeprecated( __METHOD__, '1.43' );
+		return MediaWikiServices::getInstance()->getUserCache();
 	}
 
-	protected function __construct() {
+	/**
+	 * Uses dependency injection since 1.36
+	 *
+	 * @param LoggerInterface $logger
+	 * @param IConnectionProvider $dbProvider
+	 * @param LinkBatchFactory $linkBatchFactory
+	 */
+	public function __construct(
+		LoggerInterface $logger,
+		IConnectionProvider $dbProvider,
+		LinkBatchFactory $linkBatchFactory
+	) {
+		$this->logger = $logger;
+		$this->dbProvider = $dbProvider;
+		$this->linkBatchFactory = $linkBatchFactory;
 	}
 
 	/**
 	 * Get a property of a user based on their user ID
 	 *
-	 * @param int $userId User ID
+	 * @param int $userId
 	 * @param string $prop User property
-	 * @return mixed|bool The property or false if the user does not exist
+	 * @return mixed|false The property or false if the user does not exist
 	 */
 	public function getProp( $userId, $prop ) {
 		if ( !isset( $this->cache[$userId][$prop] ) ) {
-			wfDebug( __METHOD__ . ": querying DB for prop '$prop' for user ID '$userId'.\n" );
+			$this->logger->debug(
+				'Querying DB for prop {prop} for user ID {userId}',
+				[
+					'prop' => $prop,
+					'userId' => $userId,
+				]
+			);
 			$this->doQuery( [ $userId ] ); // cache miss
 		}
 
@@ -78,8 +113,6 @@ class UserCache {
 	 * @param string $caller The calling method
 	 */
 	public function doQuery( array $userIds, $options = [], $caller = '' ) {
-		global $wgActorTableSchemaMigrationStage;
-
 		$usersToCheck = [];
 		$usersToQuery = [];
 
@@ -99,42 +132,30 @@ class UserCache {
 
 		// Lookup basic info for users not yet loaded...
 		if ( count( $usersToQuery ) ) {
-			$dbr = wfGetDB( DB_REPLICA );
-			$tables = [ 'user' ];
-			$conds = [ 'user_id' => $usersToQuery ];
-			$fields = [ 'user_name', 'user_real_name', 'user_registration', 'user_id' ];
-			$joinConds = [];
-
-			// Technically we shouldn't allow this without SCHEMA_COMPAT_READ_NEW,
-			// but it does little harm and might be needed for write callers loading a User.
-			if ( $wgActorTableSchemaMigrationStage & SCHEMA_COMPAT_NEW ) {
-				$tables[] = 'actor';
-				$fields[] = 'actor_id';
-				$joinConds['actor'] = [
-					( $wgActorTableSchemaMigrationStage & SCHEMA_COMPAT_READ_NEW ) ? 'JOIN' : 'LEFT JOIN',
-					[ 'actor_user = user_id' ]
-				];
-			}
+			$dbr = $this->dbProvider->getReplicaDatabase();
+			$queryBuilder = $dbr->newSelectQueryBuilder()
+				->select( [ 'user_name', 'user_real_name', 'user_registration', 'user_id', 'actor_id' ] )
+				->from( 'user' )
+				->join( 'actor', null, 'actor_user = user_id' )
+				->where( [ 'user_id' => $usersToQuery ] );
 
 			$comment = __METHOD__;
 			if ( strval( $caller ) !== '' ) {
 				$comment .= "/$caller";
 			}
 
-			$res = $dbr->select( $tables, $fields, $conds, $comment, [], $joinConds );
+			$res = $queryBuilder->caller( $comment )->fetchResultSet();
 			foreach ( $res as $row ) { // load each user into cache
 				$userId = (int)$row->user_id;
 				$this->cache[$userId]['name'] = $row->user_name;
 				$this->cache[$userId]['real_name'] = $row->user_real_name;
 				$this->cache[$userId]['registration'] = $row->user_registration;
-				if ( $wgActorTableSchemaMigrationStage & SCHEMA_COMPAT_NEW ) {
-					$this->cache[$userId]['actor'] = $row->actor_id;
-				}
+				$this->cache[$userId]['actor'] = $row->actor_id;
 				$usersToCheck[$userId] = $row->user_name;
 			}
 		}
 
-		$lb = new LinkBatch();
+		$lb = $this->linkBatchFactory->newLinkBatch();
 		foreach ( $usersToCheck as $userId => $name ) {
 			if ( $this->queryNeeded( $userId, 'userpage', $options ) ) {
 				$lb->add( NS_USER, $name );
@@ -160,3 +181,6 @@ class UserCache {
 		return ( in_array( $type, $options ) && !isset( $this->typesCached[$uid][$type] ) );
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( UserCache::class, 'UserCache' );

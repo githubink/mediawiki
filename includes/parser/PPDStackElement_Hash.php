@@ -19,21 +19,98 @@
  * @ingroup Parser
  */
 
+namespace MediaWiki\Parser;
+
 /**
  * @ingroup Parser
+ *
+ * @property PPDPart_Hash[] $parts
+ * @property int $startPos
  */
 // phpcs:ignore Squiz.Classes.ValidClassName.NotCamelCaps
-class PPDStackElement_Hash extends PPDStackElement {
+class PPDStackElement_Hash {
+	/**
+	 * @var string Opening character (\n for heading)
+	 */
+	public $open;
+
+	/**
+	 * @var string Matching closing character
+	 */
+	public $close;
+
+	/**
+	 * @var string Saved prefix that may affect later processing,
+	 *  e.g. to differentiate `-{{{{` and `{{{{` after later seeing `}}}`.
+	 */
+	public $savedPrefix = '';
+
+	/**
+	 * @var int Start offset of this element in the source wikitext
+	 */
+	public $startPos;
+
+	/**
+	 * @var int Number of opening characters found (number of "=" for heading)
+	 */
+	public $count;
+
+	/**
+	 * @var PPDPart_Hash[] Array of PPDPart objects describing pipe-separated parts.
+	 */
+	public $parts;
+
+	/**
+	 * @var bool True if the open char appeared at the start of the input line.
+	 *  Not set for headings.
+	 */
+	public $lineStart;
+
+	/** @var string */
+	public $partClass = PPDPart_Hash::class;
 
 	public function __construct( $data = [] ) {
-		$this->partClass = PPDPart_Hash::class;
-		parent::__construct( $data );
+		$class = $this->partClass;
+		$this->parts = [ new $class ];
+
+		foreach ( $data as $name => $value ) {
+			$this->$name = $value;
+		}
+	}
+
+	public function &getAccum() {
+		return $this->parts[count( $this->parts ) - 1]->out;
+	}
+
+	public function addPart( $s = '' ) {
+		$class = $this->partClass;
+		$this->parts[] = new $class( $s );
+	}
+
+	/**
+	 * @return PPDPart_Hash
+	 */
+	public function getCurrentPart() {
+		return $this->parts[count( $this->parts ) - 1];
+	}
+
+	/**
+	 * @return array
+	 */
+	public function getFlags() {
+		$partCount = count( $this->parts );
+		$findPipe = $this->open != "\n" && $this->open != '[';
+		return [
+			'findPipe' => $findPipe,
+			'findEquals' => $findPipe && $partCount > 1 && !isset( $this->parts[$partCount - 1]->eqpos ),
+			'inHeading' => $this->open == "\n",
+		];
 	}
 
 	/**
 	 * Get the accumulator that would result if the close is not found.
 	 *
-	 * @param int|bool $openingCount
+	 * @param int|false $openingCount
 	 * @return array
 	 */
 	public function breakSyntax( $openingCount = false ) {
@@ -59,6 +136,7 @@ class PPDStackElement_Hash extends PPDStackElement {
 				} else {
 					$accum[++$lastIndex] = '|';
 				}
+
 				foreach ( $part->out as $node ) {
 					if ( is_string( $node ) && is_string( $accum[$lastIndex] ) ) {
 						$accum[$lastIndex] .= $node;
@@ -71,3 +149,6 @@ class PPDStackElement_Hash extends PPDStackElement {
 		return $accum;
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( PPDStackElement_Hash::class, 'PPDStackElement_Hash' );

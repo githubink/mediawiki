@@ -21,11 +21,20 @@
  * @since 1.27
  */
 
-use MediaWiki\Auth\AuthManager;
+namespace MediaWiki\Api;
+
 use MediaWiki\Auth\AuthenticationRequest;
 use MediaWiki\Auth\AuthenticationResponse;
+use MediaWiki\Auth\AuthManager;
 use MediaWiki\Auth\CreateFromLoginAuthenticationRequest;
 use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Message\Message;
+use MediaWiki\Parser\Parser;
+use MediaWiki\User\UserIdentity;
+use MediaWiki\User\UserIdentityUtils;
+use UnexpectedValueException;
+use Wikimedia\ParamValidator\ParamValidator;
 
 /**
  * Helper class for AuthManager-using API modules. Intended for use via
@@ -41,23 +50,37 @@ class ApiAuthManagerHelper {
 	/** @var string Message output format */
 	private $messageFormat;
 
+	private AuthManager $authManager;
+
+	private UserIdentityUtils $identityUtils;
+
 	/**
 	 * @param ApiBase $module API module, for context and parameters
+	 * @param AuthManager|null $authManager
+	 * @param UserIdentityUtils|null $identityUtils
 	 */
-	public function __construct( ApiBase $module ) {
+	public function __construct(
+		ApiBase $module,
+		?AuthManager $authManager = null,
+		?UserIdentityUtils $identityUtils = null
+	) {
 		$this->module = $module;
 
 		$params = $module->extractRequestParams();
 		$this->messageFormat = $params['messageformat'] ?? 'wikitext';
+		$this->authManager = $authManager ?: MediaWikiServices::getInstance()->getAuthManager();
+		// TODO: inject this as currently it's always taken from container
+		$this->identityUtils = $identityUtils ?: MediaWikiServices::getInstance()->getUserIdentityUtils();
 	}
 
 	/**
 	 * Static version of the constructor, for chaining
 	 * @param ApiBase $module API module, for context and parameters
+	 * @param AuthManager|null $authManager
 	 * @return ApiAuthManagerHelper
 	 */
-	public static function newForModule( ApiBase $module ) {
-		return new self( $module );
+	public static function newForModule( ApiBase $module, ?AuthManager $authManager = null ) {
+		return new self( $module, $authManager );
 	}
 
 	/**
@@ -81,11 +104,12 @@ class ApiAuthManagerHelper {
 				break;
 
 			case 'raw':
+				$params = $message->getParams();
 				$res[$key] = [
 					'key' => $message->getKey(),
-					'params' => $message->getParams(),
+					'params' => $params,
 				];
-				ApiResult::setIndexedTagName( $res[$key]['params'], 'param' );
+				ApiResult::setIndexedTagName( $params, 'param' );
 				break;
 		}
 	}
@@ -96,16 +120,18 @@ class ApiAuthManagerHelper {
 	 * @throws ApiUsageException
 	 */
 	public function securitySensitiveOperation( $operation ) {
-		$status = AuthManager::singleton()->securitySensitiveOperationStatus( $operation );
+		$status = $this->authManager->securitySensitiveOperationStatus( $operation );
 		switch ( $status ) {
 			case AuthManager::SEC_OK:
 				return;
 
 			case AuthManager::SEC_REAUTH:
 				$this->module->dieWithError( 'apierror-reauthenticate' );
+				// dieWithError prevents continuation
 
 			case AuthManager::SEC_FAIL:
 				$this->module->dieWithError( 'apierror-cannotreauthenticate' );
+				// dieWithError prevents continuation
 
 			default:
 				throw new UnexpectedValueException( "Unknown status \"$status\"" );
@@ -115,14 +141,14 @@ class ApiAuthManagerHelper {
 	/**
 	 * Filter out authentication requests by class name
 	 * @param AuthenticationRequest[] $reqs Requests to filter
-	 * @param string[] $blacklist Class names to remove
+	 * @param string[] $remove Class names to remove
 	 * @return AuthenticationRequest[]
 	 */
-	public static function blacklistAuthenticationRequests( array $reqs, array $blacklist ) {
-		if ( $blacklist ) {
-			$blacklist = array_flip( $blacklist );
-			$reqs = array_filter( $reqs, function ( $req ) use ( $blacklist ) {
-				return !isset( $blacklist[get_class( $req )] );
+	public static function blacklistAuthenticationRequests( array $reqs, array $remove ) {
+		if ( $remove ) {
+			$remove = array_fill_keys( $remove, true );
+			$reqs = array_filter( $reqs, static function ( $req ) use ( $remove ) {
+				return !isset( $remove[get_class( $req )] );
 			} );
 		}
 		return $reqs;
@@ -136,20 +162,22 @@ class ApiAuthManagerHelper {
 	public function loadAuthenticationRequests( $action ) {
 		$params = $this->module->extractRequestParams();
 
-		$manager = AuthManager::singleton();
-		$reqs = $manager->getAuthenticationRequests( $action, $this->module->getUser() );
+		$reqs = $this->authManager->getAuthenticationRequests( $action, $this->module->getUser() );
 
 		// Filter requests, if requested to do so
 		$wantedRequests = null;
 		if ( isset( $params['requests'] ) ) {
-			$wantedRequests = array_flip( $params['requests'] );
+			$wantedRequests = array_fill_keys( $params['requests'], true );
 		} elseif ( isset( $params['request'] ) ) {
 			$wantedRequests = [ $params['request'] => true ];
 		}
 		if ( $wantedRequests !== null ) {
-			$reqs = array_filter( $reqs, function ( $req ) use ( $wantedRequests ) {
-				return isset( $wantedRequests[$req->getUniqueId()] );
-			} );
+			$reqs = array_filter(
+				$reqs,
+				static function ( AuthenticationRequest $req ) use ( $wantedRequests ) {
+					return isset( $wantedRequests[$req->getUniqueId()] );
+				}
+			);
 		}
 
 		// Collect the fields for all the requests
@@ -158,7 +186,7 @@ class ApiAuthManagerHelper {
 		foreach ( $reqs as $req ) {
 			$info = (array)$req->getFieldInfo();
 			$fields += $info;
-			$sensitive += array_filter( $info, function ( $opts ) {
+			$sensitive += array_filter( $info, static function ( $opts ) {
 				return !empty( $opts['sensitive'] );
 			} );
 		}
@@ -230,23 +258,21 @@ class ApiAuthManagerHelper {
 	/**
 	 * Logs successful or failed authentication.
 	 * @param string $event Event type (e.g. 'accountcreation')
-	 * @param string|AuthenticationResponse $result Response or error message
+	 * @param UserIdentity $performer
+	 * @param AuthenticationResponse $result Response or error message
 	 */
-	public function logAuthenticationResult( $event, $result ) {
-		if ( is_string( $result ) ) {
-			$status = Status::newFatal( $result );
-		} elseif ( $result->status === AuthenticationResponse::PASS ) {
-			$status = Status::newGood();
-		} elseif ( $result->status === AuthenticationResponse::FAIL ) {
-			$status = Status::newFatal( $result->message );
-		} else {
+	public function logAuthenticationResult( $event, UserIdentity $performer, AuthenticationResponse $result ) {
+		if ( !in_array( $result->status, [ AuthenticationResponse::PASS, AuthenticationResponse::FAIL ] ) ) {
 			return;
 		}
+		$accountType = $this->identityUtils->getShortUserTypeInternal( $performer );
 
 		$module = $this->module->getModuleName();
 		LoggerFactory::getInstance( 'authevents' )->info( "$module API attempt", [
 			'event' => $event,
-			'status' => $status,
+			'successful' => $result->status === AuthenticationResponse::PASS,
+			'status' => $result->message ? $result->message->getKey() : '-',
+			'accountType' => $accountType,
 			'module' => $module,
 		] );
 	}
@@ -306,9 +332,9 @@ class ApiAuthManagerHelper {
 
 	/**
 	 * Clean up a field array for output
-	 * @param ApiBase $module For context and parameters 'mergerequestfields'
-	 *  and 'messageformat'
 	 * @param array $fields
+	 * @phpcs:ignore Generic.Files.LineLength
+	 * @phan-param array{type:string,options:array,value:string,label:Message,help:Message,optional:bool,sensitive:bool,skippable:bool} $fields
 	 * @return array
 	 */
 	private function formatFields( array $fields ) {
@@ -324,7 +350,7 @@ class ApiAuthManagerHelper {
 			$ret = array_intersect_key( $field, $copy );
 
 			if ( isset( $field['options'] ) ) {
-				$ret['options'] = array_map( function ( $msg ) use ( $module ) {
+				$ret['options'] = array_map( static function ( $msg ) use ( $module ) {
 					return $msg->setContext( $module )->plain();
 				}, $field['options'] );
 				ApiResult::setArrayType( $ret['options'], 'assoc' );
@@ -351,34 +377,34 @@ class ApiAuthManagerHelper {
 	public static function getStandardParams( $action, ...$wantedParams ) {
 		$params = [
 			'requests' => [
-				ApiBase::PARAM_TYPE => 'string',
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => 'string',
+				ParamValidator::PARAM_ISMULTI => true,
 				ApiBase::PARAM_HELP_MSG => [ 'api-help-authmanagerhelper-requests', $action ],
 			],
 			'request' => [
-				ApiBase::PARAM_TYPE => 'string',
-				ApiBase::PARAM_REQUIRED => true,
+				ParamValidator::PARAM_TYPE => 'string',
+				ParamValidator::PARAM_REQUIRED => true,
 				ApiBase::PARAM_HELP_MSG => [ 'api-help-authmanagerhelper-request', $action ],
 			],
 			'messageformat' => [
-				ApiBase::PARAM_DFLT => 'wikitext',
-				ApiBase::PARAM_TYPE => [ 'html', 'wikitext', 'raw', 'none' ],
+				ParamValidator::PARAM_DEFAULT => 'wikitext',
+				ParamValidator::PARAM_TYPE => [ 'html', 'wikitext', 'raw', 'none' ],
 				ApiBase::PARAM_HELP_MSG => 'api-help-authmanagerhelper-messageformat',
 			],
 			'mergerequestfields' => [
-				ApiBase::PARAM_DFLT => false,
+				ParamValidator::PARAM_DEFAULT => false,
 				ApiBase::PARAM_HELP_MSG => 'api-help-authmanagerhelper-mergerequestfields',
 			],
 			'preservestate' => [
-				ApiBase::PARAM_DFLT => false,
+				ParamValidator::PARAM_DEFAULT => false,
 				ApiBase::PARAM_HELP_MSG => 'api-help-authmanagerhelper-preservestate',
 			],
 			'returnurl' => [
-				ApiBase::PARAM_TYPE => 'string',
+				ParamValidator::PARAM_TYPE => 'string',
 				ApiBase::PARAM_HELP_MSG => 'api-help-authmanagerhelper-returnurl',
 			],
 			'continue' => [
-				ApiBase::PARAM_DFLT => false,
+				ParamValidator::PARAM_DEFAULT => false,
 				ApiBase::PARAM_HELP_MSG => 'api-help-authmanagerhelper-continue',
 			],
 		];
@@ -392,3 +418,6 @@ class ApiAuthManagerHelper {
 		return $ret;
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiAuthManagerHelper::class, 'ApiAuthManagerHelper' );

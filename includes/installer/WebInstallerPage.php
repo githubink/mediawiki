@@ -1,7 +1,6 @@
 <?php
+
 /**
- * Base code for web installer pages.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,13 +17,18 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Deployment
+ * @ingroup Installer
  */
+
+namespace MediaWiki\Installer;
+
+use MediaWiki\Html\Html;
+use MediaWiki\Xml\Xml;
 
 /**
  * Abstract class to define pages for the web installer.
  *
- * @ingroup Deployment
+ * @ingroup Installer
  * @since 1.17
  */
 abstract class WebInstallerPage {
@@ -41,9 +45,6 @@ abstract class WebInstallerPage {
 	 */
 	abstract public function execute();
 
-	/**
-	 * @param WebInstaller $parent
-	 */
 	public function __construct( WebInstaller $parent ) {
 		$this->parent = $parent;
 	}
@@ -109,7 +110,8 @@ abstract class WebInstallerPage {
 				wfMessage( "config-$back" )->text(),
 				[
 					'name' => "submit-$back",
-					'tabindex' => $this->parent->nextTabIndex()
+					'tabindex' => $this->parent->nextTabIndex(),
+					'class' => 'cdx-button cdx-button--action-default'
 				]
 			) . "\n";
 		}
@@ -121,6 +123,7 @@ abstract class WebInstallerPage {
 				[
 					'name' => "submit-$continue",
 					'tabindex' => $this->parent->nextTabIndex(),
+					'class' => 'cdx-button cdx-button--action-progressive'
 				]
 			) . "\n";
 		}
@@ -133,7 +136,7 @@ abstract class WebInstallerPage {
 	 * @return string
 	 */
 	public function getName() {
-		return str_replace( 'WebInstaller', '', static::class );
+		return str_replace( 'MediaWiki\\Installer\\WebInstaller', '', static::class );
 	}
 
 	/**
@@ -169,7 +172,8 @@ abstract class WebInstallerPage {
 	 * @return string
 	 */
 	protected function getFieldsetStart( $legend ) {
-		return "\n<fieldset><legend>" . wfMessage( $legend )->escaped() . "</legend>\n";
+		return "\n<div class=\"cdx-card\"><div class=\"cdx-card__text\"><div class=\"cdx-card__text__title\">" .
+			wfMessage( $legend )->escaped() . "</div><div class=\"cdx-card__text__description\">\n";
 	}
 
 	/**
@@ -178,7 +182,7 @@ abstract class WebInstallerPage {
 	 * @return string
 	 */
 	protected function getFieldsetEnd() {
-		return "</fieldset>\n";
+		return "</div></div></div>\n";
 	}
 
 	/**

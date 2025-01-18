@@ -21,28 +21,56 @@
  * @ingroup Cache
  */
 
+namespace MediaWiki\Cache;
+
+use MediaWiki\Config\ServiceOptions;
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Request\WebRequest;
+use Wikimedia\AtEase\AtEase;
+use Wikimedia\IPUtils;
+use Wikimedia\ObjectCache\BagOStuff;
+
 /**
  * Base class for data storage in the file system.
  *
  * @ingroup Cache
  */
 abstract class FileCacheBase {
+
+	private const CONSTRUCTOR_OPTIONS = [
+		MainConfigNames::CacheEpoch,
+		MainConfigNames::FileCacheDepth,
+		MainConfigNames::FileCacheDirectory,
+		MainConfigNames::MimeType,
+		MainConfigNames::UseGzip,
+	];
+
+	/** @var string */
 	protected $mKey;
+	/** @var string */
 	protected $mType = 'object';
+	/** @var string */
 	protected $mExt = 'cache';
+	/** @var string|null */
 	protected $mFilePath;
+	/** @var bool */
 	protected $mUseGzip;
-	/* lazy loaded */
+	/** @var bool|null lazy loaded */
 	protected $mCached;
+	/** @var ServiceOptions */
+	protected $options;
 
 	/* @todo configurable? */
-	const MISS_FACTOR = 15; // log 1 every MISS_FACTOR cache misses
-	const MISS_TTL_SEC = 3600; // how many seconds ago is "recent"
+	private const MISS_FACTOR = 15; // log 1 every MISS_FACTOR cache misses
+	private const MISS_TTL_SEC = 3600; // how many seconds ago is "recent"
 
 	protected function __construct() {
-		global $wgUseGzip;
-
-		$this->mUseGzip = (bool)$wgUseGzip;
+		$this->options = new ServiceOptions(
+			self::CONSTRUCTOR_OPTIONS,
+			MediaWikiServices::getInstance()->getMainConfig()
+		);
+		$this->mUseGzip = (bool)$this->options->get( MainConfigNames::UseGzip );
 	}
 
 	/**
@@ -50,9 +78,7 @@ abstract class FileCacheBase {
 	 * @return string
 	 */
 	final protected function baseCacheDirectory() {
-		global $wgFileCacheDirectory;
-
-		return $wgFileCacheDirectory;
+		return $this->options->get( MainConfigNames::FileCacheDirectory );
 	}
 
 	/**
@@ -89,9 +115,7 @@ abstract class FileCacheBase {
 	 * @return bool
 	 */
 	public function isCached() {
-		if ( $this->mCached === null ) {
-			$this->mCached = file_exists( $this->cachePath() );
-		}
+		$this->mCached ??= is_file( $this->cachePath() );
 
 		return $this->mCached;
 	}
@@ -115,16 +139,16 @@ abstract class FileCacheBase {
 	 * @return bool
 	 */
 	public function isCacheGood( $timestamp = '' ) {
-		global $wgCacheEpoch;
+		$cacheEpoch = $this->options->get( MainConfigNames::CacheEpoch );
 
 		if ( !$this->isCached() ) {
 			return false;
 		}
 
 		$cachetime = $this->cacheTimestamp();
-		$good = ( $timestamp <= $cachetime && $wgCacheEpoch <= $cachetime );
+		$good = ( $timestamp <= $cachetime && $cacheEpoch <= $cachetime );
 		wfDebug( __METHOD__ .
-			": cachetime $cachetime, touched '{$timestamp}' epoch {$wgCacheEpoch}, good $good\n" );
+			": cachetime $cachetime, touched '{$timestamp}' epoch {$cacheEpoch}, good " . wfBoolToStr( $good ) );
 
 		return $good;
 	}
@@ -163,7 +187,7 @@ abstract class FileCacheBase {
 
 		$this->checkCacheDirs(); // build parent dir
 		if ( !file_put_contents( $this->cachePath(), $text, LOCK_EX ) ) {
-			wfDebug( __METHOD__ . "() failed saving " . $this->cachePath() . "\n" );
+			wfDebug( __METHOD__ . "() failed saving " . $this->cachePath() );
 			$this->mCached = null;
 
 			return false;
@@ -179,9 +203,9 @@ abstract class FileCacheBase {
 	 * @return void
 	 */
 	public function clearCache() {
-		Wikimedia\suppressWarnings();
+		AtEase::suppressWarnings();
 		unlink( $this->cachePath() );
-		Wikimedia\restoreWarnings();
+		AtEase::restoreWarnings();
 		$this->mCached = false;
 	}
 
@@ -210,12 +234,12 @@ abstract class FileCacheBase {
 	 * @return string
 	 */
 	protected function hashSubdirectory() {
-		global $wgFileCacheDepth;
+		$fileCacheDepth = $this->options->get( MainConfigNames::FileCacheDepth );
 
 		$subdir = '';
-		if ( $wgFileCacheDepth > 0 ) {
+		if ( $fileCacheDepth > 0 ) {
 			$hash = md5( $this->mKey );
-			for ( $i = 1; $i <= $wgFileCacheDepth; $i++ ) {
+			for ( $i = 1; $i <= $fileCacheDepth; $i++ ) {
 				$subdir .= substr( $hash, 0, $i ) . '/';
 			}
 		}
@@ -229,32 +253,28 @@ abstract class FileCacheBase {
 	 * @return void
 	 */
 	public function incrMissesRecent( WebRequest $request ) {
-		if ( mt_rand( 0, self::MISS_FACTOR - 1 ) == 0 ) {
-			$cache = ObjectCache::getLocalClusterInstance();
+		if ( mt_rand( 1, self::MISS_FACTOR ) == 1 ) {
 			# Get a large IP range that should include the user  even if that
 			# person's IP address changes
 			$ip = $request->getIP();
-			if ( !IP::isValid( $ip ) ) {
+			if ( !IPUtils::isValid( $ip ) ) {
 				return;
 			}
-			$ip = IP::isIPv6( $ip )
-				? IP::sanitizeRange( "$ip/32" )
-				: IP::sanitizeRange( "$ip/16" );
+
+			$ip = IPUtils::isIPv6( $ip )
+				? IPUtils::sanitizeRange( "$ip/32" )
+				: IPUtils::sanitizeRange( "$ip/16" );
 
 			# Bail out if a request already came from this range...
+			$cache = MediaWikiServices::getInstance()->getObjectCacheFactory()
+				->getLocalClusterInstance();
 			$key = $cache->makeKey( static::class, 'attempt', $this->mType, $this->mKey, $ip );
-			if ( $cache->get( $key ) ) {
+			if ( !$cache->add( $key, 1, self::MISS_TTL_SEC ) ) {
 				return; // possibly the same user
 			}
-			$cache->set( $key, 1, self::MISS_TTL_SEC );
 
 			# Increment the number of cache misses...
-			$key = $this->cacheMissKey( $cache );
-			if ( $cache->get( $key ) === false ) {
-				$cache->set( $key, 1, self::MISS_TTL_SEC );
-			} else {
-				$cache->incr( $key );
-			}
+			$cache->incrWithInit( $this->cacheMissKey( $cache ), self::MISS_TTL_SEC );
 		}
 	}
 
@@ -263,7 +283,8 @@ abstract class FileCacheBase {
 	 * @return int
 	 */
 	public function getMissesRecent() {
-		$cache = ObjectCache::getLocalClusterInstance();
+		$cache = MediaWikiServices::getInstance()->getObjectCacheFactory()
+			->getLocalClusterInstance();
 
 		return self::MISS_FACTOR * $cache->get( $this->cacheMissKey( $cache ) );
 	}
@@ -276,3 +297,6 @@ abstract class FileCacheBase {
 		return $cache->makeKey( static::class, 'misses', $this->mType, $this->mKey );
 	}
 }
+
+/** @deprecated class alias since 1.42 */
+class_alias( FileCacheBase::class, 'FileCacheBase' );

@@ -19,6 +19,10 @@
  * @ingroup FileBackend
  */
 
+namespace Wikimedia\FileBackend\FileOpHandle;
+
+use Wikimedia\FileBackend\FileBackendStore;
+
 /**
  * FileBackendStore helper class for performing asynchronous file operations.
  *
@@ -26,6 +30,8 @@
  * param flag may result in a StatusValue that contains this object as a value.
  * This class is largely backend-specific and is mostly just "magic" to be
  * passed to FileBackendStore::executeOpHandlesInternal().
+ *
+ * @stable to extend
  */
 abstract class FileBackendStoreOpHandle {
 	/** @var array */
@@ -34,13 +40,17 @@ abstract class FileBackendStoreOpHandle {
 	public $backend;
 	/** @var array */
 	public $resourcesToClose = [];
-
-	public $call; // string; name that identifies the function called
+	/** @var callable name that identifies the function called */
+	public $call;
 
 	/**
 	 * Close all open file handles
 	 */
 	public function closeResources() {
+		// @phan-suppress-next-line PhanPluginUseReturnValueInternalKnown
 		array_map( 'fclose', $this->resourcesToClose );
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( FileBackendStoreOpHandle::class, 'FileBackendStoreOpHandle' );

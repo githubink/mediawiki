@@ -1,7 +1,5 @@
 <?php
 /**
- * PHP memory-backed job queue code.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -20,22 +18,25 @@
  * @file
  */
 
+use Wikimedia\ObjectCache\HashBagOStuff;
+use Wikimedia\ObjectCache\WANObjectCache;
+
 /**
- * Class to handle job queues stored in PHP memory for testing
+ * PHP memory-backed job queue storage, for testing.
  *
- * JobQueueGroup does not remember every queue instance, so statically track it here
+ * JobQueueGroup does not remember every queue instance, so statically track it here.
  *
- * @ingroup JobQueue
  * @since 1.27
+ * @ingroup JobQueue
  */
 class JobQueueMemory extends JobQueue {
 	/** @var array[] */
 	protected static $data = [];
 
 	public function __construct( array $params ) {
-		parent::__construct( $params );
+		$params['wanCache'] = new WANObjectCache( [ 'cache' => new HashBagOStuff() ] );
 
-		$this->dupCache = new HashBagOStuff();
+		parent::__construct( $params );
 	}
 
 	/**
@@ -111,7 +112,7 @@ class JobQueueMemory extends JobQueue {
 	/**
 	 * @see JobQueue::doPop
 	 *
-	 * @return RunnableJob|bool
+	 * @return RunnableJob|false
 	 */
 	protected function doPop() {
 		if ( $this->doGetSize() == 0 ) {
@@ -124,8 +125,7 @@ class JobQueueMemory extends JobQueue {
 		if ( $this->order === 'random' ) {
 			$key = array_rand( $unclaimed );
 		} else {
-			reset( $unclaimed );
-			$key = key( $unclaimed );
+			$key = array_key_first( $unclaimed );
 		}
 
 		$spec = $unclaimed[$key];
@@ -134,8 +134,7 @@ class JobQueueMemory extends JobQueue {
 
 		$job = $this->jobFromSpecInternal( $spec );
 
-		end( $claimed );
-		$job->setMetadata( 'claimId', key( $claimed ) );
+		$job->setMetadata( 'claimId', array_key_last( $claimed ) );
 
 		return $job;
 	}
@@ -155,7 +154,7 @@ class JobQueueMemory extends JobQueue {
 	}
 
 	/**
-	 * @see JobQueue::doDelete
+	 * @inheritDoc
 	 */
 	protected function doDelete() {
 		if ( isset( self::$data[$this->type][$this->domain] ) ) {
@@ -169,7 +168,7 @@ class JobQueueMemory extends JobQueue {
 	/**
 	 * @see JobQueue::getAllQueuedJobs
 	 *
-	 * @return Iterator of Job objects.
+	 * @return Iterator<RunnableJob> of Job objects.
 	 */
 	public function getAllQueuedJobs() {
 		$unclaimed = $this->getQueueData( 'unclaimed' );
@@ -188,7 +187,7 @@ class JobQueueMemory extends JobQueue {
 	/**
 	 * @see JobQueue::getAllAcquiredJobs
 	 *
-	 * @return Iterator of Job objects.
+	 * @return Iterator<RunnableJob> of Job objects.
 	 */
 	public function getAllAcquiredJobs() {
 		$claimed = $this->getQueueData( 'claimed' );
@@ -214,7 +213,7 @@ class JobQueueMemory extends JobQueue {
 
 	/**
 	 * @param string $field
-	 * @param mixed $init
+	 * @param mixed|null $init
 	 *
 	 * @return mixed
 	 */

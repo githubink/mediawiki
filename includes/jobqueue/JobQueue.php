@@ -1,7 +1,5 @@
 <?php
 /**
- * Job queue base code.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,15 +16,31 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @defgroup JobQueue JobQueue
  */
+
 use Liuggio\StatsdClient\Factory\StatsdDataFactoryInterface;
+use MediaWiki\JobQueue\JobFactory;
+use MediaWiki\MediaWikiServices;
+use Wikimedia\ObjectCache\WANObjectCache;
+use Wikimedia\RequestTimeout\TimeoutException;
+use Wikimedia\Stats\NullStatsdDataFactory;
+use Wikimedia\UUID\GlobalIdGenerator;
 
 /**
- * Class to handle enqueueing and running of background jobs
+ * @defgroup JobQueue JobQueue
+ *
+ *
+ * See [the architecture doc](@ref jobqueuearch) for more information.
+ */
+
+/**
+ * Base class for queueing and running background jobs from a storage backend.
+ *
+ * See [the architecture doc](@ref jobqueuearch) for more information.
  *
  * @ingroup JobQueue
  * @since 1.21
+ * @stable to extend
  */
 abstract class JobQueue {
 	/** @var string DB domain ID */
@@ -39,21 +53,43 @@ abstract class JobQueue {
 	protected $claimTTL;
 	/** @var int Maximum number of times to try a job */
 	protected $maxTries;
-	/** @var string|bool Read only rationale (or false if r/w) */
+	/** @var string|false Read only rationale (or false if r/w) */
 	protected $readOnlyReason;
 	/** @var StatsdDataFactoryInterface */
 	protected $stats;
+	/** @var GlobalIdGenerator */
+	protected $idGenerator;
 
-	/** @var BagOStuff */
-	protected $dupCache;
+	/** @var WANObjectCache */
+	protected $wanCache;
 
-	const QOS_ATOMIC = 1; // integer; "all-or-nothing" job insertions
+	/** @var bool */
+	protected $typeAgnostic;
 
-	const ROOTJOB_TTL = 2419200; // integer; seconds to remember root jobs (28 days)
+	private JobFactory $jobFactory;
+
+	/* Bit flag for "all-or-nothing" job insertions */
+	protected const QOS_ATOMIC = 1;
+
+	/* Seconds to remember root jobs (28 days) */
+	protected const ROOTJOB_TTL = 28 * 24 * 3600;
 
 	/**
+	 * @stable to call
+	 *
 	 * @param array $params
+	 * 	 - type : A job type, 'default' if typeAgnostic is set
+	 *   - domain : A DB domain ID
+	 *   - idGenerator : A GlobalIdGenerator instance.
+	 *   - wanCache : An instance of WANObjectCache to use for caching [default: none]
+	 *   - stats : An instance of StatsdDataFactoryInterface [default: none]
+	 *   - claimTTL : Seconds a job can be claimed for exclusive execution [default: forever]
+	 *   - maxTries : Total times a job can be tried, assuming claims expire [default: 3]
+	 *   - order : Queue order, one of ("fifo", "timestamp", "random") [default: variable]
+	 *   - readOnlyReason : Mark the queue as read-only with this reason [default: false]
+	 *   - typeAgnostic : If the jobqueue should operate agnostic to the job types
 	 * @throws JobQueueError
+	 *
 	 */
 	protected function __construct( array $params ) {
 		$this->domain = $params['domain'] ?? $params['wiki']; // b/c
@@ -70,32 +106,42 @@ abstract class JobQueue {
 		}
 		$this->readOnlyReason = $params['readOnlyReason'] ?? false;
 		$this->stats = $params['stats'] ?? new NullStatsdDataFactory();
-		$this->dupCache = $params['stash'] ?? new EmptyBagOStuff();
+		$this->wanCache = $params['wanCache'] ?? WANObjectCache::newEmpty();
+		$this->idGenerator = $params['idGenerator'];
+		if ( ( $params['typeAgnostic'] ?? false ) && !$this->supportsTypeAgnostic() ) {
+			throw new JobQueueError( __CLASS__ . " does not support type agnostic queues." );
+		}
+		$this->typeAgnostic = ( $params['typeAgnostic'] ?? false );
+		if ( $this->typeAgnostic ) {
+			$this->type = 'default';
+		}
+
+		$this->jobFactory = MediaWikiServices::getInstance()->getJobFactory();
 	}
 
 	/**
 	 * Get a job queue object of the specified type.
 	 * $params includes:
-	 *   - class      : What job class to use (determines job type)
-	 *   - domain     : Database domain ID of the wiki the jobs are for (defaults to current wiki)
-	 *   - type       : The name of the job types this queue handles
-	 *   - order      : Order that pop() selects jobs, one of "fifo", "timestamp" or "random".
-	 *                  If "fifo" is used, the queue will effectively be FIFO. Note that job
-	 *                  completion will not appear to be exactly FIFO if there are multiple
-	 *                  job runners since jobs can take different times to finish once popped.
-	 *                  If "timestamp" is used, the queue will at least be loosely ordered
-	 *                  by timestamp, allowing for some jobs to be popped off out of order.
-	 *                  If "random" is used, pop() will pick jobs in random order.
-	 *                  Note that it may only be weakly random (e.g. a lottery of the oldest X).
-	 *                  If "any" is choosen, the queue will use whatever order is the fastest.
-	 *                  This might be useful for improving concurrency for job acquisition.
-	 *   - claimTTL   : If supported, the queue will recycle jobs that have been popped
-	 *                  but not acknowledged as completed after this many seconds. Recycling
-	 *                  of jobs simply means re-inserting them into the queue. Jobs can be
-	 *                  attempted up to three times before being discarded.
-	 *   - readOnlyReason : Set this to a string to make the queue read-only.
-	 *   - stash      : A BagOStuff instance that can be used for root job deduplication
-	 *   - stats      : A StatsdDataFactoryInterface [optional]
+	 *   - class : What job class to use (determines job type)
+	 *   - domain : Database domain ID of the wiki the jobs are for (defaults to current wiki)
+	 *   - type : The name of the job types this queue handles
+	 *   - order : Order that pop() selects jobs, one of "fifo", "timestamp" or "random".
+	 *      If "fifo" is used, the queue will effectively be FIFO. Note that job
+	 *      completion will not appear to be exactly FIFO if there are multiple
+	 *      job runners since jobs can take different times to finish once popped.
+	 *      If "timestamp" is used, the queue will at least be loosely ordered
+	 *      by timestamp, allowing for some jobs to be popped off out of order.
+	 *      If "random" is used, pop() will pick jobs in random order.
+	 *      Note that it may only be weakly random (e.g. a lottery of the oldest X).
+	 *      If "any" is chosen, the queue will use whatever order is the fastest.
+	 *      This might be useful for improving concurrency for job acquisition.
+	 *   - claimTTL : If supported, the queue will recycle jobs that have been popped
+	 *      but not acknowledged as completed after this many seconds. Recycling
+	 *      of jobs simply means re-inserting them into the queue. Jobs can be
+	 *      attempted up to three times before being discarded.
+	 *   - readOnlyReason : Set this to a string to make the queue read-only. [optional]
+	 *   - idGenerator : A GlobalIdGenerator instance.
+	 *   - stats  : A StatsdDataFactoryInterface. [optional]
 	 *
 	 * Queue classes should throw an exception if they do not support the options given.
 	 *
@@ -108,6 +154,7 @@ abstract class JobQueue {
 		if ( !class_exists( $class ) ) {
 			throw new JobQueueError( "Invalid job queue class '$class'." );
 		}
+
 		$obj = new $class( $params );
 		if ( !( $obj instanceof self ) ) {
 			throw new JobQueueError( "Class '$class' is not a " . __CLASS__ . " class." );
@@ -121,14 +168,6 @@ abstract class JobQueue {
 	 */
 	final public function getDomain() {
 		return $this->domain;
-	}
-
-	/**
-	 * @return string Wiki ID
-	 * @deprecated 1.33
-	 */
-	final public function getWiki() {
-		return WikiMap::getWikiIdFromDbDomain( $this->domain );
 	}
 
 	/**
@@ -162,6 +201,7 @@ abstract class JobQueue {
 	/**
 	 * Find out if delayed jobs are supported for configuration validation
 	 *
+	 * @stable to override
 	 * @return bool Whether delayed jobs are supported
 	 */
 	protected function supportsDelayedJobs() {
@@ -177,7 +217,7 @@ abstract class JobQueue {
 	}
 
 	/**
-	 * @return string|bool Read-only rational or false if r/w
+	 * @return string|false Read-only rational or false if r/w
 	 * @since 1.27
 	 */
 	public function getReadOnlyReason() {
@@ -190,7 +230,7 @@ abstract class JobQueue {
 	 *
 	 * If caching is used, this might return false when there are actually no jobs.
 	 * If pop() is called and returns false then it should correct the cache. Also,
-	 * calling flushCaches() first prevents this. However, this affect is typically
+	 * calling flushCaches() first prevents this. However, this effect is typically
 	 * not distinguishable from the race condition between isEmpty() and pop().
 	 *
 	 * @return bool
@@ -267,6 +307,7 @@ abstract class JobQueue {
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::getDelayedCount()
 	 * @return int
 	 */
@@ -290,6 +331,7 @@ abstract class JobQueue {
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::getAbandonedCount()
 	 * @return int
 	 */
@@ -330,10 +372,8 @@ abstract class JobQueue {
 		}
 
 		foreach ( $jobs as $job ) {
-			if ( $job->getType() !== $this->type ) {
-				throw new JobQueueError(
-					"Got '{$job->getType()}' job; expected a '{$this->type}' job." );
-			} elseif ( $job->getReleaseTimestamp() && !$this->supportsDelayedJobs() ) {
+			$this->assertMatchingJobType( $job );
+			if ( $job->getReleaseTimestamp() && !$this->supportsDelayedJobs() ) {
 				throw new JobQueueError(
 					"Got delayed '{$job->getType()}' job; delays are not supported." );
 			}
@@ -361,7 +401,7 @@ abstract class JobQueue {
 	 * Outside callers should use JobQueueGroup::pop() instead of this function.
 	 *
 	 * @throws JobQueueError
-	 * @return RunnableJob|bool Returns false if there are no jobs
+	 * @return RunnableJob|false Returns false if there are no jobs
 	 */
 	final public function pop() {
 		$this->assertNotReadOnly();
@@ -371,9 +411,11 @@ abstract class JobQueue {
 		// Flag this job as an old duplicate based on its "root" job...
 		try {
 			if ( $job && $this->isRootJobOldDuplicate( $job ) ) {
-				$this->incrStats( 'dupe_pops', $this->type );
+				$this->incrStats( 'dupe_pops', $job->getType() );
 				$job = DuplicateJob::newFromJob( $job ); // convert to a no-op
 			}
+		} catch ( TimeoutException $e ) {
+			throw $e;
 		} catch ( Exception $e ) {
 			// don't lose jobs over this
 		}
@@ -383,7 +425,7 @@ abstract class JobQueue {
 
 	/**
 	 * @see JobQueue::pop()
-	 * @return RunnableJob|bool
+	 * @return RunnableJob|false
 	 */
 	abstract protected function doPop();
 
@@ -399,9 +441,7 @@ abstract class JobQueue {
 	 */
 	final public function ack( RunnableJob $job ) {
 		$this->assertNotReadOnly();
-		if ( $job->getType() !== $this->type ) {
-			throw new JobQueueError( "Got '{$job->getType()}' job; expected '{$this->type}'." );
-		}
+		$this->assertMatchingJobType( $job );
 
 		$this->doAck( $job );
 	}
@@ -427,7 +467,7 @@ abstract class JobQueue {
 	 * spawned when a template is edited. One can think of the task as "update links
 	 * of pages that use template X" and an instance of that task as a "root job".
 	 * However, what actually goes into the queue are range and leaf job subtypes.
-	 * Since these jobs include things like page ID ranges and DB master positions,
+	 * Since these jobs include things like page ID ranges and DB primary positions,
 	 * and can morph into smaller jobs recursively, simple duplicate detection
 	 * for individual jobs being identical (like that of job_sha1) is not useful.
 	 *
@@ -439,44 +479,43 @@ abstract class JobQueue {
 	 *
 	 * This does nothing for certain queue classes.
 	 *
+	 * @internal For use within JobQueue only
 	 * @param IJobSpecification $job
 	 * @throws JobQueueError
 	 * @return bool
 	 */
 	final public function deduplicateRootJob( IJobSpecification $job ) {
 		$this->assertNotReadOnly();
-		if ( $job->getType() !== $this->type ) {
-			throw new JobQueueError( "Got '{$job->getType()}' job; expected '{$this->type}'." );
-		}
+		$this->assertMatchingJobType( $job );
 
 		return $this->doDeduplicateRootJob( $job );
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::deduplicateRootJob()
 	 * @param IJobSpecification $job
 	 * @throws JobQueueError
 	 * @return bool
 	 */
 	protected function doDeduplicateRootJob( IJobSpecification $job ) {
-		if ( !$job->hasRootJobParams() ) {
+		$params = $job->hasRootJobParams() ? $job->getRootJobParams() : null;
+		if ( !$params ) {
 			throw new JobQueueError( "Cannot register root job; missing parameters." );
 		}
-		$params = $job->getRootJobParams();
 
-		$key = $this->getRootJobCacheKey( $params['rootJobSignature'] );
-		// Callers should call JobQueueGroup::push() before this method so that if the insert
-		// fails, the de-duplication registration will be aborted. Since the insert is
-		// deferred till "transaction idle", do the same here, so that the ordering is
-		// maintained. Having only the de-duplication registration succeed would cause
-		// jobs to become no-ops without any actual jobs that made them redundant.
-		$timestamp = $this->dupCache->get( $key ); // current last timestamp of this job
-		if ( $timestamp && $timestamp >= $params['rootJobTimestamp'] ) {
+		$key = $this->getRootJobCacheKey( $params['rootJobSignature'], $job->getType() );
+		// Callers should call JobQueueGroup::push() before this method so that if the
+		// insert fails, the de-duplication registration will be aborted. Having only the
+		// de-duplication registration succeed would cause jobs to become no-ops without
+		// any actual jobs that made them redundant.
+		$timestamp = $this->wanCache->get( $key ); // last known timestamp of such a root job
+		if ( $timestamp !== false && $timestamp >= $params['rootJobTimestamp'] ) {
 			return true; // a newer version of this root job was enqueued
 		}
 
 		// Update the timestamp of the last root job started at the location...
-		return $this->dupCache->set( $key, $params['rootJobTimestamp'], self::ROOTJOB_TTL );
+		return $this->wanCache->set( $key, $params['rootJobTimestamp'], self::ROOTJOB_TTL );
 	}
 
 	/**
@@ -487,28 +526,30 @@ abstract class JobQueue {
 	 * @return bool
 	 */
 	final protected function isRootJobOldDuplicate( IJobSpecification $job ) {
-		if ( $job->getType() !== $this->type ) {
-			throw new JobQueueError( "Got '{$job->getType()}' job; expected '{$this->type}'." );
-		}
-		$isDuplicate = $this->doIsRootJobOldDuplicate( $job );
+		$this->assertMatchingJobType( $job );
 
-		return $isDuplicate;
+		return $this->doIsRootJobOldDuplicate( $job );
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::isRootJobOldDuplicate()
 	 * @param IJobSpecification $job
 	 * @return bool
 	 */
 	protected function doIsRootJobOldDuplicate( IJobSpecification $job ) {
-		if ( !$job->hasRootJobParams() ) {
-			return false; // job has no de-deplication info
+		$params = $job->hasRootJobParams() ? $job->getRootJobParams() : null;
+		if ( !$params ) {
+			return false; // job has no de-duplication info
 		}
-		$params = $job->getRootJobParams();
 
-		$key = $this->getRootJobCacheKey( $params['rootJobSignature'] );
+		$key = $this->getRootJobCacheKey( $params['rootJobSignature'], $job->getType() );
 		// Get the last time this root job was enqueued
-		$timestamp = $this->dupCache->get( $key );
+		$timestamp = $this->wanCache->get( $key );
+		if ( $timestamp === false || $params['rootJobTimestamp'] > $timestamp ) {
+			// Update the timestamp of the last known root job started at the location...
+			$this->wanCache->set( $key, $params['rootJobTimestamp'], self::ROOTJOB_TTL );
+		}
 
 		// Check if a new root job was started at the location after this one's...
 		return ( $timestamp && $timestamp > $params['rootJobTimestamp'] );
@@ -516,20 +557,21 @@ abstract class JobQueue {
 
 	/**
 	 * @param string $signature Hash identifier of the root job
+	 * @param string $type job type
 	 * @return string
 	 */
-	protected function getRootJobCacheKey( $signature ) {
-		return $this->dupCache->makeGlobalKey(
+	protected function getRootJobCacheKey( $signature, $type ) {
+		return $this->wanCache->makeGlobalKey(
 			'jobqueue',
 			$this->domain,
-			$this->type,
+			$type,
 			'rootjob',
 			$signature
 		);
 	}
 
 	/**
-	 * Deleted all unclaimed and delayed jobs from the queue
+	 * Delete all unclaimed and delayed jobs from the queue
 	 *
 	 * @throws JobQueueError
 	 * @since 1.22
@@ -542,6 +584,7 @@ abstract class JobQueue {
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::delete()
 	 * @throws JobQueueError
 	 */
@@ -562,6 +605,7 @@ abstract class JobQueue {
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::waitForBackups()
 	 * @return void
 	 */
@@ -578,6 +622,7 @@ abstract class JobQueue {
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::flushCaches()
 	 * @return void
 	 */
@@ -589,7 +634,7 @@ abstract class JobQueue {
 	 * This does not include jobs that are currently acquired or delayed.
 	 * Note: results may be stale if the queue is concurrently modified.
 	 *
-	 * @return Iterator
+	 * @return Iterator<RunnableJob>
 	 * @throws JobQueueError
 	 */
 	abstract public function getAllQueuedJobs();
@@ -598,7 +643,8 @@ abstract class JobQueue {
 	 * Get an iterator to traverse over all delayed jobs in this queue.
 	 * Note: results may be stale if the queue is concurrently modified.
 	 *
-	 * @return Iterator
+	 * @stable to override
+	 * @return Iterator<RunnableJob>
 	 * @throws JobQueueError
 	 * @since 1.22
 	 */
@@ -612,7 +658,8 @@ abstract class JobQueue {
 	 * Callers should be quick to iterator over it or few results
 	 * will be returned due to jobs being acknowledged and deleted
 	 *
-	 * @return Iterator
+	 * @stable to override
+	 * @return Iterator<RunnableJob>
 	 * @throws JobQueueError
 	 * @since 1.26
 	 */
@@ -623,7 +670,8 @@ abstract class JobQueue {
 	/**
 	 * Get an iterator to traverse over all abandoned jobs in this queue
 	 *
-	 * @return Iterator
+	 * @stable to override
+	 * @return Iterator<RunnableJob>
 	 * @throws JobQueueError
 	 * @since 1.25
 	 */
@@ -634,7 +682,8 @@ abstract class JobQueue {
 	/**
 	 * Do not use this function outside of JobQueue/JobQueueGroup
 	 *
-	 * @return string
+	 * @stable to override
+	 * @return string|null
 	 * @since 1.22
 	 */
 	public function getCoalesceLocationInternal() {
@@ -655,6 +704,7 @@ abstract class JobQueue {
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::getSiblingQueuesWithJobs()
 	 * @param array $types List of queues types
 	 * @return array|null (list of queue types) or null if unsupported
@@ -678,6 +728,7 @@ abstract class JobQueue {
 	}
 
 	/**
+	 * @stable to override
 	 * @see JobQueue::getSiblingQueuesSize()
 	 * @param array $types List of queues types
 	 * @return array|null (list of queue types) or null if unsupported
@@ -692,8 +743,7 @@ abstract class JobQueue {
 	 * @return Job
 	 */
 	protected function factoryJob( $command, $params ) {
-		// @TODO: dependency inject this as a callback
-		return Job::factory( $command, $params );
+		return $this->jobFactory->newJob( $command, $params );
 	}
 
 	/**
@@ -706,7 +756,20 @@ abstract class JobQueue {
 	}
 
 	/**
-	 * Call wfIncrStats() for the queue overall and for the queue type
+	 * @param IJobSpecification $job
+	 * @throws JobQueueError
+	 */
+	private function assertMatchingJobType( IJobSpecification $job ) {
+		if ( $this->typeAgnostic ) {
+			return;
+		}
+		if ( $job->getType() !== $this->type ) {
+			throw new JobQueueError( "Got '{$job->getType()}' job; expected '{$this->type}'." );
+		}
+	}
+
+	/**
+	 * Call StatsdDataFactoryInterface::updateCount() for the queue overall and for the queue type
 	 *
 	 * @param string $key Event type
 	 * @param string $type Job type
@@ -716,5 +779,15 @@ abstract class JobQueue {
 	protected function incrStats( $key, $type, $delta = 1 ) {
 		$this->stats->updateCount( "jobqueue.{$key}.all", $delta );
 		$this->stats->updateCount( "jobqueue.{$key}.{$type}", $delta );
+	}
+
+	/**
+	 * Subclasses should set this to true if they support type agnostic queues
+	 *
+	 * @return bool
+	 * @since 1.38
+	 */
+	protected function supportsTypeAgnostic(): bool {
+		return false;
 	}
 }

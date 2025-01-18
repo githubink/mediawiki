@@ -3,13 +3,13 @@
 		"authors": [
 			"Kaajawa",
 			"Mahitgar",
+			"NehalDaveND",
 			"Praju23",
+			"Sau6402",
+			"Sureshkhole",
 			"V.narsikar",
 			"Ydyashad",
-			"संतोष दहिवळ",
-			"NehalDaveND",
-			"Sau6402",
-			"Sureshkhole"
+			"संतोष दहिवळ"
 		]
 	},
 	"ooui-outline-control-move-down": "घटक (आयटम) खाली सरकवा",
@@ -26,7 +26,6 @@
 	"ooui-dialog-process-retry": "पुन्हा प्रयत्न करा",
 	"ooui-dialog-process-continue": "चालू ठेवा",
 	"ooui-selectfile-button-select": "संचिका निवडा",
-	"ooui-selectfile-not-supported": "संचिका निवडणे साहाय्यीकृत नाही",
 	"ooui-selectfile-placeholder": "संचिका निवडल्या गेली नाही",
 	"ooui-selectfile-dragdrop-placeholder": "संचिका येथे टाका"
 }

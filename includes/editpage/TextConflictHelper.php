@@ -1,9 +1,5 @@
 <?php
 /**
- * Helper for displaying edit conflicts to users
- *
- * Copyright (C) 2017 Kunal Mehta <legoktm@member.fsf.org>
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -24,18 +20,22 @@
 
 namespace MediaWiki\EditPage;
 
-use Content;
-use ContentHandler;
-use Html;
-use IBufferingStatsdDataFactory;
-use OutputPage;
-use Title;
+use MediaWiki\Content\Content;
+use MediaWiki\Content\ContentHandler;
+use MediaWiki\Content\IContentHandlerFactory;
+use MediaWiki\Html\Html;
+use MediaWiki\Output\OutputPage;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+use MWUnknownContentModelException;
+use Wikimedia\Stats\IBufferingStatsdDataFactory;
+use Wikimedia\Stats\StatsFactory;
 
 /**
- * Helper for displaying edit conflicts in text content
- * models to users
+ * Helper for displaying edit conflicts in text content models to users
  *
  * @since 1.31
+ * @author Kunal Mehta <legoktm@debian.org>
  */
 class TextConflictHelper {
 
@@ -47,12 +47,12 @@ class TextConflictHelper {
 	/**
 	 * @var null|string
 	 */
-	public $contentModel = null;
+	public $contentModel;
 
 	/**
 	 * @var null|string
 	 */
-	public $contentFormat = null;
+	public $contentFormat;
 
 	/**
 	 * @var OutputPage
@@ -60,7 +60,7 @@ class TextConflictHelper {
 	protected $out;
 
 	/**
-	 * @var IBufferingStatsdDataFactory
+	 * @var IBufferingStatsdDataFactory|StatsFactory
 	 */
 	protected $stats;
 
@@ -80,20 +80,33 @@ class TextConflictHelper {
 	protected $storedversion = '';
 
 	/**
+	 * @var IContentHandlerFactory
+	 */
+	private $contentHandlerFactory;
+
+	/**
 	 * @param Title $title
 	 * @param OutputPage $out
-	 * @param IBufferingStatsdDataFactory $stats
+	 * @param IBufferingStatsdDataFactory|StatsFactory $stats
 	 * @param string $submitLabel
+	 * @param IContentHandlerFactory $contentHandlerFactory Required param with legacy support
+	 *
+	 * @throws MWUnknownContentModelException
 	 */
-	public function __construct( Title $title, OutputPage $out, IBufferingStatsdDataFactory $stats,
-		$submitLabel
+	public function __construct(
+		Title $title, OutputPage $out, $stats, $submitLabel,
+		IContentHandlerFactory $contentHandlerFactory
 	) {
 		$this->title = $title;
 		$this->out = $out;
 		$this->stats = $stats;
 		$this->submitLabel = $submitLabel;
 		$this->contentModel = $title->getContentModel();
-		$this->contentFormat = ContentHandler::getForModelID( $this->contentModel )->getDefaultFormat();
+		$this->contentHandlerFactory = $contentHandlerFactory;
+
+		$this->contentFormat = $this->contentHandlerFactory
+			->getContentHandler( $this->contentModel )
+			->getDefaultFormat();
 	}
 
 	/**
@@ -121,33 +134,112 @@ class TextConflictHelper {
 
 	/**
 	 * Record a user encountering an edit conflict
+	 * @param User|null $user
 	 */
-	public function incrementConflictStats() {
-		$this->stats->increment( 'edit.failures.conflict' );
+	public function incrementConflictStats( ?User $user = null ) {
+		$namespace = 'n/a';
+		$userBucket = 'n/a';
+		$statsdMetrics = [ 'edit.failures.conflict' ];
+
 		// Only include 'standard' namespaces to avoid creating unknown numbers of statsd metrics
 		if (
 			$this->title->getNamespace() >= NS_MAIN &&
 			$this->title->getNamespace() <= NS_CATEGORY_TALK
 		) {
-			$this->stats->increment(
-				'edit.failures.conflict.byNamespaceId.' . $this->title->getNamespace()
-			);
+			// getNsText() returns empty string if getNamespace() === NS_MAIN
+			$namespace = $this->title->getNsText() ?: 'Main';
+			$statsdMetrics[] = 'edit.failures.conflict.byNamespaceId.' . $this->title->getNamespace();
+		}
+		if ( $user ) {
+			$userBucket = $this->getUserBucket( $user->getEditCount() );
+			$statsdMetrics[] = 'edit.failures.conflict.byUserEdits.' . $userBucket;
+		}
+		if ( $this->stats instanceof StatsFactory ) {
+			$this->stats->getCounter( 'edit_failure_total' )
+				->setLabel( 'cause', 'conflict' )
+				->setLabel( 'namespace', $namespace )
+				->setLabel( 'user_bucket', $userBucket )
+				->copyToStatsdAt( $statsdMetrics )
+				->increment();
+		}
+
+		if ( $this->stats instanceof IBufferingStatsdDataFactory ) {
+			foreach ( $statsdMetrics as $metric ) {
+				$this->stats->increment( $metric );
+			}
 		}
 	}
 
 	/**
 	 * Record when a user has resolved an edit conflict
+	 * @param User|null $user
 	 */
-	public function incrementResolvedStats() {
-		$this->stats->increment( 'edit.failures.conflict.resolved' );
+	public function incrementResolvedStats( ?User $user = null ) {
+		$namespace = 'n/a';
+		$userBucket = 'n/a';
+		$statsdMetrics = [ 'edit.failures.conflict.resolved' ];
+
 		// Only include 'standard' namespaces to avoid creating unknown numbers of statsd metrics
 		if (
 			$this->title->getNamespace() >= NS_MAIN &&
 			$this->title->getNamespace() <= NS_CATEGORY_TALK
 		) {
-			$this->stats->increment(
-				'edit.failures.conflict.resolved.byNamespaceId.' . $this->title->getNamespace()
-			);
+			// getNsText() returns empty string if getNamespace() === NS_MAIN
+			$namespace = $this->title->getNsText() ?: 'Main';
+			$statsdMetrics[] = 'edit.failures.conflict.resolved.byNamespaceId.' . $this->title->getNamespace();
+		}
+
+		if ( $user ) {
+			$userBucket = $this->getUserBucket( $user->getEditCount() );
+			$statsdMetrics[] = 'edit.failures.conflict.resolved.byUserEdits.' . $userBucket;
+		}
+
+		if ( $this->stats instanceof StatsFactory ) {
+			$this->stats->getCounter( 'edit_failure_resolved_total' )
+				->setLabel( 'cause', 'conflict' )
+				->setLabel( 'namespace', $namespace )
+				->setLabel( 'user_bucket', $userBucket )
+				->copyToStatsdAt( $statsdMetrics )
+				->increment();
+		}
+
+		if ( $this->stats instanceof IBufferingStatsdDataFactory ) {
+			foreach ( $statsdMetrics as $metric ) {
+				$this->stats->increment( $metric );
+			}
+		}
+	}
+
+	/**
+	 * Retained temporarily for backwards-compatibility.
+	 *
+	 * This action should be moved into incrementConflictStats, incrementResolvedStats.
+	 *
+	 * @deprecated since 1.42, do not use
+	 * @param int|null $userEdits
+	 * @param string $keyPrefixBase
+	 */
+	protected function incrementStatsByUserEdits( $userEdits, $keyPrefixBase ) {
+		if ( $this->stats instanceof IBufferingStatsdDataFactory ) {
+			$this->stats->increment( $keyPrefixBase . '.byUserEdits.' . $this->getUserBucket( $userEdits ) );
+		}
+	}
+
+	/**
+	 * @param int|null $userEdits
+	 * @return string
+	 */
+	protected function getUserBucket( ?int $userEdits ): string {
+		if ( $userEdits === null ) {
+			return 'anon';
+		} elseif ( $userEdits > 200 ) {
+			return 'over200';
+		} elseif ( $userEdits > 100 ) {
+			return 'over100';
+		} elseif ( $userEdits > 10 ) {
+			return 'over10';
+		} else {
+			return 'under11';
 		}
 	}
 
@@ -166,12 +258,16 @@ class TextConflictHelper {
 	 * HTML to build the textbox1 on edit conflicts
 	 *
 	 * @param array $customAttribs
+	 * @return string HTML
 	 */
 	public function getEditConflictMainTextBox( array $customAttribs = [] ) {
 		$builder = new TextboxBuilder();
 		$classes = $builder->getTextboxProtectionCSSClasses( $this->title );
 
-		$attribs = [ 'tabindex' => 1 ];
+		$attribs = [
+			'aria-label' => $this->out->msg( 'edit-textarea-aria-label' )->text(),
+			'tabindex' => 1,
+		];
 		$attribs += $customAttribs;
 
 		$attribs = $builder->mergeClassesIntoAttributes( $classes, $attribs );
@@ -183,8 +279,10 @@ class TextConflictHelper {
 			$this->title
 		);
 
-		$this->out->addHTML(
-			Html::textarea( 'wpTextbox1', $builder->addNewLineAtEnd( $this->storedversion ), $attribs )
+		return Html::textarea(
+			'wpTextbox1',
+			$builder->addNewLineAtEnd( $this->storedversion ),
+			$attribs
 		);
 	}
 
@@ -217,7 +315,7 @@ class TextConflictHelper {
 
 		$yourContent = $this->toEditContent( $this->yourtext );
 		$storedContent = $this->toEditContent( $this->storedversion );
-		$handler = ContentHandler::getForModelID( $this->contentModel );
+		$handler = $this->contentHandlerFactory->getContentHandler( $this->contentModel );
 		$diffEngine = $handler->createDifferenceEngine( $this->out );
 
 		$diffEngine->setContent( $yourContent, $storedContent );

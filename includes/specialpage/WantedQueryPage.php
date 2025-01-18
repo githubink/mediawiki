@@ -1,7 +1,5 @@
 <?php
 /**
- * Class definition for a wanted query page.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,32 +16,38 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup SpecialPage
  */
 
-use Wikimedia\Rdbms\IResultWrapper;
+namespace MediaWiki\SpecialPage;
+
+use MediaWiki\Title\Title;
+use Skin;
+use stdClass;
 use Wikimedia\Rdbms\IDatabase;
+use Wikimedia\Rdbms\IResultWrapper;
 
 /**
- * Class definition for a wanted query page like
- * WantedPages, WantedTemplates, etc
+ * Base class for a "wanted" query page like WantedPages, WantedTemplates, etc
+ *
+ * @stable to extend
  * @ingroup SpecialPage
  */
 abstract class WantedQueryPage extends QueryPage {
-	function isExpensive() {
+	public function isExpensive() {
 		return true;
 	}
 
-	function isSyndicated() {
+	public function isSyndicated() {
 		return false;
 	}
 
 	/**
 	 * Cache page existence for performance
+	 * @stable to override
 	 * @param IDatabase $db
 	 * @param IResultWrapper $res
 	 */
-	function preprocessResults( $db, $res ) {
+	protected function preprocessResults( $db, $res ) {
 		$this->executeLBFromResultWrapper( $res );
 	}
 
@@ -53,17 +57,20 @@ abstract class WantedQueryPage extends QueryPage {
 	 * kluge for Special:WantedFiles, which may contain false
 	 * positives for files that exist e.g. in a shared repo (bug
 	 * 6220).
+	 * @stable to override
 	 * @return bool
 	 */
-	function forceExistenceCheck() {
+	protected function forceExistenceCheck() {
 		return false;
 	}
 
 	/**
 	 * Format an individual result
 	 *
+	 * @stable to override
+	 *
 	 * @param Skin $skin Skin to use for UI elements
-	 * @param object $result Result row
+	 * @param stdClass $result Result row
 	 * @return string
 	 */
 	public function formatResult( $skin, $result ) {
@@ -75,13 +82,7 @@ abstract class WantedQueryPage extends QueryPage {
 					? '<del>' . $linkRenderer->makeLink( $title ) . '</del>'
 					: $linkRenderer->makeLink( $title );
 			} else {
-				$pageLink = $linkRenderer->makeLink(
-					$title,
-					null,
-					[],
-					[],
-					[ 'broken' ]
-				);
+				$pageLink = $linkRenderer->makeBrokenLink( $title );
 			}
 			return $this->getLanguage()->specialList( $pageLink, $this->makeWlhLink( $title, $result ) );
 		} else {
@@ -102,6 +103,8 @@ abstract class WantedQueryPage extends QueryPage {
 	 * @note This will only be run if the page is cached (ie $wgMiserMode = true)
 	 *   unless forceExistenceCheck() is true.
 	 * @since 1.24
+	 * @stable to override
+	 *
 	 * @param Title $title
 	 * @return bool
 	 */
@@ -113,10 +116,10 @@ abstract class WantedQueryPage extends QueryPage {
 	 * Make a "what links here" link for a given title
 	 *
 	 * @param Title $title Title to make the link for
-	 * @param object $result Result row
+	 * @param stdClass $result Result row
 	 * @return string
 	 */
-	private function makeWlhLink( $title, $result ) {
+	protected function makeWlhLink( $title, $result ) {
 		$wlh = SpecialPage::getTitleFor( 'Whatlinkshere', $title->getPrefixedText() );
 		$label = $this->msg( 'nlinks' )->numParams( $result->value )->text();
 		return $this->getLinkRenderer()->makeLink( $wlh, $label );
@@ -125,33 +128,39 @@ abstract class WantedQueryPage extends QueryPage {
 	/**
 	 * Order by title for pages with the same number of links to them
 	 *
+	 * @stable to override
 	 * @return array
 	 * @since 1.29
 	 */
-	function getOrderFields() {
+	protected function getOrderFields() {
 		return [ 'value DESC', 'namespace', 'title' ];
 	}
 
 	/**
 	 * Do not order descending for all order fields.  We will use DESC only on one field, see
 	 * getOrderFields above. This overwrites sortDescending from QueryPage::getOrderFields().
-	 * Do NOT change this to true unless you remove the phrase DESC in getOrderFiels above.
+	 * Do NOT change this to true unless you remove the phrase DESC in getOrderFields above.
 	 * If you do a database error will be thrown due to double adding DESC to query!
 	 *
+	 * @stable to override
 	 * @return bool
 	 * @since 1.29
 	 */
-	function sortDescending() {
+	protected function sortDescending() {
 		return false;
 	}
 
 	/**
 	 * Also use the order fields returned by getOrderFields when fetching from the cache.
+	 * @stable to override
 	 * @return array
 	 * @since 1.29
 	 */
-	function getCacheOrderFields() {
+	protected function getCacheOrderFields() {
 		return $this->getOrderFields();
 	}
 
 }
+
+/** @deprecated class alias since 1.41 */
+class_alias( WantedQueryPage::class, 'WantedQueryPage' );

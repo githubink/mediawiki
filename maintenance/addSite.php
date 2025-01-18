@@ -1,13 +1,18 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+// @codeCoverageIgnoreStart
+require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
-$basePath = getenv( 'MW_INSTALL_PATH' ) !== false ? getenv( 'MW_INSTALL_PATH' ) : __DIR__ . '/..';
-
-require_once $basePath . '/maintenance/Maintenance.php';
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Site\MediaWikiSite;
 
 /**
  * Maintenance script for adding a site definition into the sites table.
+ *
+ * The sites table is cached in the local-server cache,
+ * so you should reload your webserver and other long-running MediaWiki
+ * PHP processes after running this script.
  *
  * @since 1.29
  *
@@ -17,29 +22,31 @@ require_once $basePath . '/maintenance/Maintenance.php';
 class AddSite extends Maintenance {
 
 	public function __construct() {
+		parent::__construct();
+
 		$this->addDescription( 'Add a site definition into the sites table.' );
 
 		$this->addArg( 'globalid', 'The global id of the site to add, e.g. "wikipedia".', true );
 		$this->addArg( 'group', 'In which group this site should be sorted in.', true );
-		$this->addOption( 'language', 'The language code of the site, e.g. "de".' );
-		$this->addOption( 'interwiki-id', 'The interwiki ID of the site.' );
-		$this->addOption( 'navigation-id', 'The navigation ID of the site.' );
+		$this->addOption( 'language', 'The language code of the site, e.g. "de".', false, true );
+		$this->addOption( 'interwiki-id', 'The interwiki ID of the site.', false, true );
+		$this->addOption( 'navigation-id', 'The navigation ID of the site.', false, true );
 		$this->addOption( 'pagepath', 'The URL to pages of this site, e.g.' .
-			' https://example.com/wiki/\$1.' );
-		$this->addOption( 'filepath', 'The URL to files of this site, e.g. https://example
-		.com/w/\$1.' );
-
-		parent::__construct();
+			' https://example.com/wiki/\$1.', false, true );
+		$this->addOption( 'filepath', 'The URL to files of this site, e.g. https://example' .
+			'.com/w/\$1.', false, true );
 	}
 
 	/**
 	 * Imports the site described by the parameters (see self::__construct()) passed to this
 	 * maintenance sccript into the sites table of MediaWiki.
-	 * @return bool
 	 */
 	public function execute() {
-		$siteStore = MediaWikiServices::getInstance()->getSiteStore();
-		$siteStore->reset();
+		$siteStore = $this->getServiceContainer()->getSiteStore();
+		if ( method_exists( $siteStore, 'reset' ) ) {
+			// @phan-suppress-next-line PhanUndeclaredMethod
+			$siteStore->reset();
+		}
 
 		$globalId = $this->getArg( 0 );
 		$group = $this->getArg( 1 );
@@ -50,13 +57,11 @@ class AddSite extends Maintenance {
 		$filepath = $this->getOption( 'filepath' );
 
 		if ( !is_string( $globalId ) || !is_string( $group ) ) {
-			echo "Arguments globalid and group need to be strings.\n";
-			return false;
+			$this->fatalError( 'Arguments globalid and group need to be strings.' );
 		}
 
 		if ( $siteStore->getSite( $globalId ) !== null ) {
-			echo "Site with global id $globalId already exists.\n";
-			return false;
+			$this->fatalError( "Site with global id $globalId already exists." );
 		}
 
 		$site = new MediaWikiSite();
@@ -81,12 +86,18 @@ class AddSite extends Maintenance {
 		$siteStore->saveSites( [ $site ] );
 
 		if ( method_exists( $siteStore, 'reset' ) ) {
+			// @phan-suppress-next-line PhanUndeclaredMethod
 			$siteStore->reset();
 		}
 
-		echo "Done.\n";
+		$this->output(
+			'Done. Reload the web server and other long-running PHP processes '
+			. "to refresh the local-server cache of the sites table.\n"
+		);
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = AddSite::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

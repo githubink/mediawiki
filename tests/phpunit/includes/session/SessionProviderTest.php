@@ -1,51 +1,81 @@
 <?php
 
-namespace MediaWiki\Session;
+namespace MediaWiki\Tests\Session;
 
-use MediaWikiTestCase;
+use BadMethodCallException;
+use InvalidArgumentException;
+use MediaWiki\Config\HashConfig;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Session\MetadataMergeException;
+use MediaWiki\Session\SessionInfo;
+use MediaWiki\Session\SessionManager;
+use MediaWiki\Session\SessionProvider;
+use MediaWiki\User\User;
+use MediaWiki\User\UserNameUtils;
+use MediaWikiIntegrationTestCase;
+use TestLogger;
 use Wikimedia\TestingAccessWrapper;
 
 /**
  * @group Session
  * @group Database
- * @covers MediaWiki\Session\SessionProvider
+ * @covers \MediaWiki\Session\SessionProvider
  */
-class SessionProviderTest extends MediaWikiTestCase {
+class SessionProviderTest extends MediaWikiIntegrationTestCase {
+	use SessionProviderTestTrait;
 
 	public function testBasics() {
+		$this->hideDeprecated( 'MediaWiki\Session\SessionProvider::setConfig' );
+		$this->hideDeprecated( 'MediaWiki\Session\SessionProvider::setLogger' );
+		$this->hideDeprecated( 'MediaWiki\Session\SessionProvider::setManager' );
+		$this->hideDeprecated( 'MediaWiki\Session\SessionProvider::setHookContainer' );
+
 		$manager = new SessionManager();
-		$logger = new \TestLogger();
-		$config = new \HashConfig();
+		$logger = new TestLogger();
+		$config = new HashConfig();
+		$hookContainer = $this->createHookContainer();
+		$userNameUtils = $this->createNoOpMock( UserNameUtils::class );
 
 		$provider = $this->getMockForAbstractClass( SessionProvider::class );
 		$priv = TestingAccessWrapper::newFromObject( $provider );
 
+		$this->initProvider( $provider, $logger, $config, $manager, $hookContainer, $userNameUtils );
+		$this->assertSame( $logger, $priv->logger );
+		$this->assertSame( $config, $priv->getConfig() );
+		$this->assertSame( $manager, $priv->manager );
+		$this->assertSame( $manager, $provider->getManager() );
+		$this->assertSame( $hookContainer, $priv->getHookContainer() );
+		$this->assertSame( $userNameUtils, $priv->userNameUtils );
 		$provider->setConfig( $config );
-		$this->assertSame( $config, $priv->config );
+		$this->assertSame( $config, $priv->getConfig() );
 		$provider->setLogger( $logger );
 		$this->assertSame( $logger, $priv->logger );
 		$provider->setManager( $manager );
 		$this->assertSame( $manager, $priv->manager );
 		$this->assertSame( $manager, $provider->getManager() );
+		$provider->setHookContainer( $hookContainer );
+		$this->assertSame( $hookContainer, $priv->getHookContainer() );
 
-		$provider->invalidateSessionsForUser( new \User );
+		$provider->invalidateSessionsForUser( new User );
 
 		$this->assertSame( [], $provider->getVaryHeaders() );
 		$this->assertSame( [], $provider->getVaryCookies() );
-		$this->assertSame( null, $provider->suggestLoginUsername( new \FauxRequest ) );
+		$this->assertSame( null, $provider->suggestLoginUsername( new FauxRequest ) );
 
 		$this->assertSame( get_class( $provider ), (string)$provider );
 
 		$this->assertNull( $provider->getRememberUserDuration() );
 
 		$this->assertNull( $provider->whyNoSession() );
+		$this->assertFalse( $provider->safeAgainstCsrf() );
 
 		$info = new SessionInfo( SessionInfo::MIN_PRIORITY, [
 			'id' => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
 			'provider' => $provider,
 		] );
 		$metadata = [ 'foo' ];
-		$this->assertTrue( $provider->refreshSessionInfo( $info, new \FauxRequest, $metadata ) );
+		$this->assertTrue( $provider->refreshSessionInfo( $info, new FauxRequest, $metadata ) );
 		$this->assertSame( [ 'foo' ], $metadata );
 	}
 
@@ -59,13 +89,13 @@ class SessionProviderTest extends MediaWikiTestCase {
 		$manager = new SessionManager();
 
 		$provider = $this->getMockBuilder( SessionProvider::class )
-			->setMethods( [ 'canChangeUser', 'persistsSessionId' ] )
+			->onlyMethods( [ 'canChangeUser', 'persistsSessionId' ] )
 			->getMockForAbstractClass();
-		$provider->expects( $this->any() )->method( 'persistsSessionId' )
-			->will( $this->returnValue( $persistId ) );
-		$provider->expects( $this->any() )->method( 'canChangeUser' )
-			->will( $this->returnValue( $persistUser ) );
-		$provider->setManager( $manager );
+		$provider->method( 'persistsSessionId' )
+			->willReturn( $persistId );
+		$provider->method( 'canChangeUser' )
+			->willReturn( $persistUser );
+		$this->initProvider( $provider, null, null, $manager );
 
 		if ( $ok ) {
 			$info = $provider->newSessionInfo();
@@ -118,21 +148,21 @@ class SessionProviderTest extends MediaWikiTestCase {
 
 	public function testImmutableSessions() {
 		$provider = $this->getMockBuilder( SessionProvider::class )
-			->setMethods( [ 'canChangeUser', 'persistsSessionId' ] )
+			->onlyMethods( [ 'canChangeUser', 'persistsSessionId' ] )
 			->getMockForAbstractClass();
-		$provider->expects( $this->any() )->method( 'canChangeUser' )
-			->will( $this->returnValue( true ) );
+		$provider->method( 'canChangeUser' )
+			->willReturn( true );
 		$provider->preventSessionsForUser( 'Foo' );
 
 		$provider = $this->getMockBuilder( SessionProvider::class )
-			->setMethods( [ 'canChangeUser', 'persistsSessionId' ] )
+			->onlyMethods( [ 'canChangeUser', 'persistsSessionId' ] )
 			->getMockForAbstractClass();
-		$provider->expects( $this->any() )->method( 'canChangeUser' )
-			->will( $this->returnValue( false ) );
+		$provider->method( 'canChangeUser' )
+			->willReturn( false );
 		try {
 			$provider->preventSessionsForUser( 'Foo' );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \BadMethodCallException $ex ) {
+		} catch ( BadMethodCallException $ex ) {
 			$this->assertSame(
 				'MediaWiki\\Session\\SessionProvider::preventSessionsForUser must be implemented ' .
 					'when canChangeUser() is false',
@@ -142,13 +172,13 @@ class SessionProviderTest extends MediaWikiTestCase {
 	}
 
 	public function testHashToSessionId() {
-		$config = new \HashConfig( [
-			'SecretKey' => 'Shhh!',
+		$config = new HashConfig( [
+			MainConfigNames::SecretKey => 'Shhh!',
 		] );
 
 		$provider = $this->getMockForAbstractClass( SessionProvider::class,
 			[], 'MockSessionProvider' );
-		$provider->setConfig( $config );
+		$this->initProvider( $provider, null, $config );
 		$priv = TestingAccessWrapper::newFromObject( $provider );
 
 		$this->assertSame( 'eoq8cb1mg7j30ui5qolafps4hg29k5bb', $priv->hashToSessionId( 'foobar' ) );
@@ -158,7 +188,7 @@ class SessionProviderTest extends MediaWikiTestCase {
 		try {
 			$priv->hashToSessionId( [] );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame(
 				'$data must be a string, array was passed',
 				$ex->getMessage()
@@ -167,9 +197,9 @@ class SessionProviderTest extends MediaWikiTestCase {
 		try {
 			$priv->hashToSessionId( '', false );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame(
-				'$key must be a string or null, boolean was passed',
+				'$key must be a string or null, bool was passed',
 				$ex->getMessage()
 			);
 		}
@@ -181,7 +211,8 @@ class SessionProviderTest extends MediaWikiTestCase {
 
 		$this->assertSame(
 			'MockSessionProvider sessions',
-			$provider->describe( \Language::factory( 'en' ) )
+			$provider->describe(
+				$this->getServiceContainer()->getLanguageFactory()->getLanguage( 'en' ) )
 		);
 	}
 
@@ -192,7 +223,7 @@ class SessionProviderTest extends MediaWikiTestCase {
 		try {
 			$provider->getAllowedUserRights( $backend );
 			$this->fail( 'Expected exception not thrown' );
-		} catch ( \InvalidArgumentException $ex ) {
+		} catch ( InvalidArgumentException $ex ) {
 			$this->assertSame(
 				'Backend\'s provider isn\'t $this',
 				$ex->getMessage()

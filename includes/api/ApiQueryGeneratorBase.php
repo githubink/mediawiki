@@ -20,11 +20,16 @@
  * @file
  */
 
+namespace MediaWiki\Api;
+
 /**
+ * @stable to extend
+ *
  * @ingroup API
  */
 abstract class ApiQueryGeneratorBase extends ApiQueryBase {
 
+	/** @var ApiPageSet|null */
 	private $mGeneratorPageSet = null;
 
 	/**
@@ -35,9 +40,6 @@ abstract class ApiQueryGeneratorBase extends ApiQueryBase {
 	 *        by calling getPageSet() when in generator mode.
 	 */
 	public function setGeneratorMode( ApiPageSet $generatorPageSet ) {
-		if ( $generatorPageSet === null ) {
-			ApiBase::dieDebug( __METHOD__, 'Required parameter missing - $generatorPageSet' );
-		}
 		$this->mGeneratorPageSet = $generatorPageSet;
 	}
 
@@ -56,11 +58,7 @@ abstract class ApiQueryGeneratorBase extends ApiQueryBase {
 	 * @return ApiPageSet
 	 */
 	protected function getPageSet() {
-		if ( $this->mGeneratorPageSet !== null ) {
-			return $this->mGeneratorPageSet;
-		}
-
-		return parent::getPageSet();
+		return $this->mGeneratorPageSet ?? parent::getPageSet();
 	}
 
 	/**
@@ -79,7 +77,7 @@ abstract class ApiQueryGeneratorBase extends ApiQueryBase {
 	/**
 	 * Overridden to set the generator param if in generator mode
 	 * @param string $paramName Parameter name
-	 * @param string|array $paramValue Parameter value
+	 * @param int|string|array $paramValue Parameter value
 	 */
 	protected function setContinueEnumParameter( $paramName, $paramValue ) {
 		if ( $this->mGeneratorPageSet !== null ) {
@@ -103,3 +101,6 @@ abstract class ApiQueryGeneratorBase extends ApiQueryBase {
 	 */
 	abstract public function executeGenerator( $resultPageSet );
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiQueryGeneratorBase::class, 'ApiQueryGeneratorBase' );

@@ -1,7 +1,9 @@
+'use strict';
+
 const querystring = require( 'querystring' );
 
 /**
- * Based on http://webdriver.io/guide/testrunner/pageobjects.html
+ * Based on https://webdriver.io/docs/pageobjects
  */
 class Page {
 
@@ -9,18 +11,27 @@ class Page {
 	 * Navigate the browser to a given page.
 	 *
 	 * @since 1.0.0
-	 * @see <http://webdriver.io/api/protocol/url.html>
+	 * @see <https://webdriver.io/docs/api/browser/url>
 	 * @param {string} title Page title
 	 * @param {Object} [query] Query parameter
 	 * @param {string} [fragment] Fragment parameter
-	 * @return {void} This method runs a browser command.
+	 * @return {Promise<void>}
 	 */
-	openTitle( title, query = {}, fragment = '' ) {
+	async openTitle( title, query = {}, fragment = '' ) {
 		query.title = title;
-		browser.url(
-			browser.options.baseUrl + '/index.php?' +
+		await browser.url(
+			browser.config.baseUrl + '/index.php?' +
 			querystring.stringify( query ) +
 			( fragment ? ( '#' + fragment ) : '' )
+		);
+		// Wait for the page to be fully loaded. TODO: This can be replaced by the `wait` option to
+		// browser.url in webdriverio 9 (T363704).
+		await browser.waitUntil(
+			() => browser.execute( () => document.readyState === 'complete' ),
+			{
+				timeout: 10 * 1000,
+				timeoutMsg: 'Page did not load in time'
+			}
 		);
 	}
 }

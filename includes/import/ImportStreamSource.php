@@ -2,7 +2,7 @@
 /**
  * MediaWiki page data importer.
  *
- * Copyright © 2003,2005 Brion Vibber <brion@pobox.com>
+ * Copyright © 2003,2005 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
  * This program is free software; you can redistribute it and/or modify
@@ -23,39 +23,64 @@
  * @file
  * @ingroup SpecialPage
  */
+
+use MediaWiki\MainConfigNames;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Status\Status;
+use Wikimedia\AtEase\AtEase;
 
 /**
  * Imports a XML dump from a file (either from file upload, files on disk, or HTTP)
  * @ingroup SpecialPage
  */
 class ImportStreamSource implements ImportSource {
-	function __construct( $handle ) {
+	/** @var resource */
+	private $mHandle;
+
+	/**
+	 * @param resource $handle
+	 */
+	public function __construct( $handle ) {
 		$this->mHandle = $handle;
 	}
 
 	/**
 	 * @return bool
 	 */
-	function atEnd() {
+	public function atEnd() {
 		return feof( $this->mHandle );
 	}
 
 	/**
 	 * @return string
 	 */
-	function readChunk() {
+	public function readChunk() {
 		return fread( $this->mHandle, 32768 );
+	}
+
+	/**
+	 * @return bool
+	 */
+	public function isSeekable() {
+		return stream_get_meta_data( $this->mHandle )['seekable'] ?? false;
+	}
+
+	/**
+	 * @param int $offset
+	 * @return int
+	 */
+	public function seek( int $offset ) {
+		return fseek( $this->mHandle, $offset );
 	}
 
 	/**
 	 * @param string $filename
 	 * @return Status
 	 */
-	static function newFromFile( $filename ) {
-		Wikimedia\suppressWarnings();
+	public static function newFromFile( $filename ) {
+		AtEase::suppressWarnings();
 		$file = fopen( $filename, 'rt' );
-		Wikimedia\restoreWarnings();
+		AtEase::restoreWarnings();
 		if ( !$file ) {
 			return Status::newFatal( "importcantopen" );
 		}
@@ -66,7 +91,8 @@ class ImportStreamSource implements ImportSource {
 	 * @param string $fieldname
 	 * @return Status
 	 */
-	static function newFromUpload( $fieldname = "xmlimport" ) {
+	public static function newFromUpload( $fieldname = "xmlimport" ) {
+		// phpcs:ignore MediaWiki.Usage.SuperGlobalsUsage.SuperGlobals
 		$upload =& $_FILES[$fieldname];
 
 		if ( $upload === null || !$upload['name'] ) {
@@ -105,9 +131,10 @@ class ImportStreamSource implements ImportSource {
 	 * @param string $method
 	 * @return Status
 	 */
-	static function newFromURL( $url, $method = 'GET' ) {
-		global $wgHTTPImportTimeout;
-		wfDebug( __METHOD__ . ": opening $url\n" );
+	public static function newFromURL( $url, $method = 'GET' ) {
+		$httpImportTimeout = MediaWikiServices::getInstance()->getMainConfig()->get(
+			MainConfigNames::HTTPImportTimeout );
+		wfDebug( __METHOD__ . ": opening $url" );
 		# Use the standard HTTP fetch function; it times out
 		# quicker and sorts out user-agent problems which might
 		# otherwise prevent importing from large sites, such
@@ -117,11 +144,11 @@ class ImportStreamSource implements ImportSource {
 			$url,
 			[
 				'followRedirects' => true,
-				'timeout' => $wgHTTPImportTimeout
+				'timeout' => $httpImportTimeout
 			],
 			__METHOD__
 		);
-		if ( $data !== false ) {
+		if ( $data !== null ) {
 			$file = tmpfile();
 			fwrite( $file, $data );
 			fflush( $file );
@@ -163,7 +190,7 @@ class ImportStreamSource implements ImportSource {
 		# Have to do a DB-key replacement ourselves; otherwise spaces get
 		# URL-encoded to +, which is wrong in this case. Similar to logic in
 		# Title::getLocalURL
-		$link = $firstIw->getURL( strtr( "${additionalIwPrefixes}Special:Export/$page",
+		$link = $firstIw->getURL( strtr( "{$additionalIwPrefixes}Special:Export/$page",
 			' ', '_' ) );
 
 		$params = [];

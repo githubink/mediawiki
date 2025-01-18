@@ -2,14 +2,18 @@
 
 namespace MediaWiki\Tests\Maintenance;
 
-use ContentHandler;
 use DOMDocument;
 use ExecutableFinder;
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Content\Content;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Revision\RevisionAccessException;
+use MediaWiki\Revision\RevisionRecord;
+use MediaWiki\Revision\SlotRecord;
 use MediaWikiLangTestCase;
-use User;
+use RuntimeException;
 use WikiExporter;
 use WikiPage;
-use MWException;
 
 /**
  * Base TestCase for dumps
@@ -19,7 +23,7 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 	/**
 	 * exception to be rethrown once in sound PHPUnit surrounding
 	 *
-	 * As the current MediaWikiTestCase::run is not robust enough to recover
+	 * As the current MediaWikiIntegrationTestCase::run is not robust enough to recover
 	 * from thrown exceptions directly, we cannot throw frow within
 	 * self::addDBData, although it would be appropriate. Hence, we catch the
 	 * exception and store it until we are in setUp and may finally rethrow
@@ -50,14 +54,12 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 	}
 
 	/**
-	 * Adds a revision to a page, while returning the resuting revision's id
+	 * Adds a revision to a page, while returning the resuting revision's id text id.
 	 *
 	 * @param WikiPage $page Page to add the revision to
 	 * @param string $text Revisions text
 	 * @param string $summary Revisions summary
 	 * @param string $model The model ID (defaults to wikitext)
-	 *
-	 * @throws MWException
 	 * @return array
 	 */
 	protected function addRevision(
@@ -66,24 +68,82 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 		$summary,
 		$model = CONTENT_MODEL_WIKITEXT
 	) {
-		$status = $page->doEditContent(
-			ContentHandler::makeContent( $text, $page->getTitle(), $model ),
-			$summary, 0, false, $this->getTestUser()->getUser()
-		);
+		$contentHandler = $this->getServiceContainer()
+			->getContentHandlerFactory()->getContentHandler( $model );
 
-		if ( $status->isGood() ) {
-			$value = $status->getValue();
-			$revision = $value['revision'];
-			$revision_id = $revision->getId();
-			$text_id = $revision->getTextId();
+		$content = $contentHandler->unserializeContent( $text );
 
-			if ( ( $revision_id > 0 ) && ( $text_id > 0 ) ) {
-				return [ $revision_id, $text_id ];
-			}
+		$rev = $this->addMultiSlotRevision( $page, [ SlotRecord::MAIN => $content ], $summary );
+
+		if ( !$rev ) {
+			throw new RuntimeException( "Could not create revision" );
 		}
 
-		throw new MWException( "Could not determine revision id ("
-			. $status->getWikiText( false, false, 'en' ) . ")" );
+		$text_id = $this->getSlotTextId( $rev->getSlot( SlotRecord::MAIN ) );
+		return [ $rev->getId(), $text_id, $rev ];
+	}
+
+	/**
+	 * @param SlotRecord $slot
+	 *
+	 * @return string|null
+	 */
+	protected function getSlotText( SlotRecord $slot ) {
+		try {
+			return $slot->getContent()->serialize();
+		} catch ( RevisionAccessException $ex ) {
+			return null;
+		}
+	}
+
+	/**
+	 * @param SlotRecord $slot
+	 *
+	 * @return int
+	 */
+	protected function getSlotTextId( SlotRecord $slot ) {
+		return (int)preg_replace( '/^tt:/', '', $slot->getAddress() );
+	}
+
+	/**
+	 * @param SlotRecord $slot
+	 *
+	 * @return string
+	 */
+	protected function getSlotFormat( SlotRecord $slot ) {
+		$contentHandler = $this->getServiceContainer()
+			->getContentHandlerFactory()->getContentHandler( $slot->getModel() );
+
+		return $contentHandler->getDefaultFormat();
+	}
+
+	/**
+	 * Adds a revision to a page, while returning the resulting revision's id and text id.
+	 *
+	 * @param WikiPage $page Page to add the revision to
+	 * @param Content[] $slots A mapping of slot names to Content objects
+	 * @param string $summary Revisions summary
+	 * @return RevisionRecord
+	 */
+	protected function addMultiSlotRevision(
+		WikiPage $page,
+		array $slots,
+		$summary
+	) {
+		$slotRoleRegistry = MediaWikiServices::getInstance()->getSlotRoleRegistry();
+
+		$updater = $page->newPageUpdater( $this->getTestUser()->getUser() );
+
+		foreach ( $slots as $role => $content ) {
+			if ( !$slotRoleRegistry->isDefinedRole( $role ) ) {
+				$slotRoleRegistry->defineRoleWithModel( $role, $content->getModel() );
+			}
+
+			$updater->setContent( $role, $content );
+		}
+
+		$updater->saveRevision( CommentStoreComment::newUnsavedComment( trim( $summary ) ) );
+		return $updater->getNewRevision();
 	}
 
 	/**
@@ -107,7 +167,7 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 		);
 	}
 
-	public static function setUpBeforeClass() {
+	public static function setUpBeforeClass(): void {
 		parent::setUpBeforeClass();
 
 		if ( !function_exists( 'libxml_set_external_entity_loader' ) ) {
@@ -118,7 +178,7 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 		// see <https://www.w3.org/Help/Webmaster#slowdtd>.
 		// To work around that, we keep our own copies of the relevant schema files.
 		libxml_set_external_entity_loader(
-			function ( $public, $system, $context ) {
+			static function ( $public, $system, $context ) {
 				switch ( $system ) {
 					// if more schema files are needed, add them here.
 					case 'http://www.w3.org/2001/xml.xsd':
@@ -140,9 +200,9 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 	/**
 	 * Default set up function.
 	 *
-	 * Clears $wgUser, and reports errors from addDBData to PHPUnit
+	 * Reports errors from addDBData to PHPUnit
 	 */
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
 		// Check if any Exception is stored for rethrowing from addDBData
@@ -150,8 +210,6 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 		if ( $this->exceptionFromAddDBData !== null ) {
 			throw $this->exceptionFromAddDBData;
 		}
-
-		$this->setMwGlobals( 'wgUser', new User() );
 	}
 
 	/**
@@ -172,7 +230,7 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 	/**
 	 * Checks for test output consisting only of lines containing ETA announcements
 	 */
-	function expectETAOutput() {
+	protected function expectETAOutput() {
 		// Newer PHPUnits require assertion about the output using PHPUnit's own
 		// expectOutput[...] functions. However, the PHPUnit shipped prediactes
 		// do not allow to check /each/ line of the output using /readable/ REs.
@@ -185,10 +243,10 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 		// 2. Do the real output checking on our own.
 		$lines = explode( "\n", $this->getActualOutput() );
 		$this->assertGreaterThan( 1, count( $lines ), "Minimal lines of produced output" );
-		$this->assertEquals( '', array_pop( $lines ), "Output ends in LF" );
+		$this->assertSame( '', array_pop( $lines ), "Output ends in LF" );
 		$timestamp_re = "[0-9]{4}-[01][0-9]-[0-3][0-9] [0-2][0-9]:[0-5][0-9]:[0-6][0-9]";
 		foreach ( $lines as $line ) {
-			$this->assertRegExp(
+			$this->assertMatchesRegularExpression(
 				"/$timestamp_re: .* \(ID [0-9]+\) [0-9]* pages .*, [0-9]* revs .*, ETA/",
 				$line
 			);
@@ -207,6 +265,8 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 
 	/**
 	 * Checks an XML file against an XSD schema.
+	 * @param string $fname
+	 * @param string $schemaFile
 	 */
 	protected function assertDumpSchema( $fname, $schemaFile ) {
 		if ( !function_exists( 'libxml_use_internal_errors' ) ) {
@@ -215,17 +275,6 @@ abstract class DumpTestCase extends MediaWikiLangTestCase {
 			$this->markAsRisky();
 			return;
 		}
-		if ( defined( 'HHVM_VERSION' ) ) {
-			// In HHVM, loading a schema from a file is disabled per default.
-			// This is controlled by hhvm.libxml.ext_entity_whitelist which
-			// cannot be read with ini_get(), see
-			// <https://docs.hhvm.com/hhvm/configuration/INI-settings#xml>.
-			// Would be nice to leave a warning somehow.
-			// We don't want to skip all of the test case that calls this, though.
-			$this->markAsRisky();
-			return;
-		}
-
 		$xml = new DOMDocument();
 		$this->assertTrue( $xml->load( $fname ),
 			"Opening temporary file $fname via DOMDocument failed" );

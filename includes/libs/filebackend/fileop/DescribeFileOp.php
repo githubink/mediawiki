@@ -21,6 +21,11 @@
  * @ingroup FileBackend
  */
 
+namespace Wikimedia\FileBackend\FileOps;
+
+use StatusValue;
+use Wikimedia\FileBackend\FileBackend;
+
 /**
  * Change metadata for a file at the given storage path in the backend.
  * Parameters for this operation are outlined in FileBackend::doOperations().
@@ -30,25 +35,36 @@ class DescribeFileOp extends FileOp {
 		return [ [ 'src' ], [ 'headers' ], [ 'src' ] ];
 	}
 
-	protected function doPrecheck( array &$predicates ) {
+	protected function doPrecheck(
+		FileStatePredicates $opPredicates,
+		FileStatePredicates $batchPredicates
+	) {
 		$status = StatusValue::newGood();
-		// Check if the source file exists
-		if ( !$this->fileExists( $this->params['src'], $predicates ) ) {
+
+		// Check source file existence
+		$srcExists = $this->resolveFileExistence( $this->params['src'], $opPredicates );
+		if ( $srcExists === false ) {
 			$status->fatal( 'backend-fail-notexists', $this->params['src'] );
 
 			return $status;
-			// Check if a file can be placed/changed at the source
-		} elseif ( !$this->backend->isPathUsableInternal( $this->params['src'] ) ) {
-			$status->fatal( 'backend-fail-usable', $this->params['src'] );
-			$status->fatal( 'backend-fail-describe', $this->params['src'] );
+		} elseif ( $srcExists === FileBackend::EXISTENCE_ERROR ) {
+			$status->fatal( 'backend-fail-stat', $this->params['src'] );
 
 			return $status;
 		}
-		// Update file existence predicates
-		$predicates['exists'][$this->params['src']] =
-			$this->fileExists( $this->params['src'], $predicates );
-		$predicates['sha1'][$this->params['src']] =
-			$this->fileSha1( $this->params['src'], $predicates );
+
+		// Update file existence predicates since the operation is expected to be allowed to run
+		$srcSize = function () use ( $opPredicates ) {
+			static $size = null;
+			$size ??= $this->resolveFileSize( $this->params['src'], $opPredicates );
+			return $size;
+		};
+		$srcSha1 = function () use ( $opPredicates ) {
+			static $sha1 = null;
+			$sha1 ??= $this->resolveFileSha1Base36( $this->params['src'], $opPredicates );
+			return $sha1;
+		};
+		$batchPredicates->assumeFileExists( $this->params['src'], $srcSize, $srcSha1 );
 
 		return $status; // safe to call attempt()
 	}
@@ -62,3 +78,6 @@ class DescribeFileOp extends FileOp {
 		return [ $this->params['src'] ];
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( DescribeFileOp::class, 'DescribeFileOp' );

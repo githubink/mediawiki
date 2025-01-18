@@ -2,7 +2,7 @@
 /**
  * XmlDumpWriter
  *
- * Copyright © 2003, 2005, 2006 Brion Vibber <brion@pobox.com>
+ * Copyright © 2003, 2005, 2006 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
  * This program is free software; you can redistribute it and/or modify
@@ -22,13 +22,25 @@
  *
  * @file
  */
+
+use MediaWiki\CommentStore\CommentStore;
+use MediaWiki\Content\Content;
+use MediaWiki\Content\TextContent;
+use MediaWiki\Debug\MWDebug;
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\HookContainer\HookRunner;
+use MediaWiki\MainConfigNames;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Revision\RevisionAccessException;
 use MediaWiki\Revision\RevisionRecord;
 use MediaWiki\Revision\RevisionStore;
 use MediaWiki\Revision\SlotRecord;
 use MediaWiki\Revision\SuppressedDataException;
 use MediaWiki\Storage\SqlBlobStore;
+use MediaWiki\Title\Title;
+use MediaWiki\Xml\Xml;
 use Wikimedia\Assert\Assert;
+use Wikimedia\IPUtils;
 
 /**
  * @ingroup Dump
@@ -36,16 +48,16 @@ use Wikimedia\Assert\Assert;
 class XmlDumpWriter {
 
 	/** Output serialized revision content. */
-	const WRITE_CONTENT = 0;
+	public const WRITE_CONTENT = 0;
 
 	/** Only output subs for revision content. */
-	const WRITE_STUB = 1;
+	public const WRITE_STUB = 1;
 
 	/**
 	 * Only output subs for revision content, indicating that the content has been
-	 * deleted/suppressed. For internal use only.
+	 * deleted/suppressed.
 	 */
-	const WRITE_STUB_DELETED = 2;
+	private const WRITE_STUB_DELETED = 2;
 
 	/**
 	 * @var string[] the schema versions supported for output
@@ -75,26 +87,34 @@ class XmlDumpWriter {
 	 */
 	private $contentMode;
 
+	/** @var HookRunner */
+	private $hookRunner;
+
+	/** @var CommentStore */
+	private $commentStore;
+
 	/**
-	 * XmlDumpWriter constructor.
-	 *
 	 * @param int $contentMode WRITE_CONTENT or WRITE_STUB.
 	 * @param string $schemaVersion which schema version the generated XML should comply to.
 	 * One of the values from self::$supportedSchemas, using the XML_DUMP_SCHEMA_VERSION_XX
 	 * constants.
+	 * @param HookContainer|null $hookContainer
+	 * @param CommentStore|null $commentStore
 	 */
 	public function __construct(
 		$contentMode = self::WRITE_CONTENT,
-		$schemaVersion = XML_DUMP_SCHEMA_VERSION_11
+		$schemaVersion = XML_DUMP_SCHEMA_VERSION_11,
+		?HookContainer $hookContainer = null,
+		?CommentStore $commentStore = null
 	) {
 		Assert::parameter(
-			in_array( $contentMode, [ self::WRITE_CONTENT, self::WRITE_STUB ] ),
+			in_array( $contentMode, [ self::WRITE_CONTENT, self::WRITE_STUB ], true ),
 			'$contentMode',
 			'must be one of the following constants: WRITE_CONTENT or WRITE_STUB.'
 		);
 
 		Assert::parameter(
-			in_array( $schemaVersion, self::$supportedSchemas ),
+			in_array( $schemaVersion, self::$supportedSchemas, true ),
 			'$schemaVersion',
 			'must be one of the following schema versions: '
 				. implode( ',', self::$supportedSchemas )
@@ -102,6 +122,10 @@ class XmlDumpWriter {
 
 		$this->contentMode = $contentMode;
 		$this->schemaVersion = $schemaVersion;
+		$this->hookRunner = new HookRunner(
+			$hookContainer ?? MediaWikiServices::getInstance()->getHookContainer()
+		);
+		$this->commentStore = $commentStore ?? MediaWikiServices::getInstance()->getCommentStore();
 	}
 
 	/**
@@ -114,7 +138,7 @@ class XmlDumpWriter {
 	 *
 	 * @return string
 	 */
-	function openStream() {
+	public function openStream() {
 		$ver = $this->schemaVersion;
 		return Xml::element( 'mediawiki', [
 			'xmlns'              => "http://www.mediawiki.org/xml/export-$ver/",
@@ -141,7 +165,7 @@ class XmlDumpWriter {
 	/**
 	 * @return string
 	 */
-	function siteInfo() {
+	private function siteInfo() {
 		$info = [
 			$this->sitename(),
 			$this->dbname(),
@@ -157,48 +181,49 @@ class XmlDumpWriter {
 	/**
 	 * @return string
 	 */
-	function sitename() {
-		global $wgSitename;
-		return Xml::element( 'sitename', [], $wgSitename );
+	private function sitename() {
+		$sitename = MediaWikiServices::getInstance()->getMainConfig()->get(
+			MainConfigNames::Sitename );
+		return Xml::element( 'sitename', [], $sitename );
 	}
 
 	/**
 	 * @return string
 	 */
-	function dbname() {
-		global $wgDBname;
-		return Xml::element( 'dbname', [], $wgDBname );
+	private function dbname() {
+		$dbname = MediaWikiServices::getInstance()->getMainConfig()->get( MainConfigNames::DBname );
+		return Xml::element( 'dbname', [], $dbname );
 	}
 
 	/**
 	 * @return string
 	 */
-	function generator() {
-		global $wgVersion;
-		return Xml::element( 'generator', [], "MediaWiki $wgVersion" );
+	private function generator() {
+		return Xml::element( 'generator', [], 'MediaWiki ' . MW_VERSION );
 	}
 
 	/**
 	 * @return string
 	 */
-	function homelink() {
+	private function homelink() {
 		return Xml::element( 'base', [], Title::newMainPage()->getCanonicalURL() );
 	}
 
 	/**
 	 * @return string
 	 */
-	function caseSetting() {
-		global $wgCapitalLinks;
+	private function caseSetting() {
+		$capitalLinks = MediaWikiServices::getInstance()->getMainConfig()->get(
+			MainConfigNames::CapitalLinks );
 		// "case-insensitive" option is reserved for future
-		$sensitivity = $wgCapitalLinks ? 'first-letter' : 'case-sensitive';
+		$sensitivity = $capitalLinks ? 'first-letter' : 'case-sensitive';
 		return Xml::element( 'case', [], $sensitivity );
 	}
 
 	/**
 	 * @return string
 	 */
-	function namespaces() {
+	private function namespaces() {
 		$spaces = "<namespaces>\n";
 		$nsInfo = MediaWikiServices::getInstance()->getNamespaceInfo();
 		foreach (
@@ -223,7 +248,7 @@ class XmlDumpWriter {
 	 *
 	 * @return string
 	 */
-	function closeStream() {
+	public function closeStream() {
 		return "</mediawiki>\n";
 	}
 
@@ -231,7 +256,7 @@ class XmlDumpWriter {
 	 * Opens a "<page>" section on the output stream, with data
 	 * from the given database row.
 	 *
-	 * @param object $row
+	 * @param stdClass $row
 	 * @return string
 	 */
 	public function openPage( $row ) {
@@ -242,21 +267,23 @@ class XmlDumpWriter {
 		$out .= '    ' . Xml::element( 'ns', [], strval( $row->page_namespace ) ) . "\n";
 		$out .= '    ' . Xml::element( 'id', [], strval( $row->page_id ) ) . "\n";
 		if ( $row->page_is_redirect ) {
-			$page = WikiPage::factory( $this->currentTitle );
-			$redirect = $page->getRedirectTarget();
+			$services = MediaWikiServices::getInstance();
+			$page = $services->getWikiPageFactory()->newFromTitle( $this->currentTitle );
+			$redirectStore = $services->getRedirectStore();
+			$redirect = $this->invokeLenient(
+				static function () use ( $page, $redirectStore ) {
+					return $redirectStore->getRedirectTarget( $page );
+				},
+				'Failed to get redirect target of page ' . $page->getId()
+			);
+			$redirect = Title::castFromLinkTarget( $redirect );
 			if ( $redirect instanceof Title && $redirect->isValidRedirectTarget() ) {
 				$out .= '    ';
 				$out .= Xml::element( 'redirect', [ 'title' => self::canonicalTitle( $redirect ) ] );
 				$out .= "\n";
 			}
 		}
-
-		if ( $row->page_restrictions != '' ) {
-			$out .= '    ' . Xml::element( 'restrictions', [],
-				strval( $row->page_restrictions ) ) . "\n";
-		}
-
-		Hooks::run( 'XmlDumpWriterOpenPage', [ $this, &$out, $row, $this->currentTitle ] );
+		$this->hookRunner->onXmlDumpWriterOpenPage( $this, $out, $row, $this->currentTitle );
 
 		return $out;
 	}
@@ -264,10 +291,10 @@ class XmlDumpWriter {
 	/**
 	 * Closes a "<page>" section on the output stream.
 	 *
-	 * @private
+	 * @internal
 	 * @return string
 	 */
-	function closePage() {
+	public function closePage() {
 		if ( $this->currentTitle !== null ) {
 			$linkCache = MediaWikiServices::getInstance()->getLinkCache();
 			// In rare cases, link cache has the same key for some pages which
@@ -288,22 +315,41 @@ class XmlDumpWriter {
 	 * @return SqlBlobStore
 	 */
 	private function getBlobStore() {
+		// @phan-suppress-next-line PhanTypeMismatchReturnSuperType
 		return MediaWikiServices::getInstance()->getBlobStore();
+	}
+
+	/**
+	 * Invokes the given callback, catching and logging any exceptions.
+	 *
+	 * @param callable $callback
+	 * @param string $warning The warning to output in case of a storage related exception.
+	 *
+	 * @return mixed Returns the method's return value, or null in case of an exception.
+	 * @throws Exception
+	 */
+	private function invokeLenient( $callback, $warning ) {
+		try {
+			return $callback();
+		} catch ( SuppressedDataException $ex ) {
+			return null;
+		} catch ( MWException | RuntimeException | InvalidArgumentException | ErrorException $ex ) {
+			MWDebug::warning( $warning . ': ' . $ex->getMessage() );
+			return null;
+		}
 	}
 
 	/**
 	 * Dumps a "<revision>" section on the output stream, with
 	 * data filled in from the given database row.
 	 *
-	 * @param object $row
-	 * @param null|object[] $slotRows
+	 * @param stdClass $row
+	 * @param null|stdClass[] $slotRows
 	 *
 	 * @return string
-	 * @throws FatalError
-	 * @throws MWException
-	 * @private
+	 * @throws RevisionAccessException
 	 */
-	function writeRevision( $row, $slotRows = null ) {
+	public function writeRevision( $row, $slotRows = null ) {
 		$rev = $this->getRevisionStore()->newRevisionFromRowAndSlots(
 			$row,
 			$slotRows,
@@ -320,7 +366,7 @@ class XmlDumpWriter {
 
 		$out .= $this->writeTimestamp( $rev->getTimestamp() );
 
-		if ( $rev->isDeleted( Revision::DELETED_USER ) ) {
+		if ( $rev->isDeleted( RevisionRecord::DELETED_USER ) ) {
 			$out .= "      " . Xml::element( 'contributor', [ 'deleted' => 'deleted' ] ) . "\n";
 		} else {
 			// empty values get written out as uid 0, see T224221
@@ -334,7 +380,7 @@ class XmlDumpWriter {
 		if ( $rev->isMinor() ) {
 			$out .= "      <minor/>\n";
 		}
-		if ( $rev->isDeleted( Revision::DELETED_COMMENT ) ) {
+		if ( $rev->isDeleted( RevisionRecord::DELETED_COMMENT ) ) {
 			$out .= "      " . Xml::element( 'comment', [ 'deleted' => 'deleted' ] ) . "\n";
 		} else {
 			if ( $rev->getComment()->text != '' ) {
@@ -344,23 +390,47 @@ class XmlDumpWriter {
 			}
 		}
 
-		$contentMode = $rev->isDeleted( Revision::DELETED_TEXT ) ? self::WRITE_STUB_DELETED
+		$contentMode = $rev->isDeleted( RevisionRecord::DELETED_TEXT ) ? self::WRITE_STUB_DELETED
 			: $this->contentMode;
 
-		foreach ( $rev->getSlots()->getSlots() as $slot ) {
+		$slots = $rev->getSlots()->getSlots();
+
+		// use predictable order, put main slot first
+		ksort( $slots );
+		$out .= $this->writeSlot( $slots[SlotRecord::MAIN], $contentMode );
+
+		foreach ( $slots as $role => $slot ) {
+			if ( $role === SlotRecord::MAIN ) {
+				continue;
+			}
 			$out .= $this->writeSlot( $slot, $contentMode );
 		}
 
-		if ( $rev->isDeleted( Revision::DELETED_TEXT ) ) {
+		if ( $rev->isDeleted( RevisionRecord::DELETED_TEXT ) ) {
 			$out .= "      <sha1/>\n";
 		} else {
-			$out .= "      " . Xml::element( 'sha1', null, strval( $rev->getSha1() ) ) . "\n";
+			$sha1 = $this->invokeLenient(
+				static function () use ( $rev ) {
+					return $rev->getSha1();
+				},
+				'failed to determine sha1 for revision ' . $rev->getId()
+			);
+			$out .= "      " . Xml::element( 'sha1', null, strval( $sha1 ) ) . "\n";
 		}
 
-		// Avoid PHP 7.1 warning from passing $this by reference
-		$writer = $this;
-		$text = $rev->getContent( SlotRecord::MAIN, RevisionRecord::RAW );
-		Hooks::run( 'XmlDumpWriterWriteRevision', [ &$writer, &$out, $row, $text, $rev ] );
+		$text = '';
+		if ( $contentMode === self::WRITE_CONTENT ) {
+			/** @var Content $content */
+			$content = $this->invokeLenient(
+				static function () use ( $rev ) {
+					return $rev->getMainContentRaw();
+				},
+				'Failed to load main slot content of revision ' . $rev->getId()
+			);
+
+			$text = $content ? $content->serialize() : '';
+		}
+		$this->hookRunner->onXmlDumpWriterWriteRevision( $this, $out, $row, $text, $rev );
 
 		$out .= "    </revision>\n";
 
@@ -397,7 +467,9 @@ class XmlDumpWriter {
 		}
 
 		$contentModel = $slot->getModel();
-		$contentHandler = ContentHandler::getForModelID( $contentModel );
+		$contentHandler = MediaWikiServices::getInstance()
+			->getContentHandlerFactory()
+			->getContentHandler( $contentModel );
 		$contentFormat = $contentHandler->getDefaultFormat();
 
 		// XXX: The content format is only relevant when actually outputting serialized content.
@@ -406,38 +478,38 @@ class XmlDumpWriter {
 		$out .= $indent . Xml::element( 'format', null, strval( $contentFormat ) ) . "\n";
 
 		$textAttributes = [
-			'xml:space' => 'preserve',
-			'bytes' => $slot->getSize(),
+			'bytes' => $this->invokeLenient(
+				static function () use ( $slot ) {
+					return $slot->getSize();
+				},
+				'failed to determine size for slot ' . $slot->getRole() . ' of revision '
+				. $slot->getRevision()
+			) ?: '0'
 		];
 
 		if ( $isV11 ) {
-			$textAttributes['sha1'] = $slot->getSha1();
+			$textAttributes['sha1'] = $this->invokeLenient(
+				static function () use ( $slot ) {
+					return $slot->getSha1();
+				},
+				'failed to determine sha1 for slot ' . $slot->getRole() . ' of revision '
+				. $slot->getRevision()
+			) ?: '';
 		}
 
 		if ( $contentMode === self::WRITE_CONTENT ) {
-			try {
-				// write <text> tag
-				$out .= $this->writeText( $slot->getContent(), $textAttributes, $indent );
-			} catch ( SuppressedDataException $ex ) {
-				// NOTE: this shouldn't happen, since the caller is supposed to have checked
-				// for suppressed content!
-				// write <text> placeholder tag
-				$textAttributes['deleted'] = 'deleted';
+			$content = $this->invokeLenient(
+				static function () use ( $slot ) {
+					return $slot->getContent();
+				},
+				'failed to load content for slot ' . $slot->getRole() . ' of revision '
+				. $slot->getRevision()
+			);
+
+			if ( $content === null ) {
 				$out .= $indent . Xml::element( 'text', $textAttributes ) . "\n";
-			}
-			catch ( Exception $ex ) {
-				if ( $ex instanceof MWException || $ex instanceof RuntimeException ) {
-					// there's no provision in the schema for an attribute that will let
-					// the user know this element was unavailable due to error; an empty
-					// tag is the best we can do
-					$out .= $indent . Xml::element( 'text' ) . "\n";
-					wfLogWarning(
-						'failed to load content slot ' . $slot->getRole() . ' for revision '
-						. $slot->getRevision() . "\n"
-					);
-				} else {
-					throw $ex;
-				}
+			} else {
+				$out .= $this->writeText( $content, $textAttributes, $indent );
 			}
 		} elseif ( $contentMode === self::WRITE_STUB_DELETED ) {
 			// write <text> placeholder tag
@@ -448,18 +520,30 @@ class XmlDumpWriter {
 			if ( $isV11 ) {
 				$textAttributes['location'] = $slot->getAddress();
 			}
+			$schema = null;
 
-			// Output the numerical text ID if possible, for backwards compatibility.
-			// Note that this is currently the ONLY reason we have a BlobStore here at all.
-			// When removing this line, check whether the BlobStore has become unused.
-			$textId = $this->getBlobStore()->getTextIdFromAddress( $slot->getAddress() );
-			if ( $textId ) {
-				$textAttributes['id'] = $textId;
-			} elseif ( !$isV11 ) {
-				throw new InvalidArgumentException(
-					'Cannot produce stubs for non-text-table content blobs with schema version '
-					. $this->schemaVersion
-				);
+			if ( $isMain ) {
+				// Output the numerical text ID if possible, for backwards compatibility.
+				// Note that this is currently the ONLY reason we have a BlobStore here at all.
+				// When removing this line, check whether the BlobStore has become unused.
+				try {
+					// NOTE: this will only work for addresses of the form "tt:12345" or "es:DB://cluster1/1234".
+					// If we want to support other kinds of addresses in the future,
+					// we will have to silently ignore failures here.
+					// For now, this fails for "tt:0", which is present in the WMF production
+					// database as of July 2019, due to data corruption.
+					[ $schema, $textId ] = $this->getBlobStore()->splitBlobAddress( $slot->getAddress() );
+				} catch ( InvalidArgumentException $ex ) {
+					MWDebug::warning( 'Bad content address for slot ' . $slot->getRole()
+						. ' of revision ' . $slot->getRevision() . ': ' . $ex->getMessage() );
+					$textId = 0;
+				}
+
+				if ( $schema === 'tt' ) {
+					$textAttributes['id'] = $textId;
+				} elseif ( $schema === 'es' ) {
+					$textAttributes['id'] = bin2hex( $textId );
+				}
 			}
 
 			$out .= $indent . Xml::element( 'text', $textAttributes ) . "\n";
@@ -480,35 +564,32 @@ class XmlDumpWriter {
 	 * @return string
 	 */
 	private function writeText( Content $content, $textAttributes, $indent ) {
-		$out = '';
-
 		$contentHandler = $content->getContentHandler();
 		$contentFormat = $contentHandler->getDefaultFormat();
 
 		if ( $content instanceof TextContent ) {
 			// HACK: For text based models, bypass the serialization step. This allows extensions (like Flow)
 			// that use incompatible combinations of serialization format and content model.
-			$data = $content->getNativeData();
+			$data = $content->getText();
 		} else {
 			$data = $content->serialize( $contentFormat );
 		}
 
 		$data = $contentHandler->exportTransform( $data, $contentFormat );
-		$textAttributes['bytes'] = $size = strlen( $data ); // make sure to use the actual size
-		$out .= $indent . Xml::elementClean( 'text', $textAttributes, strval( $data ) ) . "\n";
-
-		return $out;
+		// make sure to use the actual size
+		$textAttributes['bytes'] = strlen( $data );
+		$textAttributes['xml:space'] = 'preserve';
+		return $indent . Xml::elementClean( 'text', $textAttributes, strval( $data ) ) . "\n";
 	}
 
 	/**
 	 * Dumps a "<logitem>" section on the output stream, with
 	 * data filled in from the given database row.
 	 *
-	 * @param object $row
+	 * @param stdClass $row
 	 * @return string
-	 * @private
 	 */
-	function writeLogItem( $row ) {
+	public function writeLogItem( $row ) {
 		$out = "  <logitem>\n";
 		$out .= "    " . Xml::element( 'id', null, strval( $row->log_id ) ) . "\n";
 
@@ -517,13 +598,13 @@ class XmlDumpWriter {
 		if ( $row->log_deleted & LogPage::DELETED_USER ) {
 			$out .= "    " . Xml::element( 'contributor', [ 'deleted' => 'deleted' ] ) . "\n";
 		} else {
-			$out .= $this->writeContributor( $row->log_user, $row->user_name, "    " );
+			$out .= $this->writeContributor( $row->actor_user, $row->actor_name, "    " );
 		}
 
 		if ( $row->log_deleted & LogPage::DELETED_COMMENT ) {
 			$out .= "    " . Xml::element( 'comment', [ 'deleted' => 'deleted' ] ) . "\n";
 		} else {
-			$comment = CommentStore::getStore()->getComment( 'log_comment', $row )->text;
+			$comment = $this->commentStore->getComment( 'log_comment', $row )->text;
 			if ( $comment != '' ) {
 				$out .= "    " . Xml::elementClean( 'comment', null, strval( $comment ) ) . "\n";
 			}
@@ -552,7 +633,7 @@ class XmlDumpWriter {
 	 * @param string $indent Default to six spaces
 	 * @return string
 	 */
-	function writeTimestamp( $timestamp, $indent = "      " ) {
+	public function writeTimestamp( $timestamp, $indent = "      " ) {
 		$ts = wfTimestamp( TS_ISO_8601, $timestamp );
 		return $indent . Xml::element( 'timestamp', null, $ts ) . "\n";
 	}
@@ -563,9 +644,9 @@ class XmlDumpWriter {
 	 * @param string $indent Default to six spaces
 	 * @return string
 	 */
-	function writeContributor( $id, $text, $indent = "      " ) {
+	public function writeContributor( $id, $text, $indent = "      " ) {
 		$out = $indent . "<contributor>\n";
-		if ( $id || !IP::isValid( $text ) ) {
+		if ( $id || !IPUtils::isValid( $text ) ) {
 			$out .= $indent . "  " . Xml::elementClean( 'username', null, strval( $text ) ) . "\n";
 			$out .= $indent . "  " . Xml::element( 'id', null, strval( $id ) ) . "\n";
 		} else {
@@ -577,11 +658,11 @@ class XmlDumpWriter {
 
 	/**
 	 * Warning! This data is potentially inconsistent. :(
-	 * @param object $row
+	 * @param stdClass $row
 	 * @param bool $dumpContents
 	 * @return string
 	 */
-	function writeUploads( $row, $dumpContents = false ) {
+	public function writeUploads( $row, $dumpContents = false ) {
 		if ( $row->page_namespace == NS_FILE ) {
 			$img = MediaWikiServices::getInstance()->getRepoGroup()->getLocalRepo()
 				->newFile( $row->page_title );
@@ -602,8 +683,10 @@ class XmlDumpWriter {
 	 * @param bool $dumpContents
 	 * @return string
 	 */
-	function writeUpload( $file, $dumpContents = false ) {
+	private function writeUpload( $file, $dumpContents = false ) {
 		if ( $file->isOld() ) {
+			/** @var OldLocalFile $file */
+			'@phan-var OldLocalFile $file';
 			$archiveName = "      " .
 				Xml::element( 'archivename', null, $file->getArchiveName() ) . "\n";
 		} else {
@@ -621,19 +704,26 @@ class XmlDumpWriter {
 		} else {
 			$contents = '';
 		}
-		if ( $file->isDeleted( File::DELETED_COMMENT ) ) {
-			$comment = Xml::element( 'comment', [ 'deleted' => 'deleted' ] );
+		$uploader = $file->getUploader( File::FOR_PUBLIC );
+		if ( $uploader ) {
+			$uploader = $this->writeContributor( $uploader->getId(), $uploader->getName() );
 		} else {
-			$comment = Xml::elementClean( 'comment', null, strval( $file->getDescription() ) );
+			$uploader = Xml::element( 'contributor', [ 'deleted' => 'deleted' ] ) . "\n";
+		}
+		$comment = $file->getDescription( File::FOR_PUBLIC );
+		if ( ( $comment ?? '' ) !== '' ) {
+			$comment = Xml::elementClean( 'comment', null, $comment );
+		} else {
+			$comment = Xml::element( 'comment', [ 'deleted' => 'deleted' ] );
 		}
 		return "    <upload>\n" .
 			$this->writeTimestamp( $file->getTimestamp() ) .
-			$this->writeContributor( $file->getUser( 'id' ), $file->getUser( 'text' ) ) .
+			$uploader .
 			"      " . $comment . "\n" .
 			"      " . Xml::element( 'filename', null, $file->getName() ) . "\n" .
 			$archiveName .
 			"      " . Xml::element( 'src', null, $file->getCanonicalUrl() ) . "\n" .
-			"      " . Xml::element( 'size', null, $file->getSize() ) . "\n" .
+			"      " . Xml::element( 'size', null, (string)( $file->getSize() ?: 0 ) ) . "\n" .
 			"      " . Xml::element( 'sha1base36', null, $file->getSha1() ) . "\n" .
 			"      " . Xml::element( 'rel', null, $file->getRel() ) . "\n" .
 			$contents .

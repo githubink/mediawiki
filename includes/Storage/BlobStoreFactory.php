@@ -20,11 +20,11 @@
 
 namespace MediaWiki\Storage;
 
-use Language;
-use MediaWiki\Config\ServiceOptions;
-use WANObjectCache;
-use Wikimedia\Rdbms\ILBFactory;
 use ExternalStoreAccess;
+use MediaWiki\Config\ServiceOptions;
+use MediaWiki\MainConfigNames;
+use Wikimedia\ObjectCache\WANObjectCache;
+use Wikimedia\Rdbms\ILBFactory;
 
 /**
  * Service for instantiating BlobStores
@@ -56,37 +56,27 @@ class BlobStoreFactory {
 	private $options;
 
 	/**
-	 * @var Language
+	 * @internal For use by ServiceWiring
 	 */
-	private $contLang;
-
-	/**
-	 * TODO Make this a const when HHVM support is dropped (T192166)
-	 *
-	 * @var array
-	 * @since 1.34
-	 */
-	public static $constructorOptions = [
-		'CompressRevisions',
-		'DefaultExternalStore',
-		'LegacyEncoding',
-		'RevisionCacheExpiry',
+	public const CONSTRUCTOR_OPTIONS = [
+		MainConfigNames::CompressRevisions,
+		MainConfigNames::DefaultExternalStore,
+		MainConfigNames::LegacyEncoding,
+		MainConfigNames::RevisionCacheExpiry,
 	];
 
 	public function __construct(
 		ILBFactory $lbFactory,
 		ExternalStoreAccess $extStoreAccess,
 		WANObjectCache $cache,
-		ServiceOptions $options,
-		Language $contLang
+		ServiceOptions $options
 	) {
-		$options->assertRequiredOptions( self::$constructorOptions );
+		$options->assertRequiredOptions( self::CONSTRUCTOR_OPTIONS );
 
 		$this->lbFactory = $lbFactory;
 		$this->extStoreAccess = $extStoreAccess;
 		$this->cache = $cache;
 		$this->options = $options;
-		$this->contLang = $contLang;
 	}
 
 	/**
@@ -116,12 +106,13 @@ class BlobStoreFactory {
 			$dbDomain
 		);
 
-		$store->setCompressBlobs( $this->options->get( 'CompressRevisions' ) );
-		$store->setCacheExpiry( $this->options->get( 'RevisionCacheExpiry' ) );
-		$store->setUseExternalStore( $this->options->get( 'DefaultExternalStore' ) !== false );
+		$store->setCompressBlobs( $this->options->get( MainConfigNames::CompressRevisions ) );
+		$store->setCacheExpiry( $this->options->get( MainConfigNames::RevisionCacheExpiry ) );
+		$store->setUseExternalStore(
+			$this->options->get( MainConfigNames::DefaultExternalStore ) !== false );
 
-		if ( $this->options->get( 'LegacyEncoding' ) ) {
-			$store->setLegacyEncoding( $this->options->get( 'LegacyEncoding' ), $this->contLang );
+		if ( $this->options->get( MainConfigNames::LegacyEncoding ) ) {
+			$store->setLegacyEncoding( $this->options->get( MainConfigNames::LegacyEncoding ) );
 		}
 
 		return $store;

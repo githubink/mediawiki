@@ -1,50 +1,65 @@
 <?php
 
-class MailAddressTest extends MediaWikiTestCase {
+use MediaWiki\User\User;
+use MediaWiki\User\UserIdentityValue;
 
-	/**
-	 * @covers MailAddress::__construct
-	 */
-	public function testConstructor() {
-		$ma = new MailAddress( 'foo@bar.baz', 'UserName', 'Real name' );
-		$this->assertInstanceOf( MailAddress::class, $ma );
-	}
+/**
+ * @group Mail
+ * @covers \MailAddress
+ */
+class MailAddressTest extends MediaWikiIntegrationTestCase {
 
-	/**
-	 * @covers MailAddress::newFromUser
-	 */
 	public function testNewFromUser() {
 		if ( wfIsWindows() ) {
 			$this->markTestSkipped( 'This test only works on non-Windows platforms' );
 		}
 		$user = $this->createMock( User::class );
-		$user->expects( $this->any() )->method( 'getName' )->will(
-			$this->returnValue( 'UserName' )
-		);
-		$user->expects( $this->any() )->method( 'getEmail' )->will(
-			$this->returnValue( 'foo@bar.baz' )
-		);
-		$user->expects( $this->any() )->method( 'getRealName' )->will(
-			$this->returnValue( 'Real name' )
-		);
+		$user->method( 'getUser' )->willReturn( new UserIdentityValue( 42, 'UserName' ) );
+		$user->method( 'getEmail' )->willReturn( 'foo@bar.baz' );
+		$user->method( 'getRealName' )->willReturn( 'Real name' );
 
 		$ma = MailAddress::newFromUser( $user );
 		$this->assertInstanceOf( MailAddress::class, $ma );
-		$this->setMwGlobals( 'wgEnotifUseRealName', true );
+
+		// No setMwGlobals() in a unit test, need some manual logic
+		// Don't worry about messing with the actual value, MediaWikiUnitTestCase restores it
+		global $wgEnotifUseRealName;
+
+		$wgEnotifUseRealName = true;
 		$this->assertEquals( '"Real name" <foo@bar.baz>', $ma->toString() );
-		$this->setMwGlobals( 'wgEnotifUseRealName', false );
+
+		$wgEnotifUseRealName = false;
 		$this->assertEquals( '"UserName" <foo@bar.baz>', $ma->toString() );
 	}
 
 	/**
-	 * @covers MailAddress::toString
+	 * @dataProvider provideEquals
+	 */
+	public function testEquals( MailAddress $first, MailAddress $second, bool $expected ) {
+		$this->assertSame( $expected, $first->equals( $second ) );
+	}
+
+	public static function provideEquals(): Generator {
+		$base = new MailAddress( 'a@b.c', 'name', 'realname' );
+
+		yield 'Different addresses' => [ $base, new MailAddress( 'xxx', 'name', 'realname' ), false ];
+		yield 'Different names' => [ $base, new MailAddress( 'a@b.c', 'other name', 'realname' ), false ];
+		yield 'Different real names' => [ $base, new MailAddress( 'a@b.c', 'name', 'other realname' ), false ];
+		yield 'Equal' => [ $base, new MailAddress( 'a@b.c', 'name', 'realname' ), true ];
+	}
+
+	/**
 	 * @dataProvider provideToString
 	 */
 	public function testToString( $useRealName, $address, $name, $realName, $expected ) {
 		if ( wfIsWindows() ) {
 			$this->markTestSkipped( 'This test only works on non-Windows platforms' );
 		}
-		$this->setMwGlobals( 'wgEnotifUseRealName', $useRealName );
+		// No setMwGlobals() in a unit test, need some manual logic
+		// Don't worry about messing with the actual value, MediaWikiUnitTestCase restores it
+		global $wgEnotifUseRealName;
+		$wgEnotifUseRealName = $useRealName;
+
 		$ma = new MailAddress( $address, $name, $realName );
 		$this->assertEquals( $expected, $ma->toString() );
 	}
@@ -67,9 +82,6 @@ class MailAddressTest extends MediaWikiTestCase {
 		];
 	}
 
-	/**
-	 * @covers MailAddress::__toString
-	 */
 	public function test__ToString() {
 		$ma = new MailAddress( 'some@email.com', 'UserName', 'A real name' );
 		$this->assertEquals( $ma->toString(), (string)$ma );

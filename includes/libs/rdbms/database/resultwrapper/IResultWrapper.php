@@ -2,7 +2,9 @@
 
 namespace Wikimedia\Rdbms;
 
-use Iterator;
+use Countable;
+use OutOfBoundsException;
+use SeekableIterator;
 use stdClass;
 
 /**
@@ -21,7 +23,7 @@ use stdClass;
  *
  * @ingroup Database
  */
-interface IResultWrapper extends Iterator {
+interface IResultWrapper extends Countable, SeekableIterator {
 	/**
 	 * Get the number of rows in a result object
 	 *
@@ -30,11 +32,18 @@ interface IResultWrapper extends Iterator {
 	public function numRows();
 
 	/**
+	 * Get the number of rows in a result object
+	 *
+	 * @return int
+	 */
+	public function count(): int;
+
+	/**
 	 * Fetch the next row from the given result object, in object form. Fields can be retrieved with
 	 * $row->fieldname, with fields acting like member variables. If no more rows are available,
 	 * false is returned.
 	 *
-	 * @return stdClass|bool
+	 * @return stdClass|false
 	 * @throws DBUnexpectedError Thrown if the database returns an error
 	 */
 	public function fetchObject();
@@ -43,7 +52,7 @@ interface IResultWrapper extends Iterator {
 	 * Fetch the next row from the given result object, in associative array form. Fields are
 	 * retrieved with $row['fieldname']. If no more rows are available, false is returned.
 	 *
-	 * @return array|bool
+	 * @return array|false
 	 * @throws DBUnexpectedError Thrown if the database returns an error
 	 */
 	public function fetchRow();
@@ -52,9 +61,10 @@ interface IResultWrapper extends Iterator {
 	 * Change the position of the cursor in a result object.
 	 * See mysql_data_seek()
 	 *
+	 * @throws OutOfBoundsException
 	 * @param int $pos
 	 */
-	public function seek( $pos );
+	public function seek( $pos ): void;
 
 	/**
 	 * Free a result object
@@ -65,17 +75,26 @@ interface IResultWrapper extends Iterator {
 	public function free();
 
 	/**
-	 * @return stdClass|array|bool
+	 * @return stdClass|array|false
 	 */
+	#[\ReturnTypeWillChange]
 	public function current();
 
 	/**
 	 * @return int
 	 */
-	public function key();
+	public function key(): int;
 
 	/**
-	 * @return stdClass
+	 * @return void
 	 */
-	function next();
+	public function next(): void;
+
+	/**
+	 * Get the names of the fields in the result
+	 *
+	 * @since 1.37
+	 * @return string[]
+	 */
+	public function getFieldNames();
 }

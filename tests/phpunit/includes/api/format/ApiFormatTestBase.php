@@ -1,6 +1,22 @@
 <?php
 
-abstract class ApiFormatTestBase extends MediaWikiTestCase {
+namespace MediaWiki\Tests\Api\Format;
+
+use BadMethodCallException;
+use Exception;
+use MediaWiki\Api\ApiMain;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\Request\FauxRequest;
+use MediaWikiIntegrationTestCase;
+
+abstract class ApiFormatTestBase extends MediaWikiIntegrationTestCase {
+
+	protected function setUp(): void {
+		parent::setUp();
+		// These tests cover page rendering end-to-end, and run lots of extension hooks
+		// that don't expect to be executed in tests.
+		$this->clearHooks();
+	}
 
 	/**
 	 * Name of the formatter being tested
@@ -11,7 +27,6 @@ abstract class ApiFormatTestBase extends MediaWikiTestCase {
 	/**
 	 * Return general data to be encoded for testing
 	 * @return array See self::testGeneralEncoding
-	 * @throws BadMethodCallException
 	 */
 	public static function provideGeneralEncoding() {
 		throw new BadMethodCallException( static::class . ' must implement ' . __METHOD__ );
@@ -27,7 +42,6 @@ abstract class ApiFormatTestBase extends MediaWikiTestCase {
 	 *  - class: If set, register 'name' with this class (and 'factory', if that's set)
 	 *  - factory: Used with 'class' to register at runtime
 	 *  - returnPrinter: Return the printer object
-	 * @param callable|null $factory Factory to use instead of the normal one
 	 * @return string|array The string if $options['returnPrinter'] isn't set, or an array if it is:
 	 *  - text: Output text string
 	 *  - printer: ApiFormatBase
@@ -41,11 +55,20 @@ abstract class ApiFormatTestBase extends MediaWikiTestCase {
 		$flags = $options['flags'] ?? 0;
 
 		$context = new RequestContext;
-		$context->setRequest( new FauxRequest( $params, true ) );
+		$fauxRequest = new FauxRequest( $params, true );
+		$fauxRequest->setRequestURL( 'https://' );
+		$context->setRequest( $fauxRequest );
 		$main = new ApiMain( $context );
 		if ( isset( $options['class'] ) ) {
-			$factory = $options['factory'] ?? null;
-			$main->getModuleManager()->addModule( $printerName, 'format', $options['class'], $factory );
+			$spec = [
+				'class' => $options['class']
+			];
+
+			if ( isset( $options['factory'] ) ) {
+				$spec['factory'] = $options['factory'];
+			}
+
+			$main->getModuleManager()->addModule( $printerName, 'format', $spec );
 		}
 		$result = $main->getResult();
 		$result->addArrayType( null, 'default' );
@@ -77,14 +100,15 @@ abstract class ApiFormatTestBase extends MediaWikiTestCase {
 	 * @dataProvider provideGeneralEncoding
 	 * @param array $data Data to be encoded
 	 * @param string|Exception $expect String to expect, or exception expected to be thrown
-	 * @param array $params Query parameters to set in the FauxRequest
+	 * @param array $params Query parameters to set in the MediaWiki\Request\FauxRequest
 	 * @param array $options Options to pass to self::encodeData()
 	 */
 	public function testGeneralEncoding(
 		array $data, $expect, array $params = [], array $options = []
 	) {
 		if ( $expect instanceof Exception ) {
-			$this->setExpectedException( get_class( $expect ), $expect->getMessage() );
+			$this->expectException( get_class( $expect ) );
+			$this->expectExceptionMessage( $expect->getMessage() );
 			$this->encodeData( $params, $data, $options ); // Should throw
 		} else {
 			$this->assertSame( $expect, $this->encodeData( $params, $data, $options ) );

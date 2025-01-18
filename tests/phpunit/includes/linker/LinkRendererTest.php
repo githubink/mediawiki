@@ -1,33 +1,49 @@
 <?php
 
+use MediaWiki\Cache\LinkCache;
+use MediaWiki\Config\ServiceOptions;
 use MediaWiki\Linker\LinkRenderer;
 use MediaWiki\Linker\LinkRendererFactory;
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Linker\LinkTarget;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Page\PageReference;
+use MediaWiki\Page\PageReferenceValue;
+use MediaWiki\Title\Title;
+use MediaWiki\Title\TitleValue;
 
 /**
- * @covers MediaWiki\Linker\LinkRenderer
+ * @covers \MediaWiki\Linker\LinkRenderer
  */
 class LinkRendererTest extends MediaWikiLangTestCase {
+	use LinkCacheTestTrait;
+	use MockTitleTrait;
 
 	/**
 	 * @var LinkRendererFactory
 	 */
 	private $factory;
 
-	public function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
-		$this->setMwGlobals( [
-			'wgArticlePath' => '/wiki/$1',
-			'wgServer' => '//example.org',
-			'wgCanonicalServer' => 'http://example.org',
-			'wgScriptPath' => '/w',
-			'wgScript' => '/w/index.php',
+		$this->overrideConfigValues( [
+			MainConfigNames::Server => '//example.org',
+			MainConfigNames::CanonicalServer => 'http://example.org',
+			MainConfigNames::ScriptPath => '/w',
+			MainConfigNames::Script => '/w/index.php',
 		] );
-		$this->factory = MediaWikiServices::getInstance()->getLinkRendererFactory();
+		$this->factory = $this->getServiceContainer()->getLinkRendererFactory();
 	}
 
-	public function testMergeAttribs() {
-		$target = new TitleValue( NS_SPECIAL, 'Blankpage' );
+	public static function provideMergeAttribs() {
+		yield [ new TitleValue( NS_SPECIAL, 'BlankPage' ) ];
+		yield [ new PageReferenceValue( NS_SPECIAL, 'BlankPage', PageReference::LOCAL ) ];
+	}
+
+	/**
+	 * @dataProvider provideMergeAttribs
+	 * @covers \MediaWiki\Linker\LinkRenderer::makeBrokenLink
+	 */
+	public function testMergeAttribs( $target ) {
 		$linkRenderer = $this->factory->create();
 		$link = $linkRenderer->makeBrokenLink( $target, null, [
 			// Appended to class
@@ -45,9 +61,20 @@ class LinkRendererTest extends MediaWikiLangTestCase {
 		);
 	}
 
-	public function testMakeKnownLink() {
-		$target = new TitleValue( NS_MAIN, 'Foobar' );
-		$linkRenderer = $this->factory->create();
+	public static function provideMakeKnownLink() {
+		yield [ new TitleValue( NS_MAIN, 'Foobar' ) ];
+		yield [ new PageReferenceValue( NS_MAIN, 'Foobar', PageReference::LOCAL ) ];
+	}
+
+	/**
+	 * @dataProvider provideMakeKnownLink
+	 * @covers \MediaWiki\Linker\LinkRenderer::makeKnownLink
+	 */
+	public function testMakeKnownLink( $target ) {
+		$linkCache = $this->createMock( LinkCache::class );
+		$linkCache->method( 'addLinkObj' )->willReturn( 42 );
+		$this->setService( 'LinkCache', $linkCache );
+		$linkRenderer = $this->getServiceContainer()->getLinkRendererFactory()->create();
 
 		// Query added
 		$this->assertEquals(
@@ -70,9 +97,22 @@ class LinkRendererTest extends MediaWikiLangTestCase {
 		);
 	}
 
-	public function testMakeBrokenLink() {
-		$target = new TitleValue( NS_MAIN, 'Foobar' );
-		$special = new TitleValue( NS_SPECIAL, 'Foobar' );
+	public static function provideMakeBrokenLink() {
+		yield [
+			new TitleValue( NS_MAIN, 'Foobar' ),
+			new TitleValue( NS_SPECIAL, 'Foobar' )
+		];
+		yield [
+			new PageReferenceValue( NS_MAIN, 'Foobar', PageReference::LOCAL ),
+			new PageReferenceValue( NS_SPECIAL, 'Foobar', PageReference::LOCAL )
+		];
+	}
+
+	/**
+	 * @dataProvider provideMakeBrokenLink
+	 * @covers \MediaWiki\Linker\LinkRenderer::makeBrokenLink
+	 */
+	public function testMakeBrokenLink( $target, $special ) {
 		$linkRenderer = $this->factory->create();
 
 		// action=edit&redlink=1 added
@@ -97,17 +137,32 @@ class LinkRendererTest extends MediaWikiLangTestCase {
 		);
 
 		// fragment stripped
-		$this->assertEquals(
-			'<a href="/w/index.php?title=Foobar&amp;action=edit&amp;redlink=1" '
-			. 'class="new" title="Foobar (page does not exist)">Foobar</a>',
-			$linkRenderer->makeBrokenLink( $target->createFragmentTarget( 'foobar' ) )
-		);
+		if ( $target instanceof LinkTarget ) {
+			$this->assertEquals(
+				'<a href="/w/index.php?title=Foobar&amp;action=edit&amp;redlink=1" class="new" '
+				. 'title="Foobar (page does not exist)">Foobar</a>',
+				$linkRenderer->makeBrokenLink( $target->createFragmentTarget( 'foobar' ) )
+			);
+		}
 	}
 
-	public function testMakeLink() {
+	public static function provideMakeLink() {
+		yield [
+			new TitleValue( NS_SPECIAL, 'Foobar' ),
+			new TitleValue( NS_SPECIAL, 'BlankPage' )
+		];
+		yield [
+			new PageReferenceValue( NS_SPECIAL, 'Foobar', PageReference::LOCAL ),
+			new PageReferenceValue( NS_SPECIAL, 'BlankPage', PageReference::LOCAL )
+		];
+	}
+
+	/**
+	 * @dataProvider provideMakeLink
+	 * @covers \MediaWiki\Linker\LinkRenderer::makeLink
+	 */
+	public function testMakeLink( $foobar, $blankpage ) {
 		$linkRenderer = $this->factory->create();
-		$foobar = new TitleValue( NS_SPECIAL, 'Foobar' );
-		$blankpage = new TitleValue( NS_SPECIAL, 'Blankpage' );
 		$this->assertEquals(
 			'<a href="/wiki/Special:Foobar" class="new" title="Special:Foobar '
 			. '(page does not exist)">foo</a>',
@@ -137,61 +192,120 @@ class LinkRendererTest extends MediaWikiLangTestCase {
 		);
 	}
 
-	public function testGetLinkClasses() {
-		$wanCache = ObjectCache::getMainWANInstance();
-		$titleFormatter = MediaWikiServices::getInstance()->getTitleFormatter();
-		$nsInfo = MediaWikiServices::getInstance()->getNamespaceInfo();
-		$linkCache = new LinkCache( $titleFormatter, $wanCache, $nsInfo );
-		$foobarTitle = new TitleValue( NS_MAIN, 'FooBar' );
-		$redirectTitle = new TitleValue( NS_MAIN, 'Redirect' );
-		$userTitle = new TitleValue( NS_USER, 'Someuser' );
-		$linkCache->addGoodLinkObj(
-			1, // id
-			$foobarTitle,
-			10, // len
-			0 // redir
-		);
-		$linkCache->addGoodLinkObj(
-			2, // id
-			$redirectTitle,
-			10, // len
-			1 // redir
-		);
+	public static function provideMakeRedirectHeader() {
+		return [
+			[
+				[
+					'title' => 'Main_Page',
+				],
+				'<div class="redirectMsg"><p>Redirect to:</p><ul class="redirectText"><li><a class="new" title="Main Page (page does not exist)">Main Page</a></li></ul></div>'
+			],
+			[
+				[
+					'title' => 'Redirect',
+					'redirect' => true,
+				],
+				'<div class="redirectMsg"><p>Redirect to:</p><ul class="redirectText"><li><a class="new" title="Redirect (page does not exist)">Redirect</a></li></ul></div>'
+			],
+			// Test "forceKnown"; change namespace to NS_SPECIAL so we don't
+			// have to mock the LinkCache.
+			[
+				[
+					'title' => 'Main_Page',
+					'namespace' => NS_SPECIAL,
+					'forceKnown' => true,
+				],
+				'<div class="redirectMsg"><p>Redirect to:</p><ul class="redirectText"><li><a title="Special:Main Page">Special:Main Page</a></li></ul></div>',
+			],
+			[
+				[
+					'title' => 'Redirect',
+					'namespace' => NS_SPECIAL,
+					'redirect' => true,
+					'forceKnown' => true,
+				],
+				'<div class="redirectMsg"><p>Redirect to:</p><ul class="redirectText"><li><a href="/w/index.php?title=Special:Redirect&amp;redirect=no" title="Special:Redirect">Special:Redirect</a></li></ul></div>',
+			],
+		];
+	}
 
-		$linkCache->addGoodLinkObj(
-			3, // id
-			$userTitle,
-			10, // len
-			0 // redir
-		);
+	/**
+	 * @dataProvider provideMakeRedirectHeader
+	 * @covers \MediaWiki\Linker\LinkRenderer::makeRedirectHeader
+	 */
+	public function testMakeRedirectHeader( $test, $expected ) {
+		$lang = $this->getServiceContainer()->getContentLanguage();
+		$target = $this->makeMockTitle( $test['title'], $test );
+		$forceKnown = $test['forceKnown'] ?? false;
 
-		$linkRenderer = new LinkRenderer( $titleFormatter, $linkCache, $nsInfo );
-		$linkRenderer->setStubThreshold( 0 );
+		$linkRenderer = $this->factory->create();
 		$this->assertEquals(
+			$expected,
+			$linkRenderer->makeRedirectHeader( $lang, $target, $forceKnown )
+		);
+	}
+
+	public static function provideGetLinkClasses() {
+		yield [
+			new TitleValue( NS_MAIN, 'FooBar' ),
+			new TitleValue( NS_MAIN, 'Redirect' ),
+			new TitleValue( NS_USER, 'Someuser' )
+		];
+		yield [
+			new PageReferenceValue( NS_MAIN, 'FooBar', PageReference::LOCAL ),
+			new PageReferenceValue( NS_MAIN, 'Redirect', PageReference::LOCAL ),
+			new PageReferenceValue( NS_USER, 'Someuser', PageReference::LOCAL )
+		];
+	}
+
+	/**
+	 * @dataProvider provideGetLinkClasses
+	 * @covers \MediaWiki\Linker\LinkRenderer::getLinkClasses
+	 */
+	public function testGetLinkClasses( $foobarTitle, $redirectTitle, $userTitle ) {
+		$services = $this->getServiceContainer();
+		$titleFormatter = $services->getTitleFormatter();
+		$specialPageFactory = $services->getSpecialPageFactory();
+		$hookContainer = $services->getHookContainer();
+		$linkCache = $services->getLinkCache();
+		if ( $foobarTitle instanceof PageReference ) {
+			$cacheTitle = Title::newFromPageReference( $foobarTitle );
+		} else {
+			$cacheTitle = $foobarTitle;
+		}
+		$this->addGoodLinkObject( 1, $cacheTitle, 10, 0 );
+		if ( $redirectTitle instanceof PageReference ) {
+			$cacheTitle = Title::newFromPageReference( $redirectTitle );
+		} else {
+			$cacheTitle = $redirectTitle;
+		}
+		$this->addGoodLinkObject( 2, $cacheTitle, 10, 1 );
+
+		if ( $userTitle instanceof PageReference ) {
+			$cacheTitle = Title::newFromPageReference( $userTitle );
+		} else {
+			$cacheTitle = $userTitle;
+		}
+		$this->addGoodLinkObject( 3, $cacheTitle, 10, 0 );
+
+		$linkRenderer = new LinkRenderer(
+			$titleFormatter,
+			$linkCache,
+			$specialPageFactory,
+			$hookContainer,
+			new ServiceOptions( LinkRenderer::CONSTRUCTOR_OPTIONS, [ 'renderForComment' => false ] )
+		);
+		$this->assertSame(
 			'',
 			$linkRenderer->getLinkClasses( $foobarTitle )
 		);
-
-		$linkRenderer->setStubThreshold( 20 );
-		$this->assertEquals(
-			'stub',
-			$linkRenderer->getLinkClasses( $foobarTitle )
-		);
-
-		$linkRenderer->setStubThreshold( 0 );
 		$this->assertEquals(
 			'mw-redirect',
 			$linkRenderer->getLinkClasses( $redirectTitle )
 		);
-
-		$linkRenderer->setStubThreshold( 20 );
-		$this->assertEquals(
-			'',
-			$linkRenderer->getLinkClasses( $userTitle )
-		);
 	}
 
-	function tearDown() {
+	protected function tearDown(): void {
 		Title::clearCaches();
 		parent::tearDown();
 	}

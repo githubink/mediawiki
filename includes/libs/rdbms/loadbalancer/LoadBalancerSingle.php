@@ -1,7 +1,5 @@
 <?php
 /**
- * Simple generator of database connections that always returns the same object.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,9 +16,7 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Database
  */
-
 namespace Wikimedia\Rdbms;
 
 use InvalidArgumentException;
@@ -28,44 +24,44 @@ use InvalidArgumentException;
 /**
  * Trivial LoadBalancer that always returns an injected connection handle.
  *
- * Note that, while this LoadBalancer does not open any connections itself,
- * it still closes the injected connection at times, including during destruction.
- * It is therefore unsuitable for use in tests unless you have a Database instance
- * separate from the main test database (which is expected to stay open).
+ * @ingroup Database
  */
 class LoadBalancerSingle extends LoadBalancer {
-	/** @var IDatabase */
-	private $db;
+	/** @var Database */
+	private $conn;
 
 	/**
+	 * You probably want to use {@link newFromConnection} instead.
+	 *
 	 * @param array $params An associative array with one member:
 	 *   - connection: An IDatabase connection object
 	 */
 	public function __construct( array $params ) {
-		if ( !isset( $params['connection'] ) ) {
+		/** @var Database $conn */
+		$conn = $params['connection'] ?? null;
+		if ( !$conn ) {
 			throw new InvalidArgumentException( "Missing 'connection' argument." );
 		}
 
-		$this->db = $params['connection'];
+		$this->conn = $conn;
 
 		parent::__construct( [
-			'servers' => [
-				[
-					'type' => $this->db->getType(),
-					'host' => $this->db->getServer(),
-					'dbname' => $this->db->getDBname(),
-					'load' => 1,
-				]
-			],
+			'servers' => [ [
+				'type' => $conn->getType(),
+				'host' => $conn->getServer(),
+				'dbname' => $conn->getDBname(),
+				'load' => 1,
+			] ],
 			'trxProfiler' => $params['trxProfiler'] ?? null,
 			'srvCache' => $params['srvCache'] ?? null,
 			'wanCache' => $params['wanCache'] ?? null,
-			'localDomain' => $params['localDomain'] ?? $this->db->getDomainID(),
+			'localDomain' => $params['localDomain'] ?? $this->conn->getDomainID(),
 			'readOnlyReason' => $params['readOnlyReason'] ?? false,
+			'clusterName' => $params['clusterName'] ?? null,
 		] );
 
 		if ( isset( $params['readOnlyReason'] ) ) {
-			$this->db->setLBInfo( 'readOnlyReason', $params['readOnlyReason'] );
+			$conn->setLBInfo( $conn::LB_READ_ONLY_REASON, $params['readOnlyReason'] );
 		}
 	}
 
@@ -83,16 +79,24 @@ class LoadBalancerSingle extends LoadBalancer {
 		) );
 	}
 
-	protected function reallyOpenConnection( array $server, DatabaseDomain $domain ) {
-		return $this->db;
+	protected function sanitizeConnectionFlags( $flags, $domain ) {
+		// There is only one underlying connection handle. Also, this class is only meant to
+		// be used during situations like site installation, where there should be no contenting
+		// connections, and integration testing, where everything uses temporary tables.
+		$flags &= ~self::CONN_TRX_AUTOCOMMIT;
+
+		return $flags;
+	}
+
+	protected function reallyOpenConnection( $i, DatabaseDomain $domain, array $lbInfo ) {
+		foreach ( $lbInfo as $k => $v ) {
+			$this->conn->setLBInfo( $k, $v );
+		}
+
+		return $this->conn;
 	}
 
 	public function __destruct() {
 		// do nothing since the connection was injected
 	}
 }
-
-/**
- * @deprecated since 1.29
- */
-class_alias( LoadBalancerSingle::class, 'LoadBalancerSingle' );

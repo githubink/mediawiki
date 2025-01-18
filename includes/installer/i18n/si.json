@@ -1,10 +1,10 @@
 {
 	"@metadata": {
 		"authors": [
-			"Singhalawap",
-			"පසිඳු කාවින්ද",
 			"Sahan.ssw",
-			"Thirsty"
+			"Singhalawap",
+			"Thirsty",
+			"පසිඳු කාවින්ද"
 		]
 	},
 	"config-desc": "මාධ්‍යවිකි සඳහා වූ ස්ථාපකය",
@@ -27,7 +27,6 @@
 	"config-page-install": "ස්ථාපනය",
 	"config-page-complete": "සම්පූර්ණයි!",
 	"config-page-restart": "ස්ථාපනය යළි අරඹන්න",
-	"config-page-readme": "මාව කියවන්න",
 	"config-page-releasenotes": "නිකුතු සටහන්",
 	"config-page-copying": "පිටපත් කරමින්",
 	"config-page-upgradedoc": "උසස් කරමින්",
@@ -37,7 +36,6 @@
 	"config-db-host": "දත්ත සංචිත ධාරක:",
 	"config-db-wiki-settings": "මෙම විකිය හඳුනා ගන්න",
 	"config-db-name": "දත්ත සංචිතයේ නම:",
-	"config-db-name-oracle": "දත්ත සංචිත සංක්ෂිප්ත නිරූපණය:",
 	"config-db-install-account": "ස්ථාපනය සඳහා පරිශීලක ගිණුම",
 	"config-db-username": "දත්ත සංචිතයේ පරිශීලක නාමය:",
 	"config-db-password": "දත්ත සංචිතයේ මුරපදය:",
@@ -47,23 +45,17 @@
 	"config-db-schema": "මාධ්‍යවිකි සඳහා සංක්ෂිප්ත නිරූපණය:",
 	"config-pg-test-error": "'''$1''' දත්ත සංචිතය වෙත සම්බන්ධ විය නොහැක: $2",
 	"config-sqlite-dir": "SQLite දත්ත නාමවලිය:",
-	"config-oracle-def-ts": "සාමාන්‍ය වගු අවකාශය:",
-	"config-oracle-temp-ts": "තාවකාලික වගු අවකාශය:",
 	"config-header-mysql": "MySQL සැකසුම්",
 	"config-header-postgres": "PostgreSQL සැකසුම්",
 	"config-header-sqlite": "SQLite සැකසුම්",
-	"config-header-oracle": "ඔරකල් සැකසුම්",
 	"config-invalid-db-type": "වලංගු නොවන දත්ත සංචිත වර්ගය",
 	"config-missing-db-name": "\"දත්ත සංචිත නාමය\" සඳහා ඔබ විසින් අගයක් දිය යුතු වේ",
 	"config-missing-db-host": "\"දත්ත සංචිත ධාරකය\" සඳහා ඔබ විසින් අගයක් දිය යුතු වේ",
-	"config-missing-db-server-oracle": "\"දත්ත සංචිත TNS\" සඳහා ඔබ විසින් අගයක් දිය යුතු වේ",
 	"config-sqlite-name-help": "ඔබගේ විකිය හදුන්වාදෙන නමක් තෝරාගන්න. \nහිස්තැන් හෝ විරාම ලක්ෂණ ‍නොයොදන්න.\nමෙය SQLite දත්ත ගොනුනාමය සදහා යොදා ගනු ඇත.",
 	"config-regenerate": "නැවත ජනිත කරන්න LocalSettings.php →",
 	"config-db-web-account": "ජාල ප්‍රවේශනය සඳහා දත්ත සංචිත ගිණුම",
 	"config-mysql-engine": "ආචයන එන්ජිම:",
 	"config-mysql-innodb": "InnoDB",
-	"config-mysql-myisam": "MyISAM",
-	"config-mssql-windowsauth": "windows සහතික කිරීම.",
 	"config-site-name": "විකියෙහි නම:",
 	"config-site-name-blank": "අඩවි නාමයක් යොදන්න.",
 	"config-project-namespace": "ව්‍යාපෘතියේ නාමඅවකාශය:",
@@ -103,9 +95,7 @@
 	"config-upload-settings": "පින්තූර සහ ගොනු උඩුගත කිරීම්",
 	"config-upload-enable": "ගොනු උඩුගත කිරීම් සක්‍රිය කරන්න",
 	"config-upload-deleted": "මැකූ ගොනු සඳහා නාමාවලිය:",
-	"config-logo": "ලාංඡනයේ URL:",
 	"config-instantcommons": "ක්ෂණික කොමන්ස් සක්‍රිය කරන්න",
-	"config-cc-again": "නැවත ඇහිඳගන්න...",
 	"config-advanced-settings": "උසස් වින්‍යාසගතකෙරුම",
 	"config-cache-options": "වස්තු කෑෂය සඳහා සැකසුම්:",
 	"config-memcached-servers": "මතකකෑෂිත සර්වරයන්:",
@@ -116,7 +106,6 @@
 	"config-install-database": "දත්ත සංචිතය සකසමින්",
 	"config-install-schema": "සංක්ෂිප්ත නිරූපණය තනමින්",
 	"config-install-pg-schema-not-exist": "PostgreSQL සංක්ෂිප්ත නිරූපණය නොපවතියි.",
-	"config-install-pg-commit": "වෙනස්කම් ප්‍රයාපනය කරමින්",
 	"config-install-pg-plpgsql": "PL/pgSQL භාෂාව සඳහා පරික්ෂා කරමින්",
 	"config-install-user": "දත්ත සංචිත පරිශීලක තනමින්",
 	"config-install-user-alreadyexists": "\"$1\" පරිශීලක දැනටමත් පවතී",
@@ -126,7 +115,6 @@
 	"config-install-interwiki": "සාමාන්‍ය අන්තර්විකි වගුව ගහනය කරමින්",
 	"config-install-interwiki-list": "<code>interwiki.list</code> ගොනුව කියවිය නොහැක.",
 	"config-install-stats": "සංඛ්‍යානය අරඹමින්",
-	"config-install-keys": "රහස් යතුරු ජනිත කරමින්",
 	"config-install-sysop": "පරිපාලක පරිශීලක ගිණුම තනමින්",
 	"config-install-mainpage": "සාමාන්‍ය අන්තර්ගතය සමඟින් ප්‍රධාන පිටුව තනමින්",
 	"config-install-mainpage-failed": "ප්‍රධාන පිටුව ඇතුල් කල නොහැක: $1",
@@ -134,5 +122,5 @@
 	"config-help": "උදව්",
 	"config-nofile": "\"$1\" ගොනුව සොයාගත නොහැක. එක මැකිලා ගියාවත්ද?",
 	"mainpagetext": "'''මීඩියාවිකි සාර්ථක ලෙස ස්ථාපනය කරන ලදි.'''",
-	"mainpagedocfooter": "විකි මෘදුකාංග භාවිතා කිරීම පිළිබඳ තොරතුරු සඳහා  [https://meta.wikimedia.org/wiki/Help:Contents පරිශීලකයන් සඳහා නියමුව] හදාරන්න.\n\n== ඇරඹුම ==\n* [https://www.mediawiki.org/wiki/Special:MyLanguage/Manual:Configuration_settings වින්‍යාස සැකසුම්]\n* [https://www.mediawiki.org/wiki/Special:MyLanguage/Manual:FAQ මීඩියාවිකි නිති-විමසන-පැන]\n* [https://lists.wikimedia.org/mailman/listinfo/mediawiki-announce මීඩියාවිකි නිකුතුව තැපැල් ලැයිස්තුව]"
+	"mainpagedocfooter": "විකි මෘදුකාංග භාවිතා කිරීම පිළිබඳ තොරතුරු සඳහා  [https://www.mediawiki.org/wiki/Special:MyLanguage/Help:Contents පරිශීලකයන් සඳහා නියමුව] හදාරන්න.\n\n== ඇරඹුම ==\n* [https://www.mediawiki.org/wiki/Special:MyLanguage/Manual:Configuration_settings වින්‍යාස සැකසුම්]\n* [https://www.mediawiki.org/wiki/Special:MyLanguage/Manual:FAQ මීඩියාවිකි නිති-විමසන-පැන]\n* [https://lists.wikimedia.org/postorius/lists/mediawiki-announce.lists.wikimedia.org/ මීඩියාවිකි නිකුතුව තැපැල් ලැයිස්තුව]"
 }

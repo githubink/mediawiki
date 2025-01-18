@@ -1,30 +1,24 @@
-var GroupWidget = require( './GroupWidget.js' ),
-	ViewSwitchWidget;
-
 /**
- * A widget for the footer for the default view, allowing to switch views
+ * A widget for the footer for the default view, allowing to switch views.
  *
  * @class mw.rcfilters.ui.ViewSwitchWidget
+ * @ignore
  * @extends OO.ui.Widget
  *
- * @constructor
  * @param {mw.rcfilters.Controller} controller Controller
  * @param {mw.rcfilters.dm.FiltersViewModel} model View model
  * @param {Object} [config] Configuration object
  */
-ViewSwitchWidget = function MwRcfiltersUiViewSwitchWidget( controller, model, config ) {
+const ViewSwitchWidget = function MwRcfiltersUiViewSwitchWidget( controller, model, config ) {
 	config = config || {};
 
 	// Parent
-	ViewSwitchWidget.parent.call( this, config );
+	ViewSwitchWidget.super.call( this, config );
 
 	this.controller = controller;
 	this.model = model;
 
-	this.buttons = new GroupWidget( {
-		events: {
-			click: 'buttonClick'
-		},
+	this.buttons = new OO.ui.ButtonGroupWidget( {
 		items: [
 			new OO.ui.ButtonWidget( {
 				data: 'namespaces',
@@ -38,6 +32,8 @@ ViewSwitchWidget = function MwRcfiltersUiViewSwitchWidget( controller, model, co
 			} )
 		]
 	} );
+
+	this.buttons.aggregate( { click: 'buttonClick' } );
 
 	// Events
 	this.model.connect( this, { update: 'onModelUpdate' } );
@@ -63,9 +59,9 @@ OO.inheritClass( ViewSwitchWidget, OO.ui.Widget );
  * Respond to model update event
  */
 ViewSwitchWidget.prototype.onModelUpdate = function () {
-	var currentView = this.model.getCurrentView();
+	const currentView = this.model.getCurrentView();
 
-	this.buttons.getItems().forEach( function ( buttonWidget ) {
+	this.buttons.getItems().forEach( ( buttonWidget ) => {
 		buttonWidget.setActive( buttonWidget.getData() === currentView );
 	} );
 };

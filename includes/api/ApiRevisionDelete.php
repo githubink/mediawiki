@@ -21,7 +21,14 @@
  * @since 1.23
  */
 
+namespace MediaWiki\Api;
+
+use ChangeTags;
 use MediaWiki\Revision\RevisionRecord;
+use MediaWiki\Status\Status;
+use MediaWiki\Title\Title;
+use RevisionDeleter;
+use Wikimedia\ParamValidator\ParamValidator;
 
 /**
  * API interface to RevDel. The API equivalent of Special:RevisionDelete.
@@ -38,19 +45,13 @@ class ApiRevisionDelete extends ApiBase {
 		$user = $this->getUser();
 		$this->checkUserRightsAny( RevisionDeleter::getRestriction( $params['type'] ) );
 
-		// @TODO Use PermissionManager::isBlockedFrom() instead.
-		$block = $user->getBlock();
-		if ( $block ) {
-			$this->dieBlocked( $block );
-		}
-
 		if ( !$params['ids'] ) {
 			$this->dieWithError( [ 'apierror-paramempty', 'ids' ], 'paramempty_ids' );
 		}
 
 		// Check if user can add tags
 		if ( $params['tags'] ) {
-			$ableToTag = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $user );
+			$ableToTag = ChangeTags::canAddTagsAccompanyingChange( $params['tags'], $this->getAuthority() );
 			if ( !$ableToTag->isOK() ) {
 				$this->dieStatus( $ableToTag );
 			}
@@ -97,12 +98,18 @@ class ApiRevisionDelete extends ApiBase {
 			$this->dieWithError( [ 'apierror-revdel-needtarget' ], 'needtarget' );
 		}
 
+		// TODO: replace use of PermissionManager
+		if ( $this->getPermissionManager()->isBlockedFrom( $user, $targetObj ) ) {
+			// @phan-suppress-next-line PhanTypeMismatchArgumentNullable Block is checked and not null
+			$this->dieBlocked( $user->getBlock() );
+		}
+
 		$list = RevisionDeleter::createList(
 			$params['type'], $this->getContext(), $targetObj, $params['ids']
 		);
 		$status = $list->setVisibility( [
 			'value' => $bitfield,
-			'comment' => $params['reason'],
+			'comment' => $params['reason'] ?? '',
 			'perItemStatus' => true,
 			'tags' => $params['tags']
 		] );
@@ -112,12 +119,12 @@ class ApiRevisionDelete extends ApiBase {
 		$data['target'] = $targetObj->getFullText();
 		$data['items'] = [];
 
-		foreach ( $status->itemStatuses as $id => $s ) {
+		foreach ( $status->getValue()['itemStatuses'] as $id => $s ) {
 			$data['items'][$id] = $this->extractStatusInfo( $s );
 			$data['items'][$id]['id'] = $id;
 		}
 
-		$list->reloadFromMaster();
+		$list->reloadFromPrimary();
 		for ( $item = $list->reset(); $list->current(); $item = $list->next() ) {
 			$data['items'][$item->getId()] += $item->getApiData( $this->getResult() );
 		}
@@ -127,7 +134,7 @@ class ApiRevisionDelete extends ApiBase {
 		$result->addValue( null, $this->getModuleName(), $data );
 	}
 
-	private function extractStatusInfo( $status ) {
+	private function extractStatusInfo( Status $status ) {
 		$ret = [
 			'status' => $status->isOK() ? 'Success' : 'Fail',
 		];
@@ -155,30 +162,32 @@ class ApiRevisionDelete extends ApiBase {
 	public function getAllowedParams() {
 		return [
 			'type' => [
-				ApiBase::PARAM_TYPE => RevisionDeleter::getTypes(),
-				ApiBase::PARAM_REQUIRED => true
+				ParamValidator::PARAM_TYPE => RevisionDeleter::getTypes(),
+				ParamValidator::PARAM_REQUIRED => true
 			],
 			'target' => null,
 			'ids' => [
-				ApiBase::PARAM_ISMULTI => true,
-				ApiBase::PARAM_REQUIRED => true
+				ParamValidator::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_REQUIRED => true
 			],
 			'hide' => [
-				ApiBase::PARAM_TYPE => [ 'content', 'comment', 'user' ],
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => [ 'content', 'comment', 'user' ],
+				ParamValidator::PARAM_ISMULTI => true,
 			],
 			'show' => [
-				ApiBase::PARAM_TYPE => [ 'content', 'comment', 'user' ],
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => [ 'content', 'comment', 'user' ],
+				ParamValidator::PARAM_ISMULTI => true,
 			],
 			'suppress' => [
-				ApiBase::PARAM_TYPE => [ 'yes', 'no', 'nochange' ],
-				ApiBase::PARAM_DFLT => 'nochange',
+				ParamValidator::PARAM_TYPE => [ 'yes', 'no', 'nochange' ],
+				ParamValidator::PARAM_DEFAULT => 'nochange',
 			],
-			'reason' => null,
+			'reason' => [
+				ParamValidator::PARAM_TYPE => 'string'
+			],
 			'tags' => [
-				ApiBase::PARAM_TYPE => 'tags',
-				ApiBase::PARAM_ISMULTI => true,
+				ParamValidator::PARAM_TYPE => 'tags',
+				ParamValidator::PARAM_ISMULTI => true,
 			],
 		];
 	}
@@ -188,8 +197,11 @@ class ApiRevisionDelete extends ApiBase {
 	}
 
 	protected function getExamplesMessages() {
+		$title = Title::newMainPage()->getPrefixedText();
+		$mp = rawurlencode( $title );
+
 		return [
-			'action=revisiondelete&target=Main%20Page&type=revision&ids=12345&' .
+			"action=revisiondelete&target={$mp}&type=revision&ids=12345&" .
 				'hide=content&token=123ABC'
 				=> 'apihelp-revisiondelete-example-revision',
 			'action=revisiondelete&type=logging&ids=67890&hide=content|comment|user&' .
@@ -202,3 +214,6 @@ class ApiRevisionDelete extends ApiBase {
 		return 'https://www.mediawiki.org/wiki/Special:MyLanguage/API:Revisiondelete';
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( ApiRevisionDelete::class, 'ApiRevisionDelete' );

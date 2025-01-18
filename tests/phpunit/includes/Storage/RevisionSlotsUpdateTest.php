@@ -2,21 +2,21 @@
 
 namespace MediaWiki\Tests\Storage;
 
-use Content;
+use MediaWiki\Content\Content;
+use MediaWiki\Content\WikitextContent;
 use MediaWiki\Revision\MutableRevisionSlots;
-use MediaWiki\Revision\RevisionSlots;
 use MediaWiki\Revision\RevisionAccessException;
+use MediaWiki\Revision\RevisionSlots;
 use MediaWiki\Revision\SlotRecord;
 use MediaWiki\Storage\RevisionSlotsUpdate;
-use MediaWikiTestCase;
-use WikitextContent;
+use MediaWikiIntegrationTestCase;
 
 /**
  * @covers \MediaWiki\Storage\RevisionSlotsUpdate
  */
-class RevisionSlotsUpdateTest extends MediaWikiTestCase {
+class RevisionSlotsUpdateTest extends MediaWikiIntegrationTestCase {
 
-	public function provideNewFromRevisionSlots() {
+	public static function provideNewFromRevisionSlots() {
 		$slotA = SlotRecord::newUnsaved( 'A', new WikitextContent( 'A' ) );
 		$slotB = SlotRecord::newUnsaved( 'B', new WikitextContent( 'B' ) );
 		$slotC = SlotRecord::newUnsaved( 'C', new WikitextContent( 'C' ) );
@@ -40,17 +40,12 @@ class RevisionSlotsUpdateTest extends MediaWikiTestCase {
 
 	/**
 	 * @dataProvider provideNewFromRevisionSlots
-	 *
-	 * @param RevisionSlots $newSlots
-	 * @param RevisionSlots $parentSlots
-	 * @param string[] $modified
-	 * @param string[] $removed
 	 */
 	public function testNewFromRevisionSlots(
 		RevisionSlots $newSlots,
-		RevisionSlots $parentSlots = null,
-		array $modified = [],
-		array $removed = []
+		?RevisionSlots $parentSlots,
+		array $modified,
+		array $removed
 	) {
 		$update = RevisionSlotsUpdate::newFromRevisionSlots( $newSlots, $parentSlots );
 
@@ -62,7 +57,7 @@ class RevisionSlotsUpdateTest extends MediaWikiTestCase {
 		}
 	}
 
-	public function provideNewFromContent() {
+	public static function provideNewFromContent() {
 		$slotA = SlotRecord::newUnsaved( 'A', new WikitextContent( 'A' ) );
 		$slotB = SlotRecord::newUnsaved( 'B', new WikitextContent( 'B' ) );
 		$slotC = SlotRecord::newUnsaved( 'C', new WikitextContent( 'C' ) );
@@ -84,33 +79,29 @@ class RevisionSlotsUpdateTest extends MediaWikiTestCase {
 
 	/**
 	 * @dataProvider provideNewFromContent
-	 *
-	 * @param Content[] $newContent
-	 * @param RevisionSlots $parentSlots
-	 * @param string[] $modified
 	 */
 	public function testNewFromContent(
 		array $newContent,
-		RevisionSlots $parentSlots = null,
+		?RevisionSlots $parentSlots = null,
 		array $modified = []
 	) {
 		$update = RevisionSlotsUpdate::newFromContent( $newContent, $parentSlots );
 
 		$this->assertEquals( $modified, $update->getModifiedRoles() );
-		$this->assertEmpty( $update->getRemovedRoles() );
+		$this->assertSame( [], $update->getRemovedRoles() );
 	}
 
 	public function testConstructor() {
 		$update = new RevisionSlotsUpdate();
 
-		$this->assertEmpty( $update->getModifiedRoles() );
-		$this->assertEmpty( $update->getRemovedRoles() );
+		$this->assertSame( [], $update->getModifiedRoles() );
+		$this->assertSame( [], $update->getRemovedRoles() );
 
 		$slotA = SlotRecord::newUnsaved( 'A', new WikitextContent( 'A' ) );
 		$update = new RevisionSlotsUpdate( [ 'A' => $slotA ] );
 
 		$this->assertEquals( [ 'A' ], $update->getModifiedRoles() );
-		$this->assertEmpty( $update->getRemovedRoles() );
+		$this->assertSame( [], $update->getRemovedRoles() );
 
 		$update = new RevisionSlotsUpdate( [ 'A' => $slotA ], [ 'X' ] );
 
@@ -161,12 +152,12 @@ class RevisionSlotsUpdateTest extends MediaWikiTestCase {
 		$slotA = SlotRecord::newUnsaved( SlotRecord::MAIN, new WikitextContent( 'A' ) );
 		$slots->modifySlot( $slotA );
 
-		$this->assertSame( [ 'main' ], $slots->getModifiedRoles() );
+		$this->assertSame( [ SlotRecord::MAIN ], $slots->getModifiedRoles() );
 
 		$slots->removeSlot( SlotRecord::MAIN );
 		$slots->removeSlot( 'other' );
 		$this->assertSame( [], $slots->getModifiedRoles() );
-		$this->assertSame( [ 'main', 'other' ], $slots->getRemovedRoles() );
+		$this->assertSame( [ SlotRecord::MAIN, 'other' ], $slots->getRemovedRoles() );
 		$this->assertTrue( $slots->isRemovedSlot( SlotRecord::MAIN ) );
 		$this->assertTrue( $slots->isRemovedSlot( 'other' ) );
 		$this->assertFalse( $slots->isModifiedSlot( SlotRecord::MAIN ) );
@@ -175,7 +166,7 @@ class RevisionSlotsUpdateTest extends MediaWikiTestCase {
 		$slots->removeSlot( SlotRecord::MAIN );
 
 		// getting a slot after removing it should fail
-		$this->setExpectedException( RevisionAccessException::class );
+		$this->expectException( RevisionAccessException::class );
 		$slots->getModifiedSlot( SlotRecord::MAIN );
 	}
 
@@ -186,7 +177,7 @@ class RevisionSlotsUpdateTest extends MediaWikiTestCase {
 
 		$slots->modifyContent( SlotRecord::MAIN, new WikitextContent( 'A' ) );
 		$slots->modifyContent( 'foo', new WikitextContent( 'Foo' ) );
-		$this->assertSame( [ 'main', 'foo' ], $slots->getModifiedRoles() );
+		$this->assertSame( [ SlotRecord::MAIN, 'foo' ], $slots->getModifiedRoles() );
 
 		$slots->removeSlot( SlotRecord::MAIN );
 		$this->assertSame( [ 'foo' ], $slots->getModifiedRoles() );
@@ -201,13 +192,13 @@ class RevisionSlotsUpdateTest extends MediaWikiTestCase {
 		$slots->removeSlot( SlotRecord::MAIN, new WikitextContent( 'A' ) );
 		$slots->removeSlot( 'foo', new WikitextContent( 'Foo' ) );
 
-		$this->assertSame( [ 'main', 'foo' ], $slots->getRemovedRoles() );
+		$this->assertSame( [ SlotRecord::MAIN, 'foo' ], $slots->getRemovedRoles() );
 
 		$slots->modifyContent( SlotRecord::MAIN, new WikitextContent( 'A' ) );
 		$this->assertSame( [ 'foo' ], $slots->getRemovedRoles() );
 	}
 
-	public function provideHasSameUpdates() {
+	public static function provideHasSameUpdates() {
 		$fooX = SlotRecord::newUnsaved( 'x', new WikitextContent( 'Foo' ) );
 		$barZ = SlotRecord::newUnsaved( 'z', new WikitextContent( 'Bar' ) );
 

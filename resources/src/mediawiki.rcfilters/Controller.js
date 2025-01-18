@@ -1,27 +1,27 @@
-var byteLength = require( 'mediawiki.String' ).byteLength,
-	UriProcessor = require( './UriProcessor.js' ),
-	Controller;
+const byteLength = require( 'mediawiki.String' ).byteLength,
+	UriProcessor = require( './UriProcessor.js' );
 
 /* eslint no-underscore-dangle: "off" */
 /**
- * Controller for the filters in Recent Changes
- * @class mw.rcfilters.Controller
+ * Controller for the filters in Recent Changes.
  *
- * @constructor
+ * @class Controller
+ * @memberof mw.rcfilters
+ * @ignore
  * @param {mw.rcfilters.dm.FiltersViewModel} filtersModel Filters view model
  * @param {mw.rcfilters.dm.ChangesListViewModel} changesListModel Changes list view model
  * @param {mw.rcfilters.dm.SavedQueriesModel} savedQueriesModel Saved queries model
  * @param {Object} config Additional configuration
- * @cfg {string} savedQueriesPreferenceName Where to save the saved queries
- * @cfg {string} daysPreferenceName Preference name for the days filter
- * @cfg {string} limitPreferenceName Preference name for the limit filter
- * @cfg {string} collapsedPreferenceName Preference name for collapsing and showing
+ * @param {string} config.savedQueriesPreferenceName Where to save the saved queries
+ * @param {string} config.daysPreferenceName Preference name for the days filter
+ * @param {string} config.limitPreferenceName Preference name for the limit filter
+ * @param {string} config.collapsedPreferenceName Preference name for collapsing and showing
  *  the active filters area
- * @cfg {boolean} [normalizeTarget] Dictates whether or not to go through the
+ * @param {boolean} [config.normalizeTarget] Dictates whether or not to go through the
  *  title normalization to separate title subpage/parts into the target= url
  *  parameter
  */
-Controller = function MwRcfiltersController( filtersModel, changesListModel, savedQueriesModel, config ) {
+const Controller = function MwRcfiltersController( filtersModel, changesListModel, savedQueriesModel, config ) {
 	this.filtersModel = filtersModel;
 	this.changesListModel = changesListModel;
 	this.savedQueriesModel = savedQueriesModel;
@@ -31,7 +31,8 @@ Controller = function MwRcfiltersController( filtersModel, changesListModel, sav
 	this.collapsedPreferenceName = config.collapsedPreferenceName;
 	this.normalizeTarget = !!config.normalizeTarget;
 
-	this.pollingRate = require( './config.json' ).StructuredChangeFiltersLiveUpdatePollingRate;
+	// TODO merge dmConfig.json and config.json virtual files, see T256836
+	this.pollingRate = require( './dmConfig.json' ).StructuredChangeFiltersLiveUpdatePollingRate;
 
 	this.requestCounter = {};
 	this.uriProcessor = null;
@@ -52,80 +53,114 @@ OO.initClass( Controller );
  * Initialize the filter and parameter states
  *
  * @param {Array} filterStructure Filter definition and structure for the model
- * @param {Object} [namespaceStructure] Namespace definition
- * @param {Object} [tagList] Tag definition
+ * @param {Object} namespaceStructure Namespace definition
+ * @param {Object} tagList Tag definition
  * @param {Object} [conditionalViews] Conditional view definition
  */
 Controller.prototype.initialize = function ( filterStructure, namespaceStructure, tagList, conditionalViews ) {
-	var parsedSavedQueries, pieces,
-		displayConfig = mw.config.get( 'StructuredChangeFiltersDisplayConfig' ),
+	const displayConfig = mw.config.get( 'StructuredChangeFiltersDisplayConfig' ),
 		defaultSavedQueryExists = mw.config.get( 'wgStructuredChangeFiltersDefaultSavedQueryExists' ),
-		controller = this,
 		views = $.extend( true, {}, conditionalViews ),
-		items = [],
-		uri = new mw.Uri();
+		url = new URL( location.href );
 
 	// Prepare views
-	if ( namespaceStructure ) {
-		items = [];
-		// eslint-disable-next-line no-jquery/no-each-util
-		$.each( namespaceStructure, function ( namespaceID, label ) {
-			// Build and clean up the individual namespace items definition
-			items.push( {
+	const nsAllContents = {
+		name: 'all-contents',
+		label: mw.msg( 'rcfilters-allcontents-label' ),
+		description: '',
+		identifiers: [ 'subject' ],
+		cssClass: 'mw-changeslist-ns-subject',
+		subset: []
+	};
+	const nsAllDiscussions = {
+		name: 'all-discussions',
+		label: mw.msg( 'rcfilters-alldiscussions-label' ),
+		description: '',
+		identifiers: [ 'talk' ],
+		cssClass: 'mw-changeslist-ns-talk',
+		subset: []
+	};
+	const items = [ nsAllContents, nsAllDiscussions ];
+	for ( const namespaceID in namespaceStructure ) {
+		const label = namespaceStructure[ namespaceID ];
+		// Build and clean up the individual namespace items definition
+		const isTalk = mw.Title.isTalkNamespace( namespaceID ),
+			nsFilter = {
 				name: namespaceID,
 				label: label || mw.msg( 'blanknamespace' ),
 				description: '',
 				identifiers: [
-					mw.Title.isTalkNamespace( namespaceID ) ?
-						'talk' : 'subject'
+					isTalk ? 'talk' : 'subject'
 				],
 				cssClass: 'mw-changeslist-ns-' + namespaceID
-			} );
-		} );
+			};
+		items.push( nsFilter );
+		( isTalk ? nsAllDiscussions : nsAllContents ).subset.push( { filter: namespaceID } );
+	}
 
-		views.namespaces = {
+	views.namespaces = {
+		title: mw.msg( 'namespaces' ),
+		trigger: ':',
+		groups: [ {
+			// Group definition (single group)
+			name: 'namespace', // parameter name is singular
+			type: 'string_options',
 			title: mw.msg( 'namespaces' ),
-			trigger: ':',
-			groups: [ {
-				// Group definition (single group)
-				name: 'namespace', // parameter name is singular
-				type: 'string_options',
-				title: mw.msg( 'namespaces' ),
-				labelPrefixKey: { default: 'rcfilters-tag-prefix-namespace', inverted: 'rcfilters-tag-prefix-namespace-inverted' },
-				separator: ';',
-				fullCoverage: true,
-				filters: items
-			} ]
-		};
-		views.invert = {
-			groups: [
-				{
-					name: 'invertGroup',
-					type: 'boolean',
-					hidden: true,
-					filters: [ {
-						name: 'invert',
-						default: '0'
-					} ]
+			labelPrefixKey: {
+				default: 'rcfilters-tag-prefix-namespace',
+				inverted: 'rcfilters-tag-prefix-namespace-inverted'
+			},
+			separator: ';',
+			supportsAll: false,
+			fullCoverage: true,
+			filters: items
+		} ]
+	};
+	views.invertNamespaces = {
+		groups: [
+			{
+				// Should really be called invertNamespacesGroup; legacy name is used so that
+				// saved queries don't break
+				name: 'invertGroup',
+				type: 'boolean',
+				hidden: true,
+				filters: [ {
+					name: 'invert',
+					default: '0'
 				} ]
-		};
-	}
-	if ( tagList ) {
-		views.tags = {
-			title: mw.msg( 'rcfilters-view-tags' ),
-			trigger: '#',
-			groups: [ {
-				// Group definition (single group)
-				name: 'tagfilter', // Parameter name
-				type: 'string_options',
-				title: 'rcfilters-view-tags', // Message key
-				labelPrefixKey: 'rcfilters-tag-prefix-tags',
-				separator: '|',
-				fullCoverage: false,
-				filters: tagList
 			} ]
-		};
-	}
+	};
+
+	views.tags = {
+		title: mw.msg( 'rcfilters-view-tags' ),
+		trigger: '#',
+		groups: [ {
+			// Group definition (single group)
+			name: 'tagfilter', // Parameter name
+			type: 'string_options',
+			title: 'rcfilters-view-tags', // Message key
+			labelPrefixKey: {
+				default: 'rcfilters-tag-prefix-tags',
+				inverted: 'rcfilters-tag-prefix-tags-inverted'
+			},
+			separator: '|',
+			supportsAll: false,
+			fullCoverage: false,
+			filters: tagList
+		} ]
+	};
+	views.invertTags = {
+		groups: [
+			{
+				name: 'invertTagsGroup',
+				type: 'boolean',
+				hidden: true,
+				filters: [ {
+					name: 'inverttags',
+					default: '0'
+				} ]
+			} ]
+	};
 
 	// Add parameter range operations
 	views.range = {
@@ -142,12 +177,12 @@ Controller.prototype.initialize = function ( filterStructure, namespaceStructure
 					min: 0, // The server normalizes negative numbers to 0 results
 					max: 1000
 				},
-				sortFunc: function ( a, b ) { return Number( a.name ) - Number( b.name ); },
+				sortFunc: function ( a, b ) {
+					return Number( a.name ) - Number( b.name );
+				},
 				default: mw.user.options.get( this.limitPreferenceName, displayConfig.limitDefault ),
 				sticky: true,
-				filters: displayConfig.limitArray.map( function ( num ) {
-					return controller._createFilterDataFromNumber( num, num );
-				} )
+				filters: displayConfig.limitArray.map( ( num ) => this._createFilterDataFromNumber( num, num ) )
 			},
 			{
 				name: 'days',
@@ -161,7 +196,9 @@ Controller.prototype.initialize = function ( filterStructure, namespaceStructure
 					min: 0,
 					max: displayConfig.maxDays
 				},
-				sortFunc: function ( a, b ) { return Number( a.name ) - Number( b.name ); },
+				sortFunc: function ( a, b ) {
+					return Number( a.name ) - Number( b.name );
+				},
 				numToLabelFunc: function ( i ) {
 					return Number( i ) < 1 ?
 						( Number( i ) * 24 ).toFixed( 2 ) :
@@ -174,13 +211,11 @@ Controller.prototype.initialize = function ( filterStructure, namespaceStructure
 					0.04166, 0.0833, 0.25, 0.5
 				// Days
 				].concat( displayConfig.daysArray )
-					.map( function ( num ) {
-						return controller._createFilterDataFromNumber(
-							num,
-							// Convert fractions of days to number of hours for the labels
-							num < 1 ? Math.round( num * 24 ) : num
-						);
-					} )
+					.map( ( num ) => this._createFilterDataFromNumber(
+						num,
+						// Convert fractions of days to number of hours for the labels
+						num < 1 ? Math.round( num * 24 ) : num
+					) )
 			}
 		]
 	};
@@ -206,23 +241,23 @@ Controller.prototype.initialize = function ( filterStructure, namespaceStructure
 	// Before we do anything, we need to see if we require additional items in the
 	// groups that have 'AllowArbitrary'. For the moment, those are only single_option
 	// groups; if we ever expand it, this might need further generalization:
-	// eslint-disable-next-line no-jquery/no-each-util
-	$.each( views, function ( viewName, viewData ) {
-		viewData.groups.forEach( function ( groupData ) {
-			var extraValues = [];
+	for ( const viewName in views ) {
+		const viewData = views[ viewName ];
+		viewData.groups.forEach( ( groupData ) => {
+			const extraValues = [];
 			if ( groupData.allowArbitrary ) {
-				// If the value in the URI isn't in the group, add it
-				if ( uri.query[ groupData.name ] !== undefined ) {
-					extraValues.push( uri.query[ groupData.name ] );
+				// If the value in the URL isn't in the group, add it
+				if ( url.searchParams.get( groupData.name ) !== null ) {
+					extraValues.push( url.searchParams.get( groupData.name ) );
 				}
 				// If the default value isn't in the group, add it
 				if ( groupData.default !== undefined ) {
 					extraValues.push( String( groupData.default ) );
 				}
-				controller.addNumberValuesToGroup( groupData, extraValues );
+				this.addNumberValuesToGroup( groupData, extraValues );
 			}
 		} );
-	} );
+	}
 
 	// Initialize the model
 	this.filtersModel.initializeFilters( filterStructure, views );
@@ -232,6 +267,7 @@ Controller.prototype.initialize = function ( filterStructure, namespaceStructure
 		{ normalizeTarget: this.normalizeTarget }
 	);
 
+	let parsedSavedQueries;
 	if ( !mw.user.isAnon() ) {
 		try {
 			parsedSavedQueries = JSON.parse( mw.user.options.get( this.savedQueriesPreferenceName ) || '{}' );
@@ -262,7 +298,7 @@ Controller.prototype.initialize = function ( filterStructure, namespaceStructure
 		// again
 		this.updateStateFromUrl( false );
 
-		pieces = this._extractChangesListInfo( $( '#mw-content-text' ) );
+		const pieces = this._extractChangesListInfo( $( '#mw-content-text' ) );
 
 		// Update the changes list with the existing data
 		// so it gets processed
@@ -284,6 +320,7 @@ Controller.prototype.initialize = function ( filterStructure, namespaceStructure
 
 /**
  * Check if the controller has finished initializing.
+ *
  * @return {boolean} Controller is initialized
  */
 Controller.prototype.isInitialized = function () {
@@ -294,7 +331,7 @@ Controller.prototype.isInitialized = function () {
  * Extracts information from the changes list DOM
  *
  * @param {jQuery} $root Root DOM to find children from
- * @param {boolean} [statusCode] Server response status code
+ * @param {number} [statusCode] Server response status code
  * @return {Object} Information about changes list
  * @return {Object|string} return.changes Changes list, or 'NO_RESULTS' if there are no results
  *   (either normally or as an error)
@@ -303,8 +340,7 @@ Controller.prototype.isInitialized = function () {
  * @return {jQuery} return.fieldset Fieldset
  */
 Controller.prototype._extractChangesListInfo = function ( $root, statusCode ) {
-	var info,
-		$changesListContents = $root.find( '.mw-changeslist' ).first().contents(),
+	const $changesListContents = $root.find( '.mw-changeslist' ).first().contents(),
 		areResults = !!$changesListContents.length,
 		checkForLogout = !areResults && statusCode === 200;
 
@@ -318,7 +354,7 @@ Controller.prototype._extractChangesListInfo = function ( $root, statusCode ) {
 		return;
 	}
 
-	info = {
+	const info = {
 		changes: $changesListContents.length ? $changesListContents : 'NO_RESULTS',
 		fieldset: $root.find( 'fieldset.cloptions' ).first()
 	};
@@ -359,23 +395,20 @@ Controller.prototype._createFilterDataFromNumber = function ( num, numForDisplay
  * @param {string|string[]} arbitraryValues An array of arbitrary values to add to the group
  */
 Controller.prototype.addNumberValuesToGroup = function ( groupData, arbitraryValues ) {
-	var controller = this,
-		normalizeWithinRange = function ( range, val ) {
-			if ( val < range.min ) {
-				return range.min; // Min
-			} else if ( val >= range.max ) {
-				return range.max; // Max
-			}
-			return val;
-		};
+	const normalizeWithinRange = function ( range, val ) {
+		if ( val < range.min ) {
+			return range.min; // Min
+		} else if ( val >= range.max ) {
+			return range.max; // Max
+		}
+		return val;
+	};
 
 	arbitraryValues = Array.isArray( arbitraryValues ) ? arbitraryValues : [ arbitraryValues ];
 
 	// Normalize the arbitrary values and the default value for a range
 	if ( groupData.range ) {
-		arbitraryValues = arbitraryValues.map( function ( val ) {
-			return normalizeWithinRange( groupData.range, val );
-		} );
+		arbitraryValues = arbitraryValues.map( ( val ) => normalizeWithinRange( groupData.range, val ) );
 
 		// Normalize the default, since that's user defined
 		if ( groupData.default !== undefined ) {
@@ -387,7 +420,7 @@ Controller.prototype.addNumberValuesToGroup = function ( groupData, arbitraryVal
 	// We assume these are the only groups that will allow for
 	// arbitrary, since it doesn't make any sense for the other
 	// groups.
-	arbitraryValues.forEach( function ( val ) {
+	arbitraryValues.forEach( ( val ) => {
 		if (
 			// If the group allows for arbitrary data
 			groupData.allowArbitrary &&
@@ -399,13 +432,11 @@ Controller.prototype.addNumberValuesToGroup = function ( groupData, arbitraryVal
 			( !groupData.validate || groupData.validate( val ) ) &&
 			// but if that value isn't already in the definition
 			groupData.filters
-				.map( function ( filterData ) {
-					return String( filterData.name );
-				} )
+				.map( ( filterData ) => String( filterData.name ) )
 				.indexOf( String( val ) ) === -1
 		) {
 			// Add the filter information
-			groupData.filters.push( controller._createFilterDataFromNumber(
+			groupData.filters.push( this._createFilterDataFromNumber(
 				val,
 				groupData.numToLabelFunc ?
 					groupData.numToLabelFunc( val ) :
@@ -424,7 +455,7 @@ Controller.prototype.addNumberValuesToGroup = function ( groupData, arbitraryVal
  * Reset to default filters
  */
 Controller.prototype.resetToDefaults = function () {
-	var params = this._getDefaultParams();
+	const params = this._getDefaultParams();
 	if ( this.applyParamChange( params ) ) {
 		// Only update the changes list if there was a change to actual filters
 		this.updateChangesList();
@@ -446,18 +477,11 @@ Controller.prototype.areDefaultsEmpty = function () {
  * Empty all selected filters
  */
 Controller.prototype.emptyFilters = function () {
-	var highlightedFilterNames = this.filtersModel.getHighlightedItems()
-		.map( function ( filterItem ) { return { name: filterItem.getName() }; } );
-
 	if ( this.applyParamChange( {} ) ) {
 		// Only update the changes list if there was a change to actual filters
 		this.updateChangesList();
 	} else {
 		this.uriProcessor.updateURL();
-	}
-
-	if ( highlightedFilterNames ) {
-		this._trackHighlight( 'clearAll', highlightedFilterNames );
 	}
 };
 
@@ -468,7 +492,7 @@ Controller.prototype.emptyFilters = function () {
  * @param {boolean} [isSelected] Filter selected state
  */
 Controller.prototype.toggleFilterSelect = function ( filterName, isSelected ) {
-	var filterItem = this.filtersModel.getItemByName( filterName );
+	const filterItem = this.filtersModel.getItemByName( filterName );
 
 	if ( !filterItem ) {
 		// If no filter was found, break
@@ -493,7 +517,7 @@ Controller.prototype.toggleFilterSelect = function ( filterName, isSelected ) {
  * @param {string} filterName Name of the filter item
  */
 Controller.prototype.clearFilter = function ( filterName ) {
-	var filterItem = this.filtersModel.getItemByName( filterName ),
+	const filterItem = this.filtersModel.getItemByName( filterName ),
 		isHighlighted = filterItem.isHighlighted(),
 		isSelected = filterItem.isSelected();
 
@@ -509,13 +533,6 @@ Controller.prototype.clearFilter = function ( filterName ) {
 		}
 
 		this.filtersModel.reassessFilterInteractions( filterItem );
-
-		// Log filter grouping
-		this.trackFilterGroupings( 'removefilter' );
-	}
-
-	if ( isHighlighted ) {
-		this._trackHighlight( 'clear', filterName );
 	}
 };
 
@@ -527,18 +544,43 @@ Controller.prototype.toggleHighlight = function () {
 	this.uriProcessor.updateURL();
 
 	if ( this.filtersModel.isHighlightEnabled() ) {
+		/**
+		 * Fires when highlight feature is enabled.
+		 *
+		 * @event ~'RcFilters.highlight.enable'
+		 * @memberof Hooks
+		 */
 		mw.hook( 'RcFilters.highlight.enable' ).fire();
 	}
 };
 
 /**
- * Toggle the namespaces inverted feature on and off
+ * Toggle the inverted tags feature on and off
+ */
+Controller.prototype.toggleInvertedTags = function () {
+	this.filtersModel.toggleInvertedTags();
+
+	if (
+		this.filtersModel.getFiltersByView( 'tags' ).filter(
+			( filterItem ) => filterItem.isSelected()
+		).length
+	) {
+		// Only re-fetch results if there are tags items that are actually selected
+		this.updateChangesList();
+	} else {
+		this.uriProcessor.updateURL();
+	}
+};
+
+/**
+ * Toggle the inverted namespaces feature on and off
  */
 Controller.prototype.toggleInvertedNamespaces = function () {
 	this.filtersModel.toggleInvertedNamespaces();
+
 	if (
 		this.filtersModel.getFiltersByView( 'namespaces' ).filter(
-			function ( filterItem ) { return filterItem.isSelected(); }
+			( filterItem ) => filterItem.isSelected()
 		).length
 	) {
 		// Only re-fetch results if there are namespace items that are actually selected
@@ -550,10 +592,11 @@ Controller.prototype.toggleInvertedNamespaces = function () {
 
 /**
  * Set the value of the 'showlinkedto' parameter
+ *
  * @param {boolean} value
  */
 Controller.prototype.setShowLinkedTo = function ( value ) {
-	var targetItem = this.filtersModel.getGroup( 'page' ).getItemByParamName( 'target' ),
+	const targetItem = this.filtersModel.getGroup( 'page' ).getItemByParamName( 'target' ),
 		showLinkedToItem = this.filtersModel.getGroup( 'toOrFrom' ).getItemByParamName( 'showlinkedto' );
 
 	this.filtersModel.toggleFilterSelected( showLinkedToItem.getName(), value );
@@ -566,10 +609,11 @@ Controller.prototype.setShowLinkedTo = function ( value ) {
 
 /**
  * Set the target page
+ *
  * @param {string} page
  */
 Controller.prototype.setTargetPage = function ( page ) {
-	var targetItem = this.filtersModel.getGroup( 'page' ).getItemByParamName( 'target' );
+	const targetItem = this.filtersModel.getGroup( 'page' ).getItemByParamName( 'target' );
 	targetItem.setValue( page );
 	this.uriProcessor.updateURL();
 	this.updateChangesList();
@@ -584,7 +628,6 @@ Controller.prototype.setTargetPage = function ( page ) {
 Controller.prototype.setHighlightColor = function ( filterName, color ) {
 	this.filtersModel.setHighlightColor( filterName, color );
 	this.uriProcessor.updateURL();
-	this._trackHighlight( 'set', { name: filterName, color: color } );
 };
 
 /**
@@ -595,11 +638,11 @@ Controller.prototype.setHighlightColor = function ( filterName, color ) {
 Controller.prototype.clearHighlightColor = function ( filterName ) {
 	this.filtersModel.clearHighlightColor( filterName );
 	this.uriProcessor.updateURL();
-	this._trackHighlight( 'clear', filterName );
 };
 
 /**
  * Enable or disable live updates.
+ *
  * @param {boolean} enable True to enable, false to disable
  */
 Controller.prototype.toggleLiveUpdate = function ( enable ) {
@@ -611,6 +654,7 @@ Controller.prototype.toggleLiveUpdate = function ( enable ) {
 
 /**
  * Set a timeout for the next live update.
+ *
  * @private
  */
 Controller.prototype._scheduleLiveUpdate = function () {
@@ -619,6 +663,7 @@ Controller.prototype._scheduleLiveUpdate = function () {
 
 /**
  * Perform a live update.
+ *
  * @private
  */
 Controller.prototype._doLiveUpdate = function () {
@@ -629,10 +674,10 @@ Controller.prototype._doLiveUpdate = function () {
 	}
 
 	this._checkForNewChanges()
-		.then( function ( statusCode ) {
+		.then( ( statusCode ) => {
 			// no result is 204 with the 'peek' param
 			// logged out is 205
-			var newChanges = statusCode === 200;
+			const newChanges = statusCode === 200;
 
 			if ( !this._shouldCheckForNewChanges() ) {
 				// by the time the response is received,
@@ -656,7 +701,7 @@ Controller.prototype._doLiveUpdate = function () {
 					this.changesListModel.setNewChangesExist( true );
 				}
 			}
-		}.bind( this ) )
+		} )
 		.always( this._scheduleLiveUpdate.bind( this ) );
 };
 
@@ -681,16 +726,14 @@ Controller.prototype._shouldCheckForNewChanges = function () {
  * @private
  */
 Controller.prototype._checkForNewChanges = function () {
-	var params = {
+	const params = {
 		limit: 1,
 		peek: 1, // bypasses ChangesList specific UI
 		from: this.changesListModel.getNextFrom(),
 		isAnon: mw.user.isAnon()
 	};
 	return this._queryChangesList( 'liveUpdate', params ).then(
-		function ( data ) {
-			return data.status;
-		}
+		( data ) => data.status
 	);
 };
 
@@ -740,7 +783,7 @@ Controller.prototype.removeSavedQuery = function ( queryID ) {
  * @param {string} newLabel New label for the query
  */
 Controller.prototype.renameSavedQuery = function ( queryID, newLabel ) {
-	var queryItem = this.savedQueriesModel.getItemByID( queryID );
+	const queryItem = this.savedQueriesModel.getItemByID( queryID );
 
 	if ( queryItem ) {
 		queryItem.updateLabel( newLabel );
@@ -765,10 +808,9 @@ Controller.prototype.setDefaultSavedQuery = function ( queryID ) {
  * @param {string} queryID Query id
  */
 Controller.prototype.applySavedQuery = function ( queryID ) {
-	var currentMatchingQuery,
-		params = this.savedQueriesModel.getItemParams( queryID );
+	const params = this.savedQueriesModel.getItemParams( queryID );
 
-	currentMatchingQuery = this.findQueryMatchingCurrentState();
+	const currentMatchingQuery = this.findQueryMatchingCurrentState();
 
 	if (
 		currentMatchingQuery &&
@@ -785,15 +827,13 @@ Controller.prototype.applySavedQuery = function ( queryID ) {
 	} else {
 		this.uriProcessor.updateURL( params );
 	}
-
-	// Log filter grouping
-	this.trackFilterGroupings( 'savedfilters' );
 };
 
 /**
  * Check whether the current filter and highlight state exists
  * in the saved queries model.
  *
+ * @ignore
  * @return {mw.rcfilters.dm.SavedQueryItemModel} Matching item model
  */
 Controller.prototype.findQueryMatchingCurrentState = function () {
@@ -807,22 +847,21 @@ Controller.prototype.findQueryMatchingCurrentState = function () {
  * query item representation in the user settings.
  */
 Controller.prototype._saveSavedQueries = function () {
-	var stringified, oldPrefValue,
-		backupPrefName = this.savedQueriesPreferenceName + '-versionbackup',
+	const backupPrefName = this.savedQueriesPreferenceName + '-versionbackup',
 		state = this.savedQueriesModel.getState();
 
 	// Stringify state
-	stringified = JSON.stringify( state );
+	const stringified = JSON.stringify( state );
 
 	if ( byteLength( stringified ) > 65535 ) {
-		// Sanity check, since the preference can only hold that.
+		// Double check, since the preference can only hold that.
 		return;
 	}
 
 	if ( !this.wereSavedQueriesSaved && this.savedQueriesModel.isConverted() ) {
 		// The queries were converted from the previous version
 		// Keep the old string in the [prefname]-versionbackup
-		oldPrefValue = mw.user.options.get( this.savedQueriesPreferenceName );
+		const oldPrefValue = mw.user.options.get( this.savedQueriesPreferenceName );
 
 		// Save the old preference in the backup preference
 		new mw.Api().saveOption( backupPrefName, oldPrefValue );
@@ -901,9 +940,7 @@ Controller.prototype.updateNumericPreference = function ( prefName, newValue ) {
 		return;
 	}
 
-	newValue = Number( newValue );
-
-	if ( mw.user.options.get( prefName ) !== newValue ) {
+	if ( String( mw.user.options.get( prefName ) ) !== String( newValue ) ) {
 		// Save the preference
 		new mw.Api().saveOption( prefName, newValue );
 		// Update the preference for this session
@@ -913,7 +950,7 @@ Controller.prototype.updateNumericPreference = function ( prefName, newValue ) {
 
 /**
  * Synchronize the URL with the current state of the filters
- * without adding an history entry.
+ * without adding a history entry.
  */
 Controller.prototype.replaceUrl = function () {
 	this.uriProcessor.updateURL();
@@ -962,8 +999,8 @@ Controller.prototype.updateChangesList = function ( params, updateMode ) {
 	return this._fetchChangesList()
 		.then(
 			// Success
-			function ( pieces ) {
-				var $changesListContent = pieces.changes,
+			( pieces ) => {
+				const $changesListContent = pieces.changes,
 					$fieldset = pieces.fieldset;
 				this.changesListModel.update(
 					$changesListContent,
@@ -973,12 +1010,12 @@ Controller.prototype.updateChangesList = function ( params, updateMode ) {
 					// separator between old and new changes
 					updateMode === this.SHOW_NEW_CHANGES || updateMode === this.LIVE_UPDATE
 				);
-			}.bind( this )
+			}
 			// Do nothing for failure
 		)
-		.always( function () {
+		.always( () => {
 			this.updatingChangesList = false;
-		}.bind( this ) );
+		} );
 };
 
 /**
@@ -1005,10 +1042,8 @@ Controller.prototype._getDefaultParams = function () {
  * @return {jQuery.Promise} Promise object resolved with { content, status }
  */
 Controller.prototype._queryChangesList = function ( counterId, params ) {
-	var uri = this.uriProcessor.getUpdatedUri(),
-		stickyParams = this.filtersModel.getStickyParamsValues(),
-		requestId,
-		latestRequest;
+	const uri = this.uriProcessor.getUpdatedUri(),
+		stickyParams = this.filtersModel.getStickyParamsValues();
 
 	params = params || {};
 	params.action = 'render'; // bypasses MW chrome
@@ -1016,8 +1051,8 @@ Controller.prototype._queryChangesList = function ( counterId, params ) {
 	uri.extend( params );
 
 	this.requestCounter[ counterId ] = this.requestCounter[ counterId ] || 0;
-	requestId = ++this.requestCounter[ counterId ];
-	latestRequest = function () {
+	const requestId = ++this.requestCounter[ counterId ];
+	const latestRequest = function () {
 		return requestId === this.requestCounter[ counterId ];
 	}.bind( this );
 
@@ -1029,9 +1064,9 @@ Controller.prototype._queryChangesList = function ( counterId, params ) {
 	// current/default values
 	uri.extend( stickyParams );
 
-	return $.ajax( uri.toString(), { contentType: 'html' } )
+	return $.ajax( uri.toString() )
 		.then(
-			function ( content, message, jqXHR ) {
+			( content, message, jqXHR ) => {
 				if ( !latestRequest() ) {
 					return $.Deferred().reject();
 				}
@@ -1041,7 +1076,7 @@ Controller.prototype._queryChangesList = function ( counterId, params ) {
 				};
 			},
 			// RC returns 404 when there is no results
-			function ( jqXHR ) {
+			( jqXHR ) => {
 				if ( latestRequest() ) {
 					return $.Deferred().resolve(
 						{
@@ -1063,9 +1098,7 @@ Controller.prototype._queryChangesList = function ( counterId, params ) {
 Controller.prototype._fetchChangesList = function () {
 	return this._queryChangesList( 'updateChangesList' )
 		.then(
-			function ( data ) {
-				var $parsed;
-
+			( data ) => {
 				// Status code 0 is not HTTP status code,
 				// but is valid value of XMLHttpRequest status.
 				// It is used for variety of network errors, for example
@@ -1079,80 +1112,13 @@ Controller.prototype._fetchChangesList = function () {
 					};
 				}
 
-				$parsed = $( '<div>' ).append( $( $.parseHTML(
+				const $parsed = $( '<div>' ).append( $( $.parseHTML(
 					data ? data.content : ''
 				) ) );
 
 				return this._extractChangesListInfo( $parsed, data.status );
-			}.bind( this )
+			}
 		);
-};
-
-/**
- * Track usage of highlight feature
- *
- * @param {string} action
- * @param {Array|Object|string} filters
- */
-Controller.prototype._trackHighlight = function ( action, filters ) {
-	filters = typeof filters === 'string' ? { name: filters } : filters;
-	filters = !Array.isArray( filters ) ? [ filters ] : filters;
-	mw.track(
-		'event.ChangesListHighlights',
-		{
-			action: action,
-			filters: filters,
-			userId: mw.user.getId()
-		}
-	);
-};
-
-/**
- * Track filter grouping usage
- *
- * @param {string} action Action taken
- */
-Controller.prototype.trackFilterGroupings = function ( action ) {
-	var controller = this,
-		rightNow = new Date().getTime(),
-		randomIdentifier = String( mw.user.sessionId() ) + String( rightNow ) + String( Math.random() ),
-		// Get all current filters
-		filters = this.filtersModel.findSelectedItems().map( function ( item ) {
-			return item.getName();
-		} );
-
-	action = action || 'filtermenu';
-
-	// Check if these filters were the ones we just logged previously
-	// (Don't log the same grouping twice, in case the user opens/closes)
-	// the menu without action, or with the same result
-	if (
-		// Only log if the two arrays are different in size
-		filters.length !== this.prevLoggedItems.length ||
-		// Or if any filters are not the same as the cached filters
-		filters.some( function ( filterName ) {
-			return controller.prevLoggedItems.indexOf( filterName ) === -1;
-		} ) ||
-		// Or if any cached filters are not the same as given filters
-		this.prevLoggedItems.some( function ( filterName ) {
-			return filters.indexOf( filterName ) === -1;
-		} )
-	) {
-		filters.forEach( function ( filterName ) {
-			mw.track(
-				'event.ChangesListFilterGrouping',
-				{
-					action: action,
-					groupIdentifier: randomIdentifier,
-					filter: filterName,
-					userId: mw.user.getId()
-				}
-			);
-		} );
-
-		// Cache the filter names
-		this.prevLoggedItems = filters;
-	}
 };
 
 /**
@@ -1163,12 +1129,11 @@ Controller.prototype.trackFilterGroupings = function ( action ) {
  * @return {boolean} New applied model state is different than the previous state
  */
 Controller.prototype.applyParamChange = function ( newParamState ) {
-	var after,
-		before = this.filtersModel.getSelectedState();
+	const before = this.filtersModel.getSelectedState();
 
 	this.filtersModel.updateStateFromParams( newParamState );
 
-	after = this.filtersModel.getSelectedState();
+	const after = this.filtersModel.getSelectedState();
 
 	return !OO.compare( before, after );
 };
@@ -1177,14 +1142,14 @@ Controller.prototype.applyParamChange = function ( newParamState ) {
  * Mark all changes as seen on Watchlist
  */
 Controller.prototype.markAllChangesAsSeen = function () {
-	var api = new mw.Api();
+	const api = new mw.Api();
 	api.postWithToken( 'csrf', {
 		formatversion: 2,
 		action: 'setnotificationtimestamp',
 		entirewatchlist: true
-	} ).then( function () {
+	} ).then( () => {
 		this.updateChangesList( null, 'markSeen' );
-	}.bind( this ) );
+	} );
 };
 
 /**

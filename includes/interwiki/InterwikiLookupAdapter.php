@@ -1,10 +1,5 @@
 <?php
-
-namespace MediaWiki\Interwiki;
-
 /**
- * InterwikiLookupAdapter on top of SiteLookup
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -21,18 +16,21 @@ namespace MediaWiki\Interwiki;
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- *
- * @since 1.29
- * @ingroup InterwikiLookup
- *
- * @license GPL-2.0-or-later
  */
 
-use Interwiki;
-use Site;
-use SiteLookup;
-use MediaWikiSite;
+namespace MediaWiki\Interwiki;
 
+use Interwiki;
+use MediaWiki\Site\MediaWikiSite;
+use MediaWiki\Site\Site;
+use MediaWiki\Site\SiteLookup;
+
+/**
+ * InterwikiLookupAdapter on top of SiteLookup
+ *
+ * @since 1.29
+ * @license GPL-2.0-or-later
+ */
 class InterwikiLookupAdapter implements InterwikiLookup {
 
 	/**
@@ -45,9 +43,9 @@ class InterwikiLookupAdapter implements InterwikiLookup {
 	 */
 	private $interwikiMap;
 
-	function __construct(
+	public function __construct(
 		SiteLookup $siteLookup,
-		array $interwikiMap = null
+		?array $interwikiMap = null
 	) {
 		$this->siteLookup = $siteLookup;
 		$this->interwikiMap = $interwikiMap;
@@ -80,13 +78,14 @@ class InterwikiLookupAdapter implements InterwikiLookup {
 			return false;
 		}
 
+		// @phan-suppress-next-line PhanTypeArraySuspiciousNullable
 		return $this->interwikiMap[$prefix];
 	}
 
 	/**
 	 * See InterwikiLookup::getAllPrefixes
 	 *
-	 * @param string|null $local If set, limits output to local/non-local interwikis
+	 * @param bool|null $local If set, limits output to local/non-local interwikis
 	 * @return array[] interwiki rows
 	 */
 	public function getAllPrefixes( $local = null ) {
@@ -156,15 +155,16 @@ class InterwikiLookupAdapter implements InterwikiLookup {
 	 * @return Interwiki[]
 	 */
 	private function getSiteInterwikis( Site $site ) {
+		$url = $site->getPageUrl();
+		if ( $site instanceof MediaWikiSite ) {
+			$path = $site->getFileUrl( 'api.php' );
+		} else {
+			$path = '';
+		}
+		$local = $site->getSource() === 'local';
+
 		$interwikis = [];
 		foreach ( $site->getInterwikiIds() as $interwiki ) {
-			$url = $site->getPageUrl();
-			if ( $site instanceof MediaWikiSite ) {
-				$path = $site->getFileUrl( 'api.php' );
-			} else {
-				$path = '';
-			}
-			$local = $site->getSource() === 'local';
 			// TODO: How to adapt trans?
 			$interwikis[$interwiki] = new Interwiki(
 				$interwiki,

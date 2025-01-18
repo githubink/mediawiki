@@ -34,9 +34,14 @@
  * A location that is temporarily "ejected" is said to be absent from the "live" ring.
  * If no location ejections are active, then the base ring and live ring are identical.
  *
+ * This class is designed in a way that using the "md5" algorithm will make it compatible
+ * with libketama, e.g. OPT_LIBKETAMA_COMPATIBLE from the PECL memcached extension or "ketama"
+ * from twemproxy. This can simplify the process of switching client libraries. However, note
+ * that different clients might use incompatible 32-bit memcached value flag conventions.
+ *
  * @since 1.22
  */
-class HashRing implements Serializable {
+class HashRing {
 	/** @var string Hashing algorithm for hash() */
 	protected $algo;
 	/** @var int[] Non-empty (location => integer weight) */
@@ -44,25 +49,23 @@ class HashRing implements Serializable {
 	/** @var int[] Map of (location => UNIX timestamp) */
 	protected $ejectExpiryByLocation;
 
-	/** @var array[] Non-empty list of (float, node name, location name) */
+	/** @var array[] Non-empty position-ordered list of (position, location name) */
 	protected $baseRing;
-	/** @var array[] Non-empty list of (float, node name, location name) */
+	/** @var array[]|null Non-empty position-ordered list of (position, location name) */
 	protected $liveRing;
 
-	/** @var float Number of positions on the ring */
-	const RING_SIZE = 4294967296.0; // 2^32
 	/** @var integer Overall number of node groups per server */
-	const HASHES_PER_LOCATION = 40;
+	private const HASHES_PER_LOCATION = 40;
 	/** @var integer Number of nodes in a node group */
-	const SECTORS_PER_HASH = 4;
+	private const SECTORS_PER_HASH = 4;
 
-	const KEY_POS = 0;
-	const KEY_LOCATION = 1;
+	public const KEY_POS = 0;
+	public const KEY_LOCATION = 1;
 
 	/** @var int Consider all locations */
-	const RING_ALL = 0;
+	public const RING_ALL = 0;
 	/** @var int Only consider "live" locations */
-	const RING_LIVE = 1;
+	public const RING_LIVE = 1;
 
 	/**
 	 * Make a consistent hash ring given a set of locations and their weight values
@@ -96,7 +99,7 @@ class HashRing implements Serializable {
 		$this->algo = $algo;
 		$this->weightByLocation = $weightByLocation;
 		$this->ejectExpiryByLocation = $ejections;
-		$this->baseRing = $this->buildLocationRing( $this->weightByLocation, $this->algo );
+		$this->baseRing = $this->buildLocationRing( $this->weightByLocation );
 	}
 
 	/**
@@ -111,7 +114,7 @@ class HashRing implements Serializable {
 	}
 
 	/**
-	 * Get the location of an item on the ring, as well as the next locations
+	 * Get the location of an item on the ring followed by the next ring locations
 	 *
 	 * @param string $item
 	 * @param int $limit Maximum number of locations to return
@@ -128,21 +131,31 @@ class HashRing implements Serializable {
 			throw new InvalidArgumentException( "Invalid ring source specified." );
 		}
 
-		// Locate this item's position on the hash ring
-		$position = $this->getItemPosition( $item );
-		$itemNodeIndex = $this->findNodeIndexForPosition( $position, $ring );
+		// Short-circuit for the common single-location case. Note that if there was only one
+		// location and it was ejected from the live ring, getLiveRing() would have error out.
+		if ( count( $this->weightByLocation ) == 1 ) {
+			return ( $limit > 0 ) ? [ $ring[0][self::KEY_LOCATION] ] : [];
+		}
+
+		// Locate the node index for this item's position on the hash ring
+		$itemIndex = $this->findNodeIndexForPosition( $this->getItemPosition( $item ), $ring );
 
 		$locations = [];
-		$currentIndex = $itemNodeIndex;
+		$currentIndex = null;
 		while ( count( $locations ) < $limit ) {
+			if ( $currentIndex === null ) {
+				$currentIndex = $itemIndex;
+			} else {
+				$currentIndex = $this->getNextClockwiseNodeIndex( $currentIndex, $ring );
+				if ( $currentIndex === $itemIndex ) {
+					break; // all nodes visited
+				}
+			}
+			// @phan-suppress-next-line PhanTypeMismatchDimFetchNullable False positive
 			$nodeLocation = $ring[$currentIndex][self::KEY_LOCATION];
 			if ( !in_array( $nodeLocation, $locations, true ) ) {
 				// Ignore other nodes for the same locations already added
 				$locations[] = $nodeLocation;
-			}
-			$currentIndex = $this->getNextClockwiseNodeIndex( $currentIndex, $ring );
-			if ( $currentIndex === $itemNodeIndex ) {
-				break; // all nodes visited
 			}
 		}
 
@@ -159,18 +172,22 @@ class HashRing implements Serializable {
 		if ( $count === 0 ) {
 			return null;
 		}
+
+		$index = null;
 		$lowPos = 0;
 		$highPos = $count;
 		while ( true ) {
-			$midPos = intval( ( $lowPos + $highPos ) / 2 );
+			$midPos = (int)( ( $lowPos + $highPos ) / 2 );
 			if ( $midPos === $count ) {
-				return 0;
+				$index = 0;
+				break;
 			}
-			$midVal = $ring[$midPos][self::KEY_POS];
-			$midMinusOneVal = $midPos === 0 ? 0 : $ring[$midPos - 1][self::KEY_POS];
 
+			$midVal = $ring[$midPos][self::KEY_POS];
+			$midMinusOneVal = ( $midPos === 0 ) ? 0 : $ring[$midPos - 1][self::KEY_POS];
 			if ( $position <= $midVal && $position > $midMinusOneVal ) {
-				return $midPos;
+				$index = $midPos;
+				break;
 			}
 
 			if ( $midVal < $position ) {
@@ -180,9 +197,12 @@ class HashRing implements Serializable {
 			}
 
 			if ( $lowPos > $highPos ) {
-				return 0;
+				$index = 0;
+				break;
 			}
 		}
+
+		return $index;
 	}
 
 	/**
@@ -251,7 +271,7 @@ class HashRing implements Serializable {
 			$this->weightByLocation,
 			array_filter(
 				$this->ejectExpiryByLocation,
-				function ( $expiry ) use ( $now ) {
+				static function ( $expiry ) use ( $now ) {
 					return ( $expiry > $now );
 				}
 			)
@@ -260,10 +280,9 @@ class HashRing implements Serializable {
 
 	/**
 	 * @param int[] $weightByLocation
-	 * @param string $algo Hashing algorithm
 	 * @return array[]
 	 */
-	private function buildLocationRing( array $weightByLocation, $algo ) {
+	private function buildLocationRing( array $weightByLocation ) {
 		$locationCount = count( $weightByLocation );
 		$totalWeight = array_sum( $weightByLocation );
 
@@ -284,7 +303,7 @@ class HashRing implements Serializable {
 					$node = ( $qi * self::SECTORS_PER_HASH + $gi ) . "@$location";
 					$posKey = (string)$position; // large integer
 					if ( isset( $claimed[$posKey] ) ) {
-						// Disallow duplicates for sanity (name decides precedence)
+						// Disallow duplicates  (name decides precedence)
 						if ( $claimed[$posKey]['node'] > $node ) {
 							continue;
 						} else {
@@ -300,7 +319,7 @@ class HashRing implements Serializable {
 			}
 		}
 		// Sort the locations into clockwise order based on the hash ring position
-		usort( $ring, function ( $a, $b ) {
+		usort( $ring, static function ( $a, $b ) {
 			if ( $a[self::KEY_POS] === $b[self::KEY_POS] ) {
 				throw new UnexpectedValueException( 'Duplicate node positions.' );
 			}
@@ -313,7 +332,7 @@ class HashRing implements Serializable {
 
 	/**
 	 * @param string $item Key
-	 * @return float Ring position; integral number in [0, self::RING_SIZE - 1]
+	 * @return float Ring position; integral number in [0, 4294967296] (2^32)
 	 */
 	private function getItemPosition( $item ) {
 		// If $algo is MD5, then this matches that of with libketama.
@@ -323,12 +342,19 @@ class HashRing implements Serializable {
 			throw new UnexpectedValueException( __METHOD__ . ": {$this->algo} is < 32 bits." );
 		}
 
-		return (float)sprintf( '%u', unpack( 'V', $octets )[1] );
+		$pos = unpack( 'V', $octets )[1];
+		if ( $pos < 0 ) {
+			// Most-significant-bit is set, causing unpack() to return a negative integer due
+			// to the fact that it returns a signed int. Cast it to an unsigned integer string.
+			$pos = sprintf( '%u', $pos );
+		}
+
+		return (float)$pos;
 	}
 
 	/**
 	 * @param string $nodeGroupName
-	 * @return float[] Four ring positions on [0, self::RING_SIZE - 1]
+	 * @return float[] Four ring positions on [0, 4294967296] (2^32)
 	 */
 	private function getNodePositionQuartet( $nodeGroupName ) {
 		$octets = substr( hash( $this->algo, (string)$nodeGroupName, true ), 0, 16 );
@@ -373,10 +399,10 @@ class HashRing implements Serializable {
 		$now = $this->getCurrentTime();
 
 		if ( $this->liveRing === null || min( $this->ejectExpiryByLocation ) <= $now ) {
-			// Live ring needs to be regerenated...
+			// Live ring needs to be regenerated...
 			$this->ejectExpiryByLocation = array_filter(
 				$this->ejectExpiryByLocation,
-				function ( $expiry ) use ( $now ) {
+				static function ( $expiry ) use ( $now ) {
 					return ( $expiry > $now );
 				}
 			);
@@ -384,7 +410,7 @@ class HashRing implements Serializable {
 			if ( count( $this->ejectExpiryByLocation ) ) {
 				// Some locations are still ejected from the ring
 				$liveRing = [];
-				foreach ( $this->baseRing as $i => $nodeInfo ) {
+				foreach ( $this->baseRing as $nodeInfo ) {
 					$location = $nodeInfo[self::KEY_LOCATION];
 					if ( !isset( $this->ejectExpiryByLocation[$location] ) ) {
 						$liveRing[] = $nodeInfo;
@@ -411,18 +437,17 @@ class HashRing implements Serializable {
 		return time();
 	}
 
-	public function serialize() {
-		return serialize( [
+	public function __serialize() {
+		return [
 			'algorithm' => $this->algo,
 			'locations' => $this->weightByLocation,
 			'ejections' => $this->ejectExpiryByLocation
-		] );
+		];
 	}
 
-	public function unserialize( $serialized ) {
-		$data = unserialize( $serialized );
+	public function __unserialize( $data ) {
 		if ( is_array( $data ) ) {
-			$this->init( $data['locations'], $data['algorithm'], $data['ejections'] );
+			$this->init( $data['locations'] ?? [], $data['algorithm'] ?? 'sha1', $data['ejections'] ?? [] );
 		} else {
 			throw new UnexpectedValueException( __METHOD__ . ": unable to decode JSON." );
 		}

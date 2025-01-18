@@ -1,89 +1,174 @@
 <?php
 
-class MWDebugTest extends MediaWikiTestCase {
+use MediaWiki\Api\ApiFormatXml;
+use MediaWiki\Api\ApiResult;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\Debug\MWDebug;
+use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Request\FauxRequest;
+use MediaWiki\Title\TitleValue;
+use Psr\Log\LoggerInterface;
 
-	protected function setUp() {
+/**
+ * @covers \MediaWiki\Debug\MWDebug
+ */
+class MWDebugTest extends MediaWikiIntegrationTestCase {
+
+	protected function setUp(): void {
+		$this->overrideConfigValue( MainConfigNames::DevelopmentWarnings, false );
+
 		parent::setUp();
 		/** Clear log before each test */
 		MWDebug::clearLog();
 	}
 
-	public static function setUpBeforeClass() {
+	public static function setUpBeforeClass(): void {
 		parent::setUpBeforeClass();
 		MWDebug::init();
-		Wikimedia\suppressWarnings();
 	}
 
-	public static function tearDownAfterClass() {
-		parent::tearDownAfterClass();
+	public static function tearDownAfterClass(): void {
 		MWDebug::deinit();
-		Wikimedia\restoreWarnings();
+		parent::tearDownAfterClass();
 	}
 
-	/**
-	 * @covers MWDebug::log
-	 */
-	public function testAddLog() {
-		MWDebug::log( 'logging a string' );
+	public function testLog() {
+		@MWDebug::log( 'logging a string' );
 		$this->assertEquals(
 			[ [
 				'msg' => 'logging a string',
 				'type' => 'log',
-				'caller' => 'MWDebugTest->testAddLog',
+				'caller' => 'MWDebugTest->testLog',
 			] ],
 			MWDebug::getLog()
 		);
 	}
 
+	public function testWarningProduction() {
+		$logger = $this->createMock( LoggerInterface::class );
+		$logger->expects( $this->once() )->method( 'info' );
+		$this->setLogger( 'warning', $logger );
+
+		@MWDebug::warning( 'Ohnosecond!' );
+	}
+
+	public function testWarningDevelopment() {
+		$this->overrideConfigValue( MainConfigNames::DevelopmentWarnings, true );
+
+		$this->expectPHPError(
+			E_USER_NOTICE,
+			static function () {
+				MWDebug::warning( 'Ohnosecond!' );
+			},
+			'Ohnosecond!'
+		);
+	}
+
 	/**
-	 * @covers MWDebug::warning
+	 * Message from the error channel are copied to the debug toolbar "Console" log.
+	 *
+	 * This normally happens via wfDeprecated -> MWDebug::deprecated -> trigger_error
+	 * -> MWExceptionHandler -> LoggerFactory -> LegacyLogger -> MWDebug::debugMsg.
+	 *
+	 * The above test asserts up until trigger_error.
+	 * This test asserts from LegacyLogger down.
 	 */
-	public function testAddWarning() {
-		MWDebug::warning( 'Warning message' );
+	public function testMessagesFromErrorChannel() {
+		// Turn off to keep mw-error.log file empty in CI (and thus avoid build failure)
+		$this->overrideConfigValue( MainConfigNames::DebugLogGroups, [] );
+
+		MWExceptionHandler::handleError( E_USER_DEPRECATED, 'Warning message' );
 		$this->assertEquals(
 			[ [
-				'msg' => 'Warning message',
+				'msg' => 'PHP Deprecated: Warning message',
 				'type' => 'warn',
-				'caller' => 'MWDebugTest::testAddWarning',
+				'caller' => 'MWDebugTest::testMessagesFromErrorChannel',
 			] ],
 			MWDebug::getLog()
 		);
 	}
 
-	/**
-	 * @covers MWDebug::deprecated
-	 */
-	public function testAvoidDuplicateDeprecations() {
-		MWDebug::deprecated( 'wfOldFunction', '1.0', 'component' );
-		MWDebug::deprecated( 'wfOldFunction', '1.0', 'component' );
+	public function testDetectDeprecatedOverride() {
+		$baseclassInstance = new TitleValue( NS_MAIN, 'Test' );
 
-		// assertCount() not available on WMF integration server
-		$this->assertEquals( 1,
-			count( MWDebug::getLog() ),
-			"Only one deprecated warning per function should be kept"
+		$this->assertFalse(
+			MWDebug::detectDeprecatedOverride(
+				$baseclassInstance,
+				TitleValue::class,
+				'getNamespace',
+				MW_VERSION
+			)
+		);
+
+		// create a dummy subclass that overrides a method
+		$subclassInstance = new class ( NS_MAIN, 'Test' ) extends TitleValue {
+			public function getNamespace(): int {
+				// never called
+				return -100;
+			}
+		};
+
+		$this->expectPHPError(
+			E_USER_DEPRECATED,
+			static function () use ( $subclassInstance ) {
+				MWDebug::detectDeprecatedOverride(
+					$subclassInstance,
+					TitleValue::class,
+					'getNamespace',
+					MW_VERSION
+				);
+			},
+			'@anonymous'
+		);
+	}
+
+	public function testDeprecated() {
+		$this->expectPHPError(
+			E_USER_DEPRECATED,
+			static function () {
+				MWDebug::deprecated( 'wfOldFunction', '1.0', 'component' );
+			},
+			'wfOldFunction'
 		);
 	}
 
 	/**
-	 * @covers MWDebug::deprecated
+	 * @doesNotPerformAssertions
 	 */
-	public function testAvoidNonConsecutivesDuplicateDeprecations() {
-		MWDebug::deprecated( 'wfOldFunction', '1.0', 'component' );
-		MWDebug::warning( 'some warning' );
-		MWDebug::log( 'we could have logged something too' );
-		// Another deprecation
+	public function testDeprecatedIgnoreDuplicate() {
+		@MWDebug::deprecated( 'wfOldFunction', '1.0', 'component' );
 		MWDebug::deprecated( 'wfOldFunction', '1.0', 'component' );
 
-		// assertCount() not available on WMF integration server
-		$this->assertEquals( 3,
-			count( MWDebug::getLog() ),
-			"Only one deprecated warning per function should be kept"
-		);
+		// If we reach here, than the second one did not throw any deprecation warning.
+		// The first one was silenced to seed the ignore logic.
 	}
 
 	/**
-	 * @covers MWDebug::appendDebugInfoToApiResult
+	 * @doesNotPerformAssertions
 	 */
+	public function testDeprecatedIgnoreNonConsecutivesDuplicate() {
+		@MWDebug::deprecated( 'wfOldFunction', '1.0', 'component' );
+		@MWDebug::warning( 'some warning' );
+		@MWDebug::log( 'we could have logged something too' );
+		// Another deprecation (not silenced)
+		MWDebug::deprecated( 'wfOldFunction', '1.0', 'component' );
+	}
+
+	public function testDebugMsg() {
+		$this->overrideConfigValue( MainConfigNames::ShowDebug, true );
+
+		// Generate a log to be sure there is at least one
+		$logger = LoggerFactory::getInstance( 'test-debug-channel' );
+		$logger->debug( 'My message', [] );
+		$debugLog = (string)MWDebug::getHTMLDebugLog();
+
+		$this->assertNotSame( '', $debugLog, 'MWDebug::getHTMLDebugLog() should not be an empty string' );
+		$this->assertStringNotContainsString( "<ul id=\"mw-debug-html\">\n</ul>", $debugLog,
+			'MWDebug::getHTMLDebugLog() should contain a non-empty debug log'
+		);
+	}
+
 	public function testAppendDebugInfoToApiResultXmlFormat() {
 		$request = $this->newApiRequest(
 			[ 'action' => 'help', 'format' => 'xml' ],
@@ -93,9 +178,7 @@ class MWDebugTest extends MediaWikiTestCase {
 		$context = new RequestContext();
 		$context->setRequest( $request );
 
-		$apiMain = new ApiMain( $context );
-
-		$result = new ApiResult( $apiMain );
+		$result = new ApiResult( false );
 
 		MWDebug::appendDebugInfoToApiResult( $context, $result );
 
@@ -113,28 +196,17 @@ class MWDebugTest extends MediaWikiTestCase {
 		$xml = ApiFormatXml::recXmlPrint( 'help', $data, null );
 
 		// exception not thrown
-		$this->assertInternalType( 'string', $xml );
+		$this->assertIsString( $xml );
 	}
 
 	/**
 	 * @param string[] $params
 	 * @param string $requestUrl
-	 *
 	 * @return FauxRequest
 	 */
 	private function newApiRequest( array $params, $requestUrl ) {
-		$request = $this->getMockBuilder( FauxRequest::class )
-			->setMethods( [ 'getRequestURL' ] )
-			->setConstructorArgs( [
-				$params
-			] )
-			->getMock();
-
-		$request->expects( $this->any() )
-			->method( 'getRequestURL' )
-			->will( $this->returnValue( $requestUrl ) );
-
-		return $request;
+		$req = new FauxRequest( $params );
+		$req->setRequestURL( $requestUrl );
+		return $req;
 	}
-
 }

@@ -1,25 +1,32 @@
-const Page = require( 'wdio-mediawiki/Page' ),
-	Api = require( 'wdio-mediawiki/Api' );
+'use strict';
+
+const Page = require( 'wdio-mediawiki/Page' );
 
 class DeletePage extends Page {
-	get reason() { return browser.element( '#wpReason' ); }
-	get watch() { return browser.element( '#wpWatch' ); }
-	get submit() { return browser.element( '#wpConfirmB' ); }
-	get displayedContent() { return browser.element( '#mw-content-text' ); }
-
-	open( title ) {
-		super.openTitle( title, { action: 'delete' } );
+	get reason() {
+		return $( '#wpReason input' );
 	}
 
-	delete( title, reason ) {
-		this.open( title );
-		this.reason.setValue( reason );
-		this.submit.click();
+	get watch() {
+		return $( '#wpWatch' );
 	}
 
-	// @deprecated Use wdio-mediawiki/Api#delete() instead.
-	apiDelete( name, reason ) {
-		return Api.delete( name, reason );
+	get submit() {
+		return $( '#wpConfirmB' );
+	}
+
+	get displayedContent() {
+		return $( '#mw-content-text' );
+	}
+
+	async open( title ) {
+		return super.openTitle( title, { action: 'delete' } );
+	}
+
+	async delete( title, reason ) {
+		await this.open( title );
+		await this.reason.setValue( reason );
+		await this.submit.click();
 	}
 }
 

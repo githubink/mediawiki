@@ -1,8 +1,34 @@
 <?php
+/**
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License along
+ * with this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
+ * http://www.gnu.org/copyleft/gpl.html
+ *
+ * @file
+ */
 
+/**
+ * @ingroup Profiler
+ * @since 1.33
+ * @see $wgProfiler
+ */
 class ProfilerExcimer extends Profiler {
+	/** @var ExcimerProfiler */
 	private $cpuProf;
+	/** @var ExcimerProfiler */
 	private $realProf;
+	/** @var float */
 	private $period;
 
 	/**
@@ -52,7 +78,9 @@ class ProfilerExcimer extends Profiler {
 	public function getFunctionStats() {
 		$this->close();
 		$cpuStats = $this->cpuProf->getLog()->aggregateByFunction();
+		'@phan-var array $cpuStats';
 		$realStats = $this->realProf->getLog()->aggregateByFunction();
+		'@phan-var array $realStats';
 		$allNames = array_keys( $realStats + $cpuStats );
 		$cpuSamples = $this->cpuProf->getLog()->getEventCount();
 		$realSamples = $this->realProf->getLog()->getEventCount();
@@ -107,7 +135,9 @@ class ProfilerExcimer extends Profiler {
 		$cpuLog = $this->cpuProf->getLog();
 		$realLog = $this->realProf->getLog();
 		$cpuStats = $cpuLog->aggregateByFunction();
+		'@phan-var array $cpuStats';
 		$realStats = $realLog->aggregateByFunction();
+		'@phan-var array $realStats';
 		$allNames = array_keys( $cpuStats + $realStats );
 		$cpuSamples = $cpuLog->getEventCount();
 		$realSamples = $realLog->getEventCount();

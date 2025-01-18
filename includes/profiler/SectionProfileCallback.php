@@ -16,33 +16,27 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Profiler
  */
 use Wikimedia\ScopedCallback;
 
 /**
  * Subclass ScopedCallback to avoid call_user_func_array(), which is slow.
  *
+ * @ingroup Profiler
  * @internal For use by SectionProfiler
- * @since 1.25
  */
 class SectionProfileCallback extends ScopedCallback {
-	/** @var SectionProfiler */
-	protected $profiler;
-	/** @var string */
-	protected $section;
 
-	/**
-	 * @param SectionProfiler $profiler
-	 * @param string $section
-	 */
-	public function __construct( SectionProfiler $profiler, $section ) {
+	protected SectionProfiler $profiler;
+	protected string $section;
+
+	public function __construct( SectionProfiler $profiler, string $section ) {
 		parent::__construct( null );
 		$this->profiler = $profiler;
 		$this->section = $section;
 	}
 
-	function __destruct() {
+	public function __destruct() {
 		$this->profiler->profileOutInternal( $this->section );
 	}
 }

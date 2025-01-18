@@ -25,7 +25,11 @@
  * @ingroup Maintenance
  */
 
+use MediaWiki\Maintenance\Maintenance;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that fixes timestamp corruption caused by one or
@@ -46,16 +50,17 @@ class FixTimestamps extends Maintenance {
 		$offset = $this->getArg( 0 ) * 3600;
 		$start = $this->getArg( 1 );
 		$end = $this->getArg( 2 );
-		$grace = 60; // maximum normal clock offset
+		// maximum normal clock offset
+		$grace = 60;
 
 		# Find bounding revision IDs
-		$dbw = $this->getDB( DB_MASTER );
+		$dbw = $this->getPrimaryDB();
 		$revisionTable = $dbw->tableName( 'revision' );
 		$res = $dbw->query( "SELECT MIN(rev_id) as minrev, MAX(rev_id) as maxrev FROM $revisionTable " .
 			"WHERE rev_timestamp BETWEEN '{$start}' AND '{$end}'", __METHOD__ );
-		$row = $dbw->fetchObject( $res );
+		$row = $res->fetchObject();
 
-		if ( is_null( $row->minrev ) ) {
+		if ( $row->minrev === null ) {
 			$this->fatalError( "No revisions in search period." );
 		}
 
@@ -79,18 +84,16 @@ class FixTimestamps extends Maintenance {
 		$numGoodRevs = 0;
 
 		foreach ( $res as $row ) {
-			$timestamp = wfTimestamp( TS_UNIX, $row->rev_timestamp );
+			$timestamp = (int)wfTimestamp( TS_UNIX, $row->rev_timestamp );
 			$delta = $timestamp - $lastNormal;
 			$sign = $delta == 0 ? 0 : $delta / abs( $delta );
 			if ( $sign == 0 || $sign == $expectedSign ) {
 				// Monotonic change
 				$lastNormal = $timestamp;
 				++$numGoodRevs;
-				continue;
 			} elseif ( abs( $delta ) <= $grace ) {
 				// Non-monotonic change within grace interval
 				++$numGoodRevs;
-				continue;
 			} else {
 				// Non-monotonic change larger than grace interval
 				$badRevs[] = $row->rev_id;
@@ -109,7 +112,7 @@ class FixTimestamps extends Maintenance {
 		good revisions to provide a majority reference." );
 		} elseif ( $numBadRevs == 0 ) {
 			$this->output( "No bad revisions found.\n" );
-			exit( 0 );
+			return;
 		}
 
 		$this->output( sprintf( "Fixing %d revisions (%.2f%% of revisions in search interval)\n",
@@ -125,5 +128,7 @@ class FixTimestamps extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = FixTimestamps::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

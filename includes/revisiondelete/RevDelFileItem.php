@@ -19,6 +19,14 @@
  * @ingroup RevisionDelete
  */
 
+use MediaWiki\Api\ApiResult;
+use MediaWiki\Html\Html;
+use MediaWiki\Linker\Linker;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\RevisionList\RevisionListBase;
+use MediaWiki\SpecialPage\SpecialPage;
+use Wikimedia\Rdbms\IConnectionProvider;
+
 /**
  * Item class for an oldimage table row
  */
@@ -27,21 +35,24 @@ class RevDelFileItem extends RevDelItem {
 	protected $list;
 	/** @var OldLocalFile */
 	protected $file;
+	protected IConnectionProvider $dbProvider;
 
-	public function __construct( $list, $row ) {
+	public function __construct( RevisionListBase $list, $row ) {
 		parent::__construct( $list, $row );
 		$this->file = static::initFile( $list, $row );
+		$this->dbProvider = MediaWikiServices::getInstance()->getConnectionProvider();
 	}
 
 	/**
 	 * Create file object from $row sourced from $list
 	 *
-	 * @param RevDelFileList $list
+	 * @param RevisionListBase $list
 	 * @param mixed $row
 	 * @return mixed
 	 */
 	protected static function initFile( $list, $row ) {
-		return RepoGroup::singleton()->getLocalRepo()->newFileFromRow( $row );
+		return MediaWikiServices::getInstance()->getRepoGroup()->getLocalRepo()
+			->newFileFromRow( $row );
 	}
 
 	public function getIdField() {
@@ -71,11 +82,11 @@ class RevDelFileItem extends RevDelItem {
 	}
 
 	public function canView() {
-		return $this->file->userCan( File::DELETED_RESTRICTED, $this->list->getUser() );
+		return $this->file->userCan( File::DELETED_RESTRICTED, $this->list->getAuthority() );
 	}
 
 	public function canViewContent() {
-		return $this->file->userCan( File::DELETED_FILE, $this->list->getUser() );
+		return $this->file->userCan( File::DELETED_FILE, $this->list->getAuthority() );
 	}
 
 	public function getBits() {
@@ -107,16 +118,16 @@ class RevDelFileItem extends RevDelItem {
 		}
 
 		# Do the database operations
-		$dbw = wfGetDB( DB_MASTER );
-		$dbw->update( 'oldimage',
-			[ 'oi_deleted' => $bits ],
-			[
+		$dbw = $this->dbProvider->getPrimaryDatabase();
+		$dbw->newUpdateQueryBuilder()
+			->update( 'oldimage' )
+			->set( [ 'oi_deleted' => $bits ] )
+			->where( [
 				'oi_name' => $this->row->oi_name,
 				'oi_timestamp' => $this->row->oi_timestamp,
 				'oi_deleted' => $this->getBits()
-			],
-			__METHOD__
-		);
+			] )
+			->caller( __METHOD__ )->execute();
 
 		return (bool)$dbw->affectedRows();
 	}
@@ -148,7 +159,7 @@ class RevDelFileItem extends RevDelItem {
 				$date,
 				[],
 				[
-					'target' => $this->list->title->getPrefixedText(),
+					'target' => $this->list->getPageName(),
 					'file' => $this->file->getArchiveName(),
 					'token' => $this->list->getUser()->getEditToken(
 						$this->file->getArchiveName() )
@@ -164,17 +175,17 @@ class RevDelFileItem extends RevDelItem {
 	 * @return string HTML
 	 */
 	protected function getUserTools() {
-		if ( $this->file->userCan( Revision::DELETED_USER, $this->list->getUser() ) ) {
-			$uid = $this->file->getUser( 'id' );
-			$name = $this->file->getUser( 'text' );
-			$link = Linker::userLink( $uid, $name ) . Linker::userToolLinks( $uid, $name );
+		$uploader = $this->file->getUploader( File::FOR_THIS_USER, $this->list->getAuthority() );
+		if ( $uploader ) {
+			$link = Linker::userLink( $uploader->getId(), $uploader->getName() ) .
+				Linker::userToolLinks( $uploader->getId(), $uploader->getName() );
+			return $link;
 		} else {
 			$link = $this->list->msg( 'rev-deleted-user' )->escaped();
 		}
-		if ( $this->file->isDeleted( Revision::DELETED_USER ) ) {
+		if ( $this->file->isDeleted( File::DELETED_USER ) ) {
 			return '<span class="history-deleted">' . $link . '</span>';
 		}
-
 		return $link;
 	}
 
@@ -185,8 +196,9 @@ class RevDelFileItem extends RevDelItem {
 	 * @return string HTML
 	 */
 	protected function getComment() {
-		if ( $this->file->userCan( File::DELETED_COMMENT, $this->list->getUser() ) ) {
-			$block = Linker::commentBlock( $this->file->getDescription() );
+		if ( $this->file->userCan( File::DELETED_COMMENT, $this->list->getAuthority() ) ) {
+			$block = MediaWikiServices::getInstance()->getCommentFormatter()
+				->formatBlock( $this->file->getDescription() );
 		} else {
 			$block = ' ' . $this->list->msg( 'rev-deleted-comment' )->escaped();
 		}
@@ -200,8 +212,10 @@ class RevDelFileItem extends RevDelItem {
 	public function getHTML() {
 		$data =
 			$this->list->msg( 'widthheight' )->numParams(
-				$this->file->getWidth(), $this->file->getHeight() )->text() .
-			' (' . $this->list->msg( 'nbytes' )->numParams( $this->file->getSize() )->text() . ')';
+				$this->file->getWidth(),
+				$this->file->getHeight() )->escaped() .
+			' (' . $this->list->msg( 'nbytes' )->numParams(
+				$this->file->getSize() )->escaped() . ')';
 
 		return '<li>' . $this->getLink() . ' ' . $this->getUserTools() . ' ' .
 			$data . ' ' . $this->getComment() . '</li>';
@@ -211,14 +225,14 @@ class RevDelFileItem extends RevDelItem {
 		$file = $this->file;
 		$user = $this->list->getUser();
 		$ret = [
-			'title' => $this->list->title->getPrefixedText(),
+			'title' => $this->list->getPageName(),
 			'archivename' => $file->getArchiveName(),
 			'timestamp' => wfTimestamp( TS_ISO_8601, $file->getTimestamp() ),
 			'width' => $file->getWidth(),
 			'height' => $file->getHeight(),
 			'size' => $file->getSize(),
-			'userhidden' => (bool)$file->isDeleted( Revision::DELETED_USER ),
-			'commenthidden' => (bool)$file->isDeleted( Revision::DELETED_COMMENT ),
+			'userhidden' => (bool)$file->isDeleted( File::DELETED_USER ),
+			'commenthidden' => (bool)$file->isDeleted( File::DELETED_COMMENT ),
 			'contenthidden' => (bool)$this->isDeleted(),
 		];
 		if ( !$this->isDeleted() ) {
@@ -229,22 +243,24 @@ class RevDelFileItem extends RevDelItem {
 			$ret += [
 				'url' => SpecialPage::getTitleFor( 'Revisiondelete' )->getLinkURL(
 					[
-						'target' => $this->list->title->getPrefixedText(),
+						'target' => $this->list->getPageName(),
 						'file' => $file->getArchiveName(),
 						'token' => $user->getEditToken( $file->getArchiveName() )
 					]
 				),
 			];
 		}
-		if ( $file->userCan( Revision::DELETED_USER, $user ) ) {
+		$uploader = $file->getUploader( File::FOR_THIS_USER, $user );
+		if ( $uploader ) {
 			$ret += [
-				'userid' => $file->user,
-				'user' => $file->user_text,
+				'userid' => $uploader->getId(),
+				'user' => $uploader->getName(),
 			];
 		}
-		if ( $file->userCan( Revision::DELETED_COMMENT, $user ) ) {
+		$comment = $file->getDescription( File::FOR_THIS_USER, $user );
+		if ( ( $comment ?? '' ) !== '' ) {
 			$ret += [
-				'comment' => $file->description,
+				'comment' => $comment,
 			];
 		}
 

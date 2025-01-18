@@ -1,5 +1,5 @@
 {{int:version-credits-summary}} <!--
-MediaWiki 1.32 is a collaborative project released under the
+MediaWiki 1.44 is a collaborative project released under the
 GNU General Public License v2. We would like to recognize the
 following names for their contribution to the product.
 
@@ -8,15 +8,22 @@ The following list can be found parsed under Special:Version/Credits -->
 == Contributors ==
 <!-- Updates to this list made with maintenance/updateCredits.php -->
 <!-- BEGIN CONTRIBUTOR LIST -->
+* 4shadoww
+* 4nn1l2
 * aalekhN
 * Aaron Ball
 * Aaron Pramana
+* Aaron S. Hawley
 * Aaron Schulz
 * Aarti Dwivedi
 * Aashaka Shah
+* abador
+* Abbe98
 * abhinand
 * Abhishek Das
 * Abián
+* Abijeet Patro
+* Acamicamacaraca
 * Ad Huikeshoven
 * Adam Miller
 * Adam Roses Wight
@@ -26,35 +33,55 @@ The following list can be found parsed under Special:Version/Credits -->
 * Adrian Heine
 * Adrian Lang
 * Ævar Arnfjörð Bjarmason
+* Aezell
 * Aftab
 * Agabi10
+* agamyasamuel
 * Agbad
+* Agent Isai
 * Ahmad Sherif
+* Ahmon Dancy
 * Ajayrahul P
+* Akinwale Alagbe
 * Alangi Derick
 * Albert221
+* albertoleoncio
 * Alejandro Mery
 * Aleksey Bekh-Ivanov
 * AlephNull
+* Alex
+* Alex Dean
 * Alex Ezell
 * Alex Ivanov
+* Alex Paskulin
 * Alex Shih-Han Lin
 * Alex Z.
-* Alexander I. Mashin
 * Alexander Lehmann
 * Alexander Mashin
 * Alexander Monk
 * Alexander Sigachov
+* Alexander Vorwerk
 * Alexandre Emsenhuber
+* Alexandros Kosiaris
 * Alexia E. Smith
+* alistair3149
+* AlQaholic007
 * Amalthea
 * Amir E. Aharoni
 * Amir Sarabadani
+* Ammar
+* Ammar Abdulhamid
+* Ammarpad
+* Amorymeltzer
 * amritsreekumar
+* AnaïsGueyte
 * ananay
 * Anders Wegge Jakobsen
 * Andre Engels
 * Andre Klapper
+* Andrea Denisse Gómez-Martínez
+* Andreas P
+* Andrei Rybak
 * Andrew Bogott
 * Andrew Dunbar
 * Andrew Garrett
@@ -65,25 +92,43 @@ The following list can be found parsed under Special:Version/Credits -->
 * Andrius R
 * andymw
 * Angela Beesley Starling
+* anjali041
+* ankit
 * ankur
+* Anne Haunime
+* Anne Tomasevich
+* anterdc99
+* AntiCompositeNumber
 * Antoine Musso
 * Antoni Siek
 * Antonio Ospite
+* Anuj Agrawal
+* Anzx
+* apasternak
 * apexkid
 * April King
 * Aran Dunkley
 * Arash Boostani
 * Arcane21
+* arcayn
 * Ariel Glenn
 * Arlo Breault
 * Arne Heizmann
+* AronDemian
+* ArtBaltai
 * Arthur Richards
+* Arthur Taylor
+* arttsymbar
+* Arturek1
 * Aryeh Gregor
 * Asher Feldman
 * Asier Lostalé
+* Atieno
 * awu42
 * ayush_garg
 * Azliq7
+* babiola
+* Bada Kaji
 * Bae Junehyeon
 * Bagariavivek
 * Bahodir Mansurov
@@ -97,13 +142,18 @@ The following list can be found parsed under Special:Version/Credits -->
 * Bene
 * Benny Situ
 * Bergi
+* Bernard Wang
 * Bertrand Grondin
+* bhsd
+* Bill McMurray
 * Bill Pirkle
 * Bill Traynor
 * Billinghurst
 * billm
 * Bjornskjald
+* bkudiess-msft
 * blackspirit96
+* BlankEclair
 * blotmandroid
 * Bogdan Stancescu
 * Boris Nagaev
@@ -111,11 +161,14 @@ The following list can be found parsed under Special:Version/Credits -->
 * Brad Jorsch
 * Brandon Black
 * Brandon Harris
-* Brent G
+* BrandonXLF
+* brendajerop
+* Brennen Bearnes
 * Brent Garber
+* Brent Laabs
 * Brian Wolff
 * Brianna Laugher
-* Brion Vibber
+* Brooke Vibber
 * Bryan Davis
 * Bryan Tong Minh
 * burthsceh
@@ -131,6 +184,8 @@ The following list can be found parsed under Special:Version/Credits -->
 * Chad Horohoe
 * Charles Melbye
 * Chiefwei
+* Chlod Alejandro
+* Chris Danis
 * Chris McMahon
 * Chris Seaton
 * Chris Steipp
@@ -143,9 +198,16 @@ The following list can be found parsed under Special:Version/Credits -->
 * church of emacs
 * Cindy Cicalese
 * ckoerner
+* Clara Andrew-Wani
+* Clare Ming
+* Claudio Melo
+* cobaltcigs
+* Cole White
 * Conrad Irwin
 * Cormac Parle
 * cryptocoryne
+* Cyndy Simiyu
+* D3r1ck01
 * Daimona Eaytoy
 * Dan Barrett
 * Dan Collins
@@ -165,24 +227,26 @@ The following list can be found parsed under Special:Version/Credits -->
 * Daniel Werner
 * DanielRenfro
 * Danny B.
+* DannyS712
 * Darian Anthony Patrick
 * Darkdragon09
 * DaSch
-* datguy
+* DatGuy
+* Dave Pifke
 * David Barratt
 * David Baumgarten
 * David Causse
 * David Chan
 * David E. Narváez
+* David Kamholz
 * David Lynch
 * David McCabe
 * David Mudrák
 * David Sn
 * Dayllan Maza
-* dcausse
 * dcot
 * dennisroczek
-* Denny Vrandecic
+* Denny Vrandečić
 * Dereckson
 * Derk-Jan Hartman
 * Derric Atzrott
@@ -190,25 +254,39 @@ The following list can be found parsed under Special:Version/Credits -->
 * Deskana
 * Dévai Tamás
 * Devi Krishnan
+* didicodes
 * Diederik van Liere
+* diesel kapasule
 * divadsn
-* Dmaza
+* diwanshu885
+* Dmitriy Sky
+* Doğu Abaris
 * Domas Mituzas
 * Douglas Gardner
+* Dov Alperin
 * DPStokesNZ
 * dr0ptp4kt
+* Dreamy Jazz
+* drynok
+* dvorapa
+* dwalden
+* Dylsss
 * Ebrahim Byagowi
 * Ed Sanders
 * Ed Schouten
+* edderso
 * Eddie Greiner-Petter
 * Edward Chernenko
 * Edward Z. Yang
+* edwintam
 * Egbe Eugene
 * Elisabeth Bauer
+* ELLENR
 * Elliott Eggleston
 * Elvis Stansvik
 * Emad Elwany
 * Emil Podlaszewski
+* Emitewiki2
 * Emmanuel Engelhart
 * Emmanuel Gil Peyrot
 * Emmet Hikory
@@ -216,16 +294,20 @@ The following list can be found parsed under Special:Version/Credits -->
 * enigmaeth
 * Entlinkt
 * Envel Le Hir
+* EpicPupper
 * Eranroz
 * Eric Evans
+* Eric Gardner
 * Eric Schneider
 * Erich Lerch
 * Erick Guan
 * Erik Bernhardson
 * Erik Moeller
 * Erwin Dokter
+* essexigyan
 * Étienne Beaulé
 * Eugene Gvozdetsky
+* Evad37
 * Evan McIntire
 * Evan Prodromou
 * ExplosiveHippo
@@ -233,20 +315,27 @@ The following list can be found parsed under Special:Version/Credits -->
 * Federico Leva
 * Felipe L. Ewald
 * Fenzik Joseph
+* Ferran Tufan
 * Filippo Giunchedi
 * firebus
 * Florian Schmidt
 * fomafix
 * Framawiki
 * Fran Rogers
+* Frances Goodwin
+* Francois Pignon
 * Fred Emmott
+* Func
 * FunPika
+* Gabriel Birke
 * Gabriel Wicke
 * Gary Guo
 * gbt248
+* gengh
 * Geoffrey Mon
 * Geoffrey Trang
 * georggi
+* GergesShamon
 * Gergő Tisza
 * Gero Scholz
 * Ghybu
@@ -263,6 +352,7 @@ The following list can be found parsed under Special:Version/Credits -->
 * Greg Maxwell
 * Greg Sabino Mullane
 * Gregory Szorc
+* Greta Doçi
 * Grunny
 * Guillaume Blanchard
 * Guy Van den Broeck
@@ -270,24 +360,39 @@ The following list can be found parsed under Special:Version/Credits -->
 * Hagar Shilo
 * Haikal Izzuddin
 * HakanIST
+* hamishz
+* Hank Hulet
+* Hannah Okwelum
 * Happy-melon
 * haritha28
+* Harriet Ayugi
 * Harry Burt
+* Hasan Akgün
 * Hazard-SJ
 * Hector A Escobedo
 * Helder
 * Henning Snater
+* hmonroy
 * Hojjat
+* Holger Knust
 * Hoto Cocoa
+* hueitan
 * Huji
+* Huñvreüs
 * Hydriz
 * Ian Baker
 * Ian Marlier
+* Ideophagous
+* IijimaYun
 * Ilmari Karonen
+* Inductiveload
 * Inez Korczyński
 * IoannisKydonis
 * Ireas
+* Irina Balaban
+* Isabelle Hurbain-Palatin
 * isarra
+* Itamar Givon
 * Ivan Lanin
 * Jack D. Pond
 * Jack Phoenix
@@ -301,20 +406,28 @@ The following list can be found parsed under Special:Version/Credits -->
 * James D. Forrester
 * James Earl Douglas
 * James Montalvo
+* Jamie Kuppens
 * Jan Berkel
 * Jan Drewniak
 * Jan Gerber
 * Jan Luca Naumann
 * Jan Paul Posma
 * Jan Zerebecki
+* Jared Blumer
 * Jared Flores
 * Jaroslav Škarvada
 * jarrettmunton
 * jarry1250
 * Jaska Zedlik
+* Jason Linehan
 * Jason Richey
+* JasonCoombs
+* Jayden Bailey
 * Jayprakash12345
-* jeblad
+* Jdrewniak
+* Jean Culefort
+* Jean-Luc Hassec
+* Jeena Huneidi
 * Jeff Hobson
 * Jeff Janes
 * jeff303
@@ -323,16 +436,15 @@ The following list can be found parsed under Special:Version/Credits -->
 * Jérémie Roquet
 * Jeremy Baron
 * Jeremy Postlethwaite
-* jeremyb
 * Jeroen De Dauw
 * Jerome Jamnicky
 * Jesús Martínez Novo
-* jhobs
-* jhsoby
 * Jiabao
 * Jidanni
 * Jimmy Collins
 * Jimmy Xu
+* JJMC89
+* jmnote
 * jo12bar
 * joakin
 * Joan Creus
@@ -343,47 +455,69 @@ The following list can be found parsed under Special:Version/Credits -->
 * John Du Hart
 * John Erling Blad
 * John N
+* JoKalliauer
 * Jon Harald Søby
 * Jon Robson
 * Jonathan
 * Jonathan Wiltshire
+* Jonghyo Lee
 * Jools Wills
+* joseph emmanuel kayode (iemarjay)
+* Joseph Seddon
 * jsahleen
+* Jsn.sherman
 * Juan Osorio
+* Julia Kieserman
 * Julian Ostrow
 * Juliano F. Ravasi
 * Julien Girault
 * Juliusz Gonera
+* Junyin Chen
 * Jure Kajzer
 * Justin Du
+* Justin Kunimune
+* jwbth
 * Kai Nissen
 * Kai_WMDE
+* Kaleem Bhatti
 * kaligula
+* kalle
+* Karsten Hoffmeyer
 * Kartik Mistry
 * Karun Dambiec
 * Katie Filbert
 * KeerthanaS
+* Keith Herron
 * Kevin Israel
+* kevinbazira
 * Kghbln
 * Kim Eik
 * Kim Hyun-Joon
 * kipod
 * kishanio
+* Klein Muçi
+* Kolawole
 * konarak
 * Kosta Harlan
 * krishna keshav
 * Krzysztof Krzyzaniak
 * Krzysztof Zbudniewek
+* ksarabia
 * Kunal Grover
 * Kunal Mehta
 * Kwan Ting Chan
+* Labdajiwa
+* Larissa Gaulia
 * Laurence Parry
+* Lectrician1
 * Lee Bousfield
 * Lee Daniel Crocker
 * Lee Worden
 * Lejonel
 * lekshmi
+* lens0021
 * Leo Koppelkamm
+* leo60228
 * Leon Liesener
 * Leon Weber
 * Leonardo Gregianin
@@ -398,25 +532,37 @@ The following list can be found parsed under Special:Version/Credits -->
 * Liuxinyu970226
 * Ljudusika
 * Lojjik Braughler
+* lokal-profil
 * Louperivois
+* Lt2818
 * Ltrlg
 * Luc Van Oostenryck
 * Lucas Garczewski
 * Lucas Werkmeister
 * Luigi Corsaro
 * Luis Felipe Schenone
+* Łukasz Harasimowicz
 * LukBukkit
+* Luke
 * Luke Faraone
 * Luke Welling
 * Lupin
 * Lupo
+* lwatson
 * lwelling
+* lziad
 * m4tx
+* Mabualruz
+* MacFan4000
 * Madman
 * madurangasiriwardena
+* Maggie Epps
 * Magnus Manske
+* Mahuton
 * mainframe98
 * Mako Bates
+* Manfredi Martorana
+* Manuel Alcaraz Zambrano
 * Manuel Menal
 * Manuel Schneider
 * Marc Ordinas i Llopis
@@ -427,17 +573,25 @@ The following list can be found parsed under Special:Version/Credits -->
 * MarcoAurelio
 * Marcus Buck
 * Margaret Epps
+* Marielle Volz
+* MarikoBriggs
 * Marius Hoch
 * Mark Bergsma
 * Mark Clements
 * Mark Hershberger
 * Mark Holmquist
+* Mark Shenouda
 * Marko Obrovac
+* Marks Polakovs
 * Markus Glaser
 * Markus Krötzsch
 * Marooned
 * Martin Urbanec
+* Martin VL
+* mary123
+* Maryum Styles
 * Massaf
+* Máté Szabó
 * Matěj Grabovský
 * Matěj Suchánek
 * Mathias Ertl
@@ -456,8 +610,12 @@ The following list can be found parsed under Special:Version/Credits -->
 * Max Semenik
 * Max Sikström
 * mayankmadan
+* mbsantos
+* MdsShakil
+* mech
 * Mehmet Mert Yıldıran
 * Melos
+* Memmie Lenglet
 * Meno25
 * merl
 * Merlijn S. van Deen
@@ -466,29 +624,42 @@ The following list can be found parsed under Special:Version/Credits -->
 * mhutti1
 * Michael Dale
 * Michael De La Rue
+* Michael Große
 * Michael Holloway
 * Michael Newton
 * Michael Walsh
+* Michal
 * Michał Łazowik
 * Michał Roszka
+* Michał Turek
 * Michał Zieliński
+* Midgard
 * Mike Horvath
 * Mikhail Popov
+* Mikko Miettinen
+* mikolajmeller
+* mimurawil
 * Minh Nguyễn
 * MinuteElectron
+* misdre
 * Misza13
 * mjbmr
 * moejoe0000
 * Mogmog123
+* Moh'd Khier Abualruz
 * Mohamed Magdy
 * Molly White
+* montehurd
 * Moriel Schottlender
 * Moritz Oberhauser
 * Mormegil
+* Mortal303
 * Mr. E23
 * MR70
 * MrBlueSky
 * MrPete
+* Msz2001
+* mszabo-wikia
 * Mukunda Modell
 * MusikAnimal
 * Mwalker
@@ -496,16 +667,21 @@ The following list can be found parsed under Special:Version/Credits -->
 * mybugs.mail
 * mynk-96
 * MZMcBride
+* na1307
 * nadeesha
 * Nakon
 * Namit
+* Nardog
 * Nathan Larson
 * Nathaniel Herman
 * navisk13
 * Neil Kandalgaonkar
+* Neil Shah-Quinn
 * Nemo bis
+* Nemoralis
 * nephele
 * Nicholas Pisarro, Jr
+* Nicholas Ray
 * Nick Jenkins
 * nicoco007
 * Nicolaie Constantinescu
@@ -514,33 +690,47 @@ The following list can be found parsed under Special:Version/Credits -->
 * Niedzielski
 * Niharika Kohli
 * Nik Everett
+* NikG
+* Nikita Rana
+* Nikki
+* Nikki Nikkhoui
 * Niklas Laxström
 * Nikola Kovacs
 * Nikola Smolenski
 * Nikolaos S. Karastathis
+* Nikolas Nyby
 * Nimish Gautam
 * Nischay Nahata
 * nischayn22
+* nmw03
+* nokibsarkar
 * nomoa
+* Novem Linguae
 * nullspoon
 * Nuria Ruiz
+* Nux
 * Nx.devnull
 * Obaid Raza
 * Ocean behind ears
 * Od1n
 * Olaf Lenz
 * Olivier Finlay Beaton
+* ollej
+* Ollie Shotton
 * onei
 * opatel99
 * Oren Held
 * Ori Livneh
-* oskar.jauch@gmail.com
-* OverlordQ
+* osamaahmed17
+* Oskar Jauch
+* Ostrzyciel
+* Owen
 * Owen Davis
 * Paa Kwesi Imbeah
 * Pablo Grass
 * paladox
 * Pankajeshkr
+* parthiv-m
 * Patricio Molina
 * Patrick Reilly
 * Patrick Westerhoff
@@ -553,8 +743,11 @@ The following list can be found parsed under Special:Version/Credits -->
 * Perside Rosalie
 * Petar Petković
 * Peter Coombe
+* Peter Fischer
 * Peter Gehres
+* Peter Grassberger
 * Peter Hedenskog
+* Peter Ovchyn
 * Peter Potrowl
 * Petr Bena
 * Petr Kadlec
@@ -562,7 +755,11 @@ The following list can be found parsed under Special:Version/Credits -->
 * Petr Pchelko
 * Phantom42
 * Philip Tzou
+* Philipnelson99
+* Philipp Spitzer
+* Phuedx
 * physikerwelt (Moritz Schubotz)
+* Pierre Boutet
 * PieRRoMaN
 * Pikne
 * Piotr Miazga
@@ -571,6 +768,9 @@ The following list can be found parsed under Special:Version/Credits -->
 * Platonides
 * Pmlineditor
 * pmolina
+* Pols12
+* Porplemontage
+* Ppchelko
 * pppery
 * prageck
 * Pranav Ravichandran
@@ -580,21 +780,28 @@ The following list can be found parsed under Special:Version/Credits -->
 * Prod
 * ptarjan
 * pubudu538
+* punit
+* Purdea Andrei
 * Purodha Blissenbach
 * Pwirth
 * quiddity
 * quietust
 * Quim Gil
+* R4356th
 * Rafid Aslam
 * rahul21
+* rail
 * Raimond Spekking
 * Ramunas Geciauskas
 * Remember the dot
 * René Kijewski
 * Reza
 * rgcjonas
+* RhinosF1
+* Ricki Jay
 * Ricordisamoa
 * rillke
+* Rinish Sam
 * River Tarnell
 * rlot
 * Roan Kattouw
@@ -605,21 +812,27 @@ The following list can be found parsed under Special:Version/Credits -->
 * Robert Leverington
 * Robert Rohde
 * Robert Stojnić
+* Robert Timm
 * Robert Treat
 * Robert Vogel
 * Robin Pepermans
+* Robin van der Vliet
 * robinhood701
 * RockMFR
 * Rohan
 * Roman Nosov
+* Roman Stolar
 * Roman Tsukanov
 * Rotem Liss
 * Rowan Collins
+* rrana-wmf
+* Ruben Barkow-Kuder
 * runntb
 * Russ Nelson
 * Russell Blau
 * Rusty Burchfield
 * Ruud Koot
+* rxy
 * Ryan Bies
 * Ryan Finnie
 * Ryan Kaldari
@@ -627,13 +840,24 @@ The following list can be found parsed under Special:Version/Credits -->
 * Ryan Schmidt
 * ryan10145
 * S Page
+* Sahajsk`
+* sahil
+* Sai Suman Cherukuwada
+* Saint Johann
+* Sakretsu
 * Salvatore Ingala
 * Sam Reed
 * Sam Smith
 * Sam Wilson
 * SamanthaNguyen
+* Sammy Tarling
+* Samuel Guebo
+* Samuel Hilson
+* Samwalton9
 * Santhosh Thottingal
 * saptaks
+* sbailey
+* SBassett
 * Schnark (Michael M.)
 * Scimonster
 * scnd
@@ -641,68 +865,100 @@ The following list can be found parsed under Special:Version/Credits -->
 * se4598
 * Sean Colombo
 * Sean Pringle
+* Seawolf35gerrit
 * Seb35
+* Sebastian Berlin
 * Sebastian Brückner
+* Sébastien Beyou
 * Sébastien Santoro
+* Sergio Gimeno
 * Sergio Santoro
+* Serhio Magpie
 * Sethakill
+* setian
 * Sfic
 * Shahyar
 * shandrenkoff
 * Shane Gibbons
 * Shane King
 * shanika
+* shcherba
 * Shinjiman
 * shirayuki
 * Shreyas Minocha
+* shubham656
+* Siddharth VP
 * Sidhant Gupta
 * Siebrand Mazeland
 * Simeon Dahl
+* Simon Legner
+* Simon Stier
 * Simon Walker
+* Simone Cuomo
+* sjoerddebruin
 * Smriti Singh
+* Sohom Datta
 * Solitarius
 * Sorawee Porncharoenwase
 * Søren Løvborg
-* Southparkfan
 * Soxred93
+* Sportzpikachu
 * SQL
+* Srđan
 * Srikanth Lakshmanan
+* Srishakatux
+* ST47
+* stang
 * Stanislav Malyshev
 * Stefano Codari
 * Steinsplitter
+* Steph Toyofuku
 * Stephan Gambke
 * Stephan Muggli
 * Stephane Bisson
 * Stephen Liang
 * Stephen Niedzielski
 * Steve Sanbeg
+* Steven Rawson
 * Steven Roddis
 * Steven Walling
+* Stevie Beth Mhaol
 * stibba
+* Storm1seven
 * Str4nd
 * Strainu
+* STran
 * Subin Siby
 * Subramanya Sastry
+* suecarmol
 * Sumit Asthana
+* Superpes15
 * superyetkin
 * Suriyaa Kudo
 * svip
 * Szymon Świerkosz
 * T. Bayer
 * T.D. Corell
+* Taavi Väänänen
 * tacsipacsi
 * Tarquin
+* TehKittyCat
 * TerraCodes
 * Thalia Chan
 * The Discoverer
 * The Evil IP address
+* Theodore Dubois
 * theopolisme
+* theprotonade
+* TheSandDoctor
 * Thiemo Kreuz
 * This, that and the other
 * tholam
 * Thomas Arrow
 * Thomas Bleher
+* Thomas Chin
 * Thomas Dalton
+* Thomas Daniels
 * Thomas Gries
 * ThomasV
 * Tim Eulitz
@@ -714,8 +970,8 @@ The following list can be found parsed under Special:Version/Credits -->
 * Tina Johnson
 * Tisane
 * tjlsangria
-* Tjones
-* TK-999
+* Tks4Fish
+* Tobi_406
 * Tobias Gritschacher
 * Tom Arrow
 * Tom Gilder
@@ -727,46 +983,76 @@ The following list can be found parsed under Special:Version/Credits -->
 * Toni Hermoso Pulido
 * Tony Thomas
 * Tpt
+* Tranve
 * Trevor Parscal
 * Trey Jones
+* tsepothoabala
+* ttomalak
+* Tulsi Bhagat
+* Tuukka Hastrup
+* Ty Hopp
 * TyA
 * Tychay
-* Tyler Anthony Romeo
 * Tyler Cipriani
 * Tyler Romeo
+* tzhelyazkova
 * U-REDMOND\emadelw
 * UltrasonicNXT
 * Umherirrender
+* Universal Omega
 * utkarsh95
+* Vadim Kovalenko
+* vahurzpu
 * Valerio Bozzolan
 * Van de Bugger
+* Varun Das
+* Vas Jaremchuk
+* Vaughn Walters
+* Vedmaka
 * Viačeslav
 * Victor Barbu
 * Victor Porton
 * Victor Vasiliev
+* vidhi-mody
 * Ville Stadista
-* vinithegit
+* Vincent Privat
+* Vinitha
 * vishnu
 * Vitaliy Filippov
 * Vivek Ghaisas
+* Vlad Shapik
 * vlakoff
 * Volker E
 * Waldir Pimenta
+* Wandji69
+* wangombe
+* Wargo
 * wctaiwan
+* Welp
+* Wendy Quarshie
 * Wikinaut
+* wikitrent
 * Wil Mahan
 * William Demchick
+* Winston Sung
 * withoutaname
 * WMDE-Fisch
 * X!
+* Xabriel J. Collazo Mojica
+* xiplus
+* xover
 * XP1
+* xtex
 * Yaron Koren
 * Yaroslav Melnychuk
+* yash9265
 * Yesid Carrillo
+* Yiannis Giannelos
 * Yifei He
 * Yogesh K S
 * Yongmin Hong
 * yoonghm
+* Youri
 * Yuri Astrakhan
 * Yuriy Shnitkovskiy
 * Yusuke Matsubara
@@ -779,8 +1065,11 @@ The following list can be found parsed under Special:Version/Credits -->
 * Zhuyifei1999
 * Zoranzoki21
 * Zppix
+* Zvi "CtrlZvi" Effron
+* Þjarkur
 * محمد شعیب
 * 星耀晨曦
+* 沈澄心
 <!-- END CONTRIBUTOR LIST -->
 
 == Translators ==

@@ -1,64 +1,104 @@
-const assert = require( 'assert' ),
-	BlankPage = require( 'wdio-mediawiki/BlankPage' ),
-	CreateAccountPage = require( '../pageobjects/createaccount.page' ),
-	PreferencesPage = require( '../pageobjects/preferences.page' ),
-	UserLoginPage = require( 'wdio-mediawiki/LoginPage' ),
-	Api = require( 'wdio-mediawiki/Api' ),
-	Util = require( 'wdio-mediawiki/Util' );
+// This file is used at Selenium/Explanation/Page object pattern
+// https://www.mediawiki.org/wiki/Selenium/Explanation/Page_object_pattern
 
-describe( 'User', function () {
-	var password,
-		username;
+'use strict';
 
-	before( function () {
-		// disable VisualEditor welcome dialog
-		BlankPage.open();
-		browser.localStorage( 'POST', { key: 've-beta-welcome-dialog', value: '1' } );
+const CreateAccountPage = require( 'wdio-mediawiki/CreateAccountPage' );
+const EditPage = require( '../pageobjects/edit.page' );
+const LoginPage = require( 'wdio-mediawiki/LoginPage' );
+const BlockPage = require( '../pageobjects/block.page' );
+const Api = require( 'wdio-mediawiki/Api' );
+const Util = require( 'wdio-mediawiki/Util' );
+
+describe( 'User', () => {
+	let password, username, bot;
+
+	before( async () => {
+		bot = await Api.bot();
 	} );
 
-	beforeEach( function () {
-		browser.deleteCookie();
+	beforeEach( async () => {
+		await browser.deleteAllCookies();
 		username = Util.getTestString( 'User-' );
 		password = Util.getTestString();
 	} );
 
-	it( 'should be able to create account', function () {
+	it( 'should be able to create account', async () => {
 		// create
-		CreateAccountPage.createAccount( username, password );
+		await CreateAccountPage.createAccount( username, password );
 
 		// check
-		assert.strictEqual( CreateAccountPage.heading.getText(), `Welcome, ${username}!` );
+		await expect( await CreateAccountPage.heading ).toHaveText( `Welcome, ${ username }!` );
 	} );
 
-	it( 'should be able to log in @daily', function () {
+	it( 'should be able to log in', async () => {
 		// create
-		browser.call( function () {
-			return Api.createAccount( username, password );
-		} );
+		await Api.createAccount( bot, username, password );
 
 		// log in
-		UserLoginPage.login( username, password );
+		await LoginPage.login( username, password );
 
 		// check
-		assert.strictEqual( UserLoginPage.userPage.getText(), username );
+		const actualUsername = await LoginPage.getActualUsername();
+		expect( actualUsername ).toBe( username );
 	} );
 
-	// Disabled due to flakiness (T199446)
-	it.skip( 'should be able to change preferences', function () {
-		var realName = Util.getTestString();
+	it( 'named user should see extra signup form fields when creating an account', async () => {
+		await Api.createAccount( bot, username, password );
+		await LoginPage.login( username, password );
 
-		// create
-		browser.call( function () {
-			return Api.createAccount( username, password );
-		} );
+		await CreateAccountPage.open();
 
-		// log in
-		UserLoginPage.login( username, password );
+		await expect( await CreateAccountPage.username ).toExist();
+		await expect( await CreateAccountPage.password ).toExist();
+		await expect( await CreateAccountPage.tempPasswordInput ).toExist(
+			{ message: 'Named users should have the option to have a temporary password sent on signup (T328718)' }
+		);
+		await expect( await CreateAccountPage.reasonInput ).toExist(
+			{ message: 'Named users should have to provide a reason for their account creation (T328718)' }
+		);
+	} );
 
-		// change
-		PreferencesPage.changeRealName( realName );
+	it( 'temporary user should not see signup form fields relevant to named users', async () => {
+		const pageTitle = Util.getTestString( 'TempUserSignup-TestPage-' );
+		const pageText = Util.getTestString();
 
-		// check
-		assert.strictEqual( PreferencesPage.realName.getValue(), realName );
+		await EditPage.edit( pageTitle, pageText );
+		await EditPage.openCreateAccountPageAsTempUser();
+
+		await expect( await CreateAccountPage.username ).toExist();
+		await expect( await CreateAccountPage.password ).toExist();
+		await expect( await CreateAccountPage.tempPasswordInput ).not.toExist(
+			{ message: 'Temporary users should not have the option to have a temporary password sent on signup (T328718)' }
+		);
+		await expect( await CreateAccountPage.reasonInput ).not.toExist(
+			{ message: 'Temporary users should not have to provide a reason for their account creation (T328718)' }
+		);
+	} );
+
+	it( 'temporary user should be able to create account', async () => {
+		const pageTitle = Util.getTestString( 'TempUserSignup-TestPage-' );
+		const pageText = Util.getTestString();
+
+		await EditPage.edit( pageTitle, pageText );
+		await EditPage.openCreateAccountPageAsTempUser();
+
+		await CreateAccountPage.submitForm( username, password );
+
+		const actualUsername = await LoginPage.getActualUsername();
+		expect( actualUsername ).toBe( username );
+		await expect( await CreateAccountPage.heading ).toHaveText( `Welcome, ${ username }!` );
+	} );
+
+	it( 'should be able to block a user', async () => {
+		await Api.createAccount( bot, username, password );
+
+		await LoginPage.loginAdmin();
+
+		const expiry = '31 hours';
+		const reason = Util.getTestString();
+		await BlockPage.block( username, expiry, reason );
+
+		await expect( await BlockPage.messages ).toHaveTextContaining( 'Block succeeded' );
 	} );
 } );

@@ -1,10 +1,18 @@
 <?php
 
+use MediaWiki\Json\FormatJson;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Registration\ExtensionProcessor;
+use MediaWiki\Registration\ExtensionRegistry;
+use Wikimedia\Composer\ComposerJson;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 class ConvertExtensionToRegistration extends Maintenance {
 
-	protected $custom = [
+	private const CUSTOM_GLOBALS = [
 		'MessagesDirs' => 'handleMessagesDirs',
 		'ExtensionMessagesFiles' => 'handleExtensionMessagesFiles',
 		'AutoloadClasses' => 'removeAbsolutePath',
@@ -18,28 +26,22 @@ class ConvertExtensionToRegistration extends Maintenance {
 
 	/**
 	 * Things that were formerly globals and should still be converted
-	 *
-	 * @var string[]
 	 */
-	protected $formerGlobals = [
+	private const FORMER_GLOBALS = [
 		'TrackingCategories',
 	];
 
 	/**
 	 * No longer supported globals (with reason) should not be converted and emit a warning
-	 *
-	 * @var string[]
 	 */
-	protected $noLongerSupportedGlobals = [
+	private const NO_LONGER_SUPPORTED_GLOBALS = [
 		'SpecialPageGroups' => 'deprecated', // Deprecated 1.21, removed in 1.26
 	];
 
 	/**
 	 * Keys that should be put at the top of the generated JSON file (T86608)
-	 *
-	 * @var string[]
 	 */
-	protected $promote = [
+	private const PROMOTE_ATTRIBUTES = [
 		'name',
 		'namemsg',
 		'version',
@@ -51,7 +53,9 @@ class ConvertExtensionToRegistration extends Maintenance {
 		'type',
 	];
 
-	private $json, $dir, $hasWarning = false;
+	private array $json;
+	private string $dir;
+	private bool $hasWarning = false;
 
 	public function __construct() {
 		parent::__construct();
@@ -66,7 +70,7 @@ class ConvertExtensionToRegistration extends Maintenance {
 		$processor = new ReflectionClass( ExtensionProcessor::class );
 		$settings = $processor->getProperty( 'globalSettings' );
 		$settings->setAccessible( true );
-		return array_merge( $settings->getValue(), $this->formerGlobals );
+		return array_merge( $settings->getValue(), self::FORMER_GLOBALS );
 	}
 
 	public function execute() {
@@ -74,7 +78,7 @@ class ConvertExtensionToRegistration extends Maintenance {
 		// fatal unless an array is already set. So set an empty value.
 		// And use the weird $__settings name to avoid any conflicts
 		// with real poorly named settings.
-		$__settings = array_merge( $this->getAllGlobals(), array_keys( $this->custom ) );
+		$__settings = array_merge( $this->getAllGlobals(), array_keys( self::CUSTOM_GLOBALS ) );
 		foreach ( $__settings as $var ) {
 			$var = 'wg' . $var;
 			$$var = [];
@@ -97,6 +101,7 @@ class ConvertExtensionToRegistration extends Maintenance {
 		if ( $configPrefix !== 'wg' ) {
 			$this->json['config']['_prefix'] = $configPrefix;
 		}
+
 		foreach ( $vars as $name => $value ) {
 			$realName = substr( $name, 2 ); // Strip 'wg'
 			if ( $realName === false ) {
@@ -108,19 +113,38 @@ class ConvertExtensionToRegistration extends Maintenance {
 				continue;
 			}
 
-			if ( isset( $this->custom[$realName] ) ) {
-				call_user_func_array( [ $this, $this->custom[$realName] ],
+			if ( isset( self::CUSTOM_GLOBALS[$realName] ) ) {
+				call_user_func_array( [ $this, self::CUSTOM_GLOBALS[$realName] ],
 					[ $realName, $value, $vars ] );
 			} elseif ( in_array( $realName, $globalSettings ) ) {
 				$this->json[$realName] = $value;
-			} elseif ( array_key_exists( $realName, $this->noLongerSupportedGlobals ) ) {
+			} elseif ( array_key_exists( $realName, self::NO_LONGER_SUPPORTED_GLOBALS ) ) {
 				$this->output( 'Warning: Skipped global "' . $name . '" (' .
-					$this->noLongerSupportedGlobals[$realName] . '). ' .
+					self::NO_LONGER_SUPPORTED_GLOBALS[$realName] . '). ' .
 					"Please update the entry point before convert to registration.\n" );
 				$this->hasWarning = true;
 			} elseif ( strpos( $name, $configPrefix ) === 0 ) {
+				$configName = substr( $name, strlen( $configPrefix ) );
+
+				$isPath = false;
+				if ( is_array( $value ) ) {
+					foreach ( $value as $k => $v ) {
+						if ( strpos( $v, $this->dir ) !== false ) {
+							$value[$k] = $this->stripPath( $v, $this->dir );
+							$isPath = true;
+						}
+					}
+				} elseif ( is_string( $value ) && strpos( $value, $this->dir ) !== false ) {
+					$value = $this->stripPath( $value, $this->dir );
+					$isPath = true;
+				}
+
 				// Most likely a config setting
-				$this->json['config'][substr( $name, strlen( $configPrefix ) )] = [ 'value' => $value ];
+				$this->json['config'][$configName] = [ 'value' => $value ];
+
+				if ( $isPath ) {
+					$this->json['config'][$configName]['path'] = true;
+				}
 			} elseif ( $configPrefix !== 'wg' && strpos( $name, 'wg' ) === 0 ) {
 				// Warn about this
 				$this->output( 'Warning: Skipped global "' . $name . '" (' .
@@ -138,7 +162,7 @@ class ConvertExtensionToRegistration extends Maintenance {
 
 		// Move some keys to the top
 		$out = [];
-		foreach ( $this->promote as $key ) {
+		foreach ( self::PROMOTE_ATTRIBUTES as $key ) {
 			if ( isset( $this->json[$key] ) ) {
 				$out[$key] = $this->json[$key];
 				unset( $this->json[$key] );
@@ -168,9 +192,8 @@ class ConvertExtensionToRegistration extends Maintenance {
 				$this->fatalError( "Error: Closures cannot be converted to JSON. " .
 					"Please move your extension function somewhere else."
 				);
-			}
-			// check if $func exists in the global scope
-			if ( function_exists( $func ) ) {
+			} elseif ( function_exists( $func ) ) {
+				// check if $func exists in the global scope
 				$this->fatalError( "Error: Global functions cannot be converted to JSON. " .
 					"Please move your extension function ($func) into a class."
 				);
@@ -228,7 +251,7 @@ class ConvertExtensionToRegistration extends Maintenance {
 			$path = $this->stripPath( $val, $this->dir );
 			// When path starts with tests/parser/ the file would be autodiscovered with
 			// extension registry, so no need to add it to extension.json
-			if ( substr( $path, 0, 13 ) !== 'tests/parser/' || substr( $path, -4 ) !== '.txt' ) {
+			if ( !str_starts_with( $path, 'tests/parser/' ) || !str_ends_with( $path, '.txt' ) ) {
 				$out[$key] = $path;
 			}
 		}
@@ -236,6 +259,11 @@ class ConvertExtensionToRegistration extends Maintenance {
 		if ( $out ) {
 			$this->json[$realName] = $out;
 		}
+		// FIXME: the ParserTestFiles key was deprecated in
+		// MW 1.30 and removed in MW 1.40.  If not all entries were filtered
+		// out by the above, we *should* recommend the user move the
+		// parser tests under `tests/parser` *not* generate an extension.json
+		// with a ParserTestFiles key that will no longer validate.
 	}
 
 	protected function handleCredits( $realName, $value ) {
@@ -263,9 +291,8 @@ class ConvertExtensionToRegistration extends Maintenance {
 					$this->fatalError( "Error: Closures cannot be converted to JSON. " .
 						"Please move the handler for $hookName somewhere else."
 					);
-				}
-				// Check if $func exists in the global scope
-				if ( function_exists( $func ) ) {
+				} elseif ( function_exists( $func ) ) {
+					// Check if $func exists in the global scope
 					$this->fatalError( "Error: Global functions cannot be converted to JSON. " .
 						"Please move the handler for $hookName inside a class."
 					);
@@ -278,6 +305,10 @@ class ConvertExtensionToRegistration extends Maintenance {
 		$this->json[$realName] = $value;
 	}
 
+	/**
+	 * @param string $realName
+	 * @param array[] $value
+	 */
 	protected function handleResourceModules( $realName, $value ) {
 		$defaults = [];
 		$remote = $this->hasOption( 'skin' ) ? 'remoteSkinPath' : 'remoteExtPath';
@@ -313,9 +344,9 @@ class ConvertExtensionToRegistration extends Maintenance {
 	protected function needsComposerAutoloader( $path ) {
 		$path .= '/composer.json';
 		if ( file_exists( $path ) ) {
-			// assume, that the composer.json file is in the root of the extension path
+			// assume that the composer.json file is in the root of the extension path
 			$composerJson = new ComposerJson( $path );
-			// check, if there are some dependencies in the require section
+			// check if there are some dependencies in the require section
 			if ( $composerJson->getRequiredDependencies() ) {
 				return true;
 			}
@@ -324,5 +355,7 @@ class ConvertExtensionToRegistration extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = ConvertExtensionToRegistration::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

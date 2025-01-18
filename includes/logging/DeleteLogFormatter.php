@@ -23,12 +23,22 @@
  * @since 1.22
  */
 
+use MediaWiki\Api\ApiResult;
+use MediaWiki\Revision\RevisionRecord;
+use MediaWiki\SpecialPage\SpecialPage;
+
 /**
  * This class formats delete log entries.
  *
  * @since 1.19
  */
 class DeleteLogFormatter extends LogFormatter {
+	/** @var array|null */
+	private $parsedParametersDeleteLog;
+
+	/**
+	 * @inheritDoc
+	 */
 	protected function getMessageKey() {
 		$key = parent::getMessageKey();
 		if ( in_array( $this->entry->getSubtype(), [ 'event', 'revision' ] ) ) {
@@ -48,8 +58,11 @@ class DeleteLogFormatter extends LogFormatter {
 		return $key;
 	}
 
+	/**
+	 * @inheritDoc
+	 */
 	protected function getMessageParameters() {
-		if ( isset( $this->parsedParametersDeleteLog ) ) {
+		if ( $this->parsedParametersDeleteLog !== null ) {
 			return $this->parsedParametersDeleteLog;
 		}
 
@@ -63,7 +76,7 @@ class DeleteLogFormatter extends LogFormatter {
 			if (
 				( $subtype === 'event' && count( $params ) === 6 )
 				|| (
-					$subtype === 'revision' && isset( $params[3] )
+					$subtype === 'revision' && isset( $params[3] ) && count( $params ) === 7
 					&& in_array( $params[3], [ 'revision', 'archive', 'oldimage', 'filearchive' ] )
 				)
 			) {
@@ -72,7 +85,7 @@ class DeleteLogFormatter extends LogFormatter {
 
 				$old = $this->parseBitField( $params[$paramStart + 1] );
 				$new = $this->parseBitField( $params[$paramStart + 2] );
-				list( $hid, $unhid, $extra ) = RevisionDeleter::getChanges( $new, $old );
+				[ $hid, $unhid, $extra ] = RevisionDeleter::getChanges( $new, $old );
 				$changes = [];
 				// messages used: revdelete-content-hid, revdelete-summary-hid, revdelete-uname-hid
 				foreach ( $hid as $v ) {
@@ -123,7 +136,7 @@ class DeleteLogFormatter extends LogFormatter {
 	protected function parseBitField( $string ) {
 		// Input is like ofield=2134 or just the number
 		if ( strpos( $string, 'field=' ) === 1 ) {
-			list( , $field ) = explode( '=', $string );
+			[ , $field ] = explode( '=', $string );
 
 			return (int)$field;
 		} else {
@@ -132,9 +145,8 @@ class DeleteLogFormatter extends LogFormatter {
 	}
 
 	public function getActionLinks() {
-		$user = $this->context->getUser();
 		$linkRenderer = $this->getLinkRenderer();
-		if ( !$user->isAllowed( 'deletedhistory' )
+		if ( !$this->context->getAuthority()->isAllowed( 'deletedhistory' )
 			|| $this->entry->isDeleted( LogPage::DELETED_ACTION )
 		) {
 			return '';
@@ -143,7 +155,8 @@ class DeleteLogFormatter extends LogFormatter {
 		switch ( $this->entry->getSubtype() ) {
 			case 'delete': // Show undelete link
 			case 'delete_redir':
-				if ( $user->isAllowed( 'undelete' ) ) {
+			case 'delete_redir2':
+				if ( $this->context->getAuthority()->isAllowed( 'undelete' ) ) {
 					$message = 'undeletelink';
 				} else {
 					$message = 'undeleteviewlink';
@@ -280,10 +293,10 @@ class DeleteLogFormatter extends LogFormatter {
 			];
 
 			static $fields = [
-				Revision::DELETED_TEXT => 'content',
-				Revision::DELETED_COMMENT => 'comment',
-				Revision::DELETED_USER => 'user',
-				Revision::DELETED_RESTRICTED => 'restricted',
+				RevisionRecord::DELETED_TEXT => 'content',
+				RevisionRecord::DELETED_COMMENT => 'comment',
+				RevisionRecord::DELETED_USER => 'user',
+				RevisionRecord::DELETED_RESTRICTED => 'restricted',
 			];
 
 			if ( isset( $rawParams['6::ofield'] ) ) {

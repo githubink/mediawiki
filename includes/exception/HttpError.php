@@ -19,21 +19,32 @@
  */
 
 use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\Message\Message;
 
 /**
  * Show an error that looks like an HTTP server error.
  * Replacement for wfHttpError().
  *
+ * @newable
+ * @stable to extend
  * @since 1.19
  * @ingroup Exception
  */
 class HttpError extends MWException {
-	private $httpCode, $header, $content;
+	/** @var int */
+	private $httpCode;
+	/** @var string|Message|null */
+	private $header;
+	/** @var string|Message */
+	private $content;
 
 	/**
+	 * @stable to call
 	 * @param int $httpCode HTTP status code to send to the client
 	 * @param string|Message $content Content of the message
 	 * @param string|Message|null $header Content of the header (\<title\> and \<h1\>)
+	 * @param-taint $content tainted
+	 * @param-taint $header tainted
 	 */
 	public function __construct( $httpCode, $content, $header = null ) {
 		parent::__construct( $content );
@@ -123,7 +134,7 @@ class HttpError extends MWException {
 		}
 
 		return "<!DOCTYPE html>\n" .
-		"<html><head><title>$titleHtml</title></head>\n" .
+		"<html><head><title>$titleHtml</title><meta name=\"color-scheme\" content=\"light dark\" /></head>\n" .
 		"<body><h1>$titleHtml</h1><p>$contentHtml</p></body></html>\n";
 	}
 }

@@ -1,26 +1,32 @@
 <?php
 
+use MediaWiki\MainConfigNames;
+use Wikimedia\TestingAccessWrapper;
+
 /**
  * @group Media
+ * @requires extension exif
  */
 class FormatMetadataTest extends MediaWikiMediaTestCase {
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
-		$this->checkPHPExtension( 'exif' );
-		$this->setMwGlobals( 'wgShowEXIF', true );
+		$this->overrideConfigValues( [
+			MainConfigNames::LanguageCode => 'en',
+			MainConfigNames::ShowEXIF => true,
+		] );
 	}
 
 	/**
-	 * @covers File::formatMetadata
+	 * @covers \File::formatMetadata
 	 */
 	public function testInvalidDate() {
 		$file = $this->dataFile( 'broken_exif_date.jpg', 'image/jpeg' );
 
 		// Throws an error if bug hit
 		$meta = $file->formatMetadata();
-		$this->assertNotEquals( false, $meta, 'Valid metadata extracted' );
+		$this->assertIsArray( $meta, 'Valid metadata extracted' );
 
 		// Find date exif entry
 		$this->assertArrayHasKey( 'visible', $meta );
@@ -31,16 +37,14 @@ class FormatMetadataTest extends MediaWikiMediaTestCase {
 			}
 		}
 		$this->assertNotNull( $dateIndex, 'Date entry exists in metadata' );
-		$this->assertEquals( '0000:01:00 00:02:27',
+		$this->assertSame( '0000:01:00 00:02:27',
 			$meta['visible'][$dateIndex]['value'],
 			'File with invalid date metadata (T31471)' );
 	}
 
 	/**
-	 * @param mixed $input
-	 * @param mixed $output
 	 * @dataProvider provideResolveMultivalueValue
-	 * @covers FormatMetadata::resolveMultivalueValue
+	 * @covers \FormatMetadata::resolveMultivalueValue
 	 */
 	public function testResolveMultivalueValue( $input, $output ) {
 		$formatMetadata = new FormatMetadata();
@@ -51,7 +55,7 @@ class FormatMetadataTest extends MediaWikiMediaTestCase {
 		$this->assertEquals( $output, $actualInput );
 	}
 
-	public function provideResolveMultivalueValue() {
+	public static function provideResolveMultivalueValue() {
 		return [
 			'nonArray' => [
 				'foo',
@@ -97,16 +101,14 @@ class FormatMetadataTest extends MediaWikiMediaTestCase {
 	}
 
 	/**
-	 * @param mixed $input
-	 * @param mixed $output
 	 * @dataProvider provideGetFormattedData
-	 * @covers FormatMetadata::getFormattedData
+	 * @covers \FormatMetadata::getFormattedData
 	 */
 	public function testGetFormattedData( $input, $output ) {
 		$this->assertEquals( $output, FormatMetadata::getFormattedData( $input ) );
 	}
 
-	public function provideGetFormattedData() {
+	public static function provideGetFormattedData() {
 		return [
 			[
 				[ 'Software' => 'Adobe Photoshop CS6 (Macintosh)' ],
@@ -138,6 +140,41 @@ class FormatMetadataTest extends MediaWikiMediaTestCase {
 				// WebMHandler.php turns both 'muxingapp' & 'writingapp' to 'Software'
 				[ 'Software' => [ [ 'Lavf57.25.100' ], [ 'Lavf57.25.100' ] ] ],
 				[ 'Software' => "<ul><li>Lavf57.25.100</li>\n<li>Lavf57.25.100</li></ul>" ],
+			],
+		];
+	}
+
+	/**
+	 * @covers \FormatMetadata::getPriorityLanguages
+	 * @dataProvider provideGetPriorityLanguagesData
+	 * @param string $language
+	 * @param string[] $expected
+	 */
+	public function testGetPriorityLanguagesInternal_language_expect(
+		string $language,
+		array $expected
+	): void {
+		$formatMetadata = TestingAccessWrapper::newFromObject( new FormatMetadata() );
+		$context = $formatMetadata->getContext();
+		$context->setLanguage( $this->getServiceContainer()->getLanguageFactory()->getLanguage( $language ) );
+
+		$x = $formatMetadata->getPriorityLanguages();
+		$this->assertSame( $expected, $x );
+	}
+
+	public static function provideGetPriorityLanguagesData() {
+		return [
+			'LanguageMl' => [
+				'ml',
+				[ 'ml', 'en' ],
+			],
+			'LanguageEn' => [
+				'en',
+				[ 'en', 'en' ],
+			],
+			'LanguageQqx' => [
+				'qqx',
+				[ 'qqx', 'en' ],
 			],
 		];
 	}

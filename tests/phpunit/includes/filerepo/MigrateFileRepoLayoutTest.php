@@ -1,15 +1,26 @@
 <?php
 
-/**
- * @covers MigrateFileRepoLayout
- */
-class MigrateFileRepoLayoutTest extends MediaWikiTestCase {
-	protected $tmpPrefix;
-	protected $migratorMock;
-	protected $tmpFilepath;
-	protected $text = 'testing';
+use MediaWiki\WikiMap\WikiMap;
+use PHPUnit\Framework\MockObject\MockObject;
+use Wikimedia\FileBackend\FSFile\TempFSFile;
+use Wikimedia\FileBackend\FSFileBackend;
+use Wikimedia\Rdbms\FakeResultWrapper;
+use Wikimedia\Rdbms\IDatabase;
+use Wikimedia\Rdbms\SelectQueryBuilder;
 
-	protected function setUp() {
+/**
+ * @covers \MigrateFileRepoLayout
+ */
+class MigrateFileRepoLayoutTest extends MediaWikiIntegrationTestCase {
+	/** @var string */
+	protected $tmpPrefix;
+	/** @var MigrateFileRepoLayout&MockObject */
+	protected $migratorMock;
+	/** @var string */
+	protected $tmpFilepath;
+	private const TEXT = 'testing';
+
+	protected function setUp(): void {
 		parent::setUp();
 
 		$filename = 'Foo.png';
@@ -18,7 +29,7 @@ class MigrateFileRepoLayoutTest extends MediaWikiTestCase {
 
 		$backend = new FSFileBackend( [
 			'name' => 'local-migratefilerepolayouttest',
-			'wikiId' => wfWikiID(),
+			'wikiId' => WikiMap::getCurrentWikiId(),
 			'containerPaths' => [
 				'migratefilerepolayouttest-original' => "{$this->tmpPrefix}-original",
 				'migratefilerepolayouttest-public' => "{$this->tmpPrefix}-public",
@@ -28,24 +39,23 @@ class MigrateFileRepoLayoutTest extends MediaWikiTestCase {
 			]
 		] );
 
-		$dbMock = $this->getMockBuilder( Wikimedia\Rdbms\IDatabase::class )
-			->disableOriginalConstructor()
-			->getMock();
+		$dbMock = $this->createMock( IDatabase::class );
 
-		$imageRow = new stdClass;
-		$imageRow->img_name = $filename;
-		$imageRow->img_sha1 = sha1( $this->text );
+		$imageRow = (object)[
+			'img_name' => $filename,
+			'img_sha1' => sha1( self::TEXT ),
+		];
 
-		$dbMock->expects( $this->any() )
-			->method( 'select' )
-			->will( $this->onConsecutiveCalls(
+		$dbMock->method( 'select' )
+			->willReturnOnConsecutiveCalls(
 				new FakeResultWrapper( [ $imageRow ] ), // image
 				new FakeResultWrapper( [] ), // image
 				new FakeResultWrapper( [] ) // filearchive
-			) );
+			);
+		$dbMock->method( 'newSelectQueryBuilder' )->willReturnCallback( fn () => new SelectQueryBuilder( $dbMock ) );
 
 		$repoMock = $this->getMockBuilder( LocalRepo::class )
-			->setMethods( [ 'getMasterDB' ] )
+			->onlyMethods( [ 'getPrimaryDB', 'getReplicaDB' ] )
 			->setConstructorArgs( [ [
 					'name' => 'migratefilerepolayouttest',
 					'backend' => $backend
@@ -53,21 +63,22 @@ class MigrateFileRepoLayoutTest extends MediaWikiTestCase {
 			->getMock();
 
 		$repoMock
-			->expects( $this->any() )
-			->method( 'getMasterDB' )
-			->will( $this->returnValue( $dbMock ) );
+			->method( 'getPrimaryDB' )
+			->willReturn( $dbMock );
+		$replicaDB = $this->createMock( IDatabase::class );
+		$replicaDB->method( 'getSessionLagStatus' )->willReturn( [ 'lag' => 0, 'since' => time() ] );
+		$repoMock->method( 'getReplicaDB' )->willReturn( $replicaDB );
 
 		$this->migratorMock = $this->getMockBuilder( MigrateFileRepoLayout::class )
-			->setMethods( [ 'getRepo' ] )->getMock();
+			->onlyMethods( [ 'getRepo' ] )->getMock();
 		$this->migratorMock
-			->expects( $this->any() )
 			->method( 'getRepo' )
-			->will( $this->returnValue( $repoMock ) );
+			->willReturn( $repoMock );
 
 		$this->tmpFilepath = TempFSFile::factory(
 			'migratefilelayout-test-', 'png', wfTempDir() )->getPath();
 
-		file_put_contents( $this->tmpFilepath, $this->text );
+		file_put_contents( $this->tmpFilepath, self::TEXT );
 
 		$hashPath = $repoMock->getHashPath( $filename );
 
@@ -91,7 +102,7 @@ class MigrateFileRepoLayoutTest extends MediaWikiTestCase {
 		rmdir( $directory );
 	}
 
-	protected function tearDown() {
+	protected function tearDown(): void {
 		foreach ( glob( $this->tmpPrefix . '*' ) as $directory ) {
 			$this->deleteFilesRecursively( $directory );
 		}
@@ -113,7 +124,7 @@ class MigrateFileRepoLayoutTest extends MediaWikiTestCase {
 
 		ob_end_clean();
 
-		$sha1 = sha1( $this->text );
+		$sha1 = sha1( self::TEXT );
 
 		$expectedOriginalFilepath = $this->tmpPrefix
 			. '-original/'
@@ -126,16 +137,16 @@ class MigrateFileRepoLayoutTest extends MediaWikiTestCase {
 			. $sha1;
 
 		$this->assertEquals(
+			self::TEXT,
 			file_get_contents( $expectedOriginalFilepath ),
-			$this->text,
 			'New sha1 file should be exist and have the right contents'
 		);
 
 		$expectedPublicFilepath = $this->tmpPrefix . '-public/f/f8/Foo.png';
 
 		$this->assertEquals(
+			self::TEXT,
 			file_get_contents( $expectedPublicFilepath ),
-			$this->text,
 			'Existing name file should still and have the right contents'
 		);
 	}

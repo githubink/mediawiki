@@ -19,23 +19,30 @@
  * @author This, that and the other
  */
 
+use MediaWiki\MainConfigNames;
+use MediaWiki\Title\ForeignTitle;
+use MediaWiki\Title\NaiveImportTitleFactory;
+use MediaWiki\Title\Title;
+
 /**
- * @covers NaiveImportTitleFactory
+ * @covers \MediaWiki\Title\NaiveImportTitleFactory
  *
  * @group Title
+ *
+ * TODO convert to unit tests
  */
-class NaiveImportTitleFactoryTest extends MediaWikiTestCase {
+class NaiveImportTitleFactoryTest extends MediaWikiIntegrationTestCase {
 
-	protected function setUp() {
+	protected function setUp(): void {
 		parent::setUp();
 
-		$this->setContentLang( 'en' );
-		$this->setMwGlobals( [
-			'wgExtraNamespaces' => [ 100 => 'Portal' ],
+		$this->overrideConfigValues( [
+			MainConfigNames::LanguageCode => 'en',
+			MainConfigNames::ExtraNamespaces => [ 100 => 'Portal' ],
 		] );
 	}
 
-	public function basicProvider() {
+	public static function basicProvider() {
 		return [
 			[
 				new ForeignTitle( 0, '', 'MainNamespaceArticle' ),
@@ -80,7 +87,11 @@ class NaiveImportTitleFactoryTest extends MediaWikiTestCase {
 	 * @dataProvider basicProvider
 	 */
 	public function testBasic( ForeignTitle $foreignTitle, $titleText ) {
-		$factory = new NaiveImportTitleFactory();
+		$factory = new NaiveImportTitleFactory(
+			$this->getServiceContainer()->getContentLanguage(),
+			$this->getServiceContainer()->getNamespaceInfo(),
+			$this->getServiceContainer()->getTitleFactory()
+		);
 		$testTitle = $factory->createTitleFromForeignTitle( $foreignTitle );
 		$title = Title::newFromText( $titleText );
 

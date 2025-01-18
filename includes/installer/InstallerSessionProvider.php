@@ -20,12 +20,15 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Deployment
+ * @ingroup Installer
  */
 
-use MediaWiki\Session\SessionProvider;
+namespace MediaWiki\Installer;
+
+use MediaWiki\Request\WebRequest;
 use MediaWiki\Session\SessionBackend;
 use MediaWiki\Session\SessionInfo;
+use MediaWiki\Session\SessionProvider;
 
 class InstallerSessionProvider extends SessionProvider {
 	/**

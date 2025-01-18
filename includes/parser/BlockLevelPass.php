@@ -21,24 +21,36 @@
  *
  * @file
  * @ingroup Parser
+ * @internal
  */
+
+namespace MediaWiki\Parser;
+
+use LogicException;
+use StringUtils;
+
 class BlockLevelPass {
+	/** @var bool */
 	private $DTopen = false;
+	/** @var bool */
 	private $inPre = false;
+	/** @var string */
 	private $lastParagraph = '';
+	/** @var bool */
 	private $lineStart;
+	/** @var string */
 	private $text;
 
 	# State constants for the definition list colon extraction
-	const COLON_STATE_TEXT = 0;
-	const COLON_STATE_TAG = 1;
-	const COLON_STATE_TAGSTART = 2;
-	const COLON_STATE_CLOSETAG = 3;
-	const COLON_STATE_TAGSLASH = 4;
-	const COLON_STATE_COMMENT = 5;
-	const COLON_STATE_COMMENTDASH = 6;
-	const COLON_STATE_COMMENTDASHDASH = 7;
-	const COLON_STATE_LC = 8;
+	private const COLON_STATE_TEXT = 0;
+	private const COLON_STATE_TAG = 1;
+	private const COLON_STATE_TAGSTART = 2;
+	private const COLON_STATE_CLOSETAG = 3;
+	private const COLON_STATE_TAGSLASH = 4;
+	private const COLON_STATE_COMMENT = 5;
+	private const COLON_STATE_COMMENTDASH = 6;
+	private const COLON_STATE_COMMENTDASHDASH = 7;
+	private const COLON_STATE_LC = 8;
 
 	/**
 	 * Make lists from lines starting with ':', '*', '#', etc.
@@ -46,6 +58,7 @@ class BlockLevelPass {
 	 * @param string $text
 	 * @param bool $lineStart Whether or not this is at the start of a line.
 	 * @return string The lists rendered as HTML
+	 * @internal
 	 */
 	public static function doBlockLevels( $text, $lineStart ) {
 		$pass = new self( $text, $lineStart );
@@ -265,6 +278,7 @@ class BlockLevelPass {
 
 				# Close all the prefixes which aren't shared.
 				while ( $commonPrefixLength < $lastPrefixLength ) {
+					// @phan-suppress-next-line PhanTypeInvalidDimOffset
 					$output .= $this->closeList( $lastPrefix[$lastPrefixLength - 1] );
 					--$lastPrefixLength;
 				}
@@ -317,7 +331,7 @@ class BlockLevelPass {
 					'/<('
 						. "({$blockElems})|\\/({$antiBlockElems})|"
 						// Always suppresses
-						. '\\/?(tr|dt|dd|li)'
+						. '\\/?(tr|caption|dt|dd|li)'
 						. ')\\b/iS',
 					$t
 				);
@@ -325,7 +339,9 @@ class BlockLevelPass {
 					'/<('
 						. "\\/({$blockElems})|({$antiBlockElems})|"
 						// Never suppresses
-						. '\\/?(center|blockquote|div|hr|mw:)'
+						. '\\/?(center|blockquote|div|hr|mw:|aside|figure)|'
+						// Used as Parser::TOC_PLACEHOLDER
+						. 'meta property="mw:'
 						. ')\\b/iS',
 					$t
 				);
@@ -416,6 +432,7 @@ class BlockLevelPass {
 			}
 		}
 		while ( $prefixLength ) {
+			// @phan-suppress-next-line PhanTypeArraySuspicious $prefix set if $prefixLength is set
 			$output .= $this->closeList( $prefix2[$prefixLength - 1] );
 			--$prefixLength;
 			// Note that a paragraph is only ever opened when `prefixLength`
@@ -435,8 +452,7 @@ class BlockLevelPass {
 	 * @param string $str The string to split
 	 * @param string &$before Set to everything before the ':'
 	 * @param string &$after Set to everything after the ':'
-	 * @throws MWException
-	 * @return string The position of the ':', or false if none found
+	 * @return int|false The position of the ':', or false if none found
 	 */
 	private function findColonNoLinks( $str, &$before, &$after ) {
 		if ( !preg_match( '/:|<|-\{/', $str, $m, PREG_OFFSET_CAPTURE ) ) {
@@ -500,7 +516,8 @@ class BlockLevelPass {
 						# We're nested in language converter markup, but there
 						# are no close tags left.  Abort!
 						break 2;
-					} elseif ( $m[0][0] === '-{' ) {
+					}
+					if ( $m[0][0] === '-{' ) {
 						$i = $m[0][1] + 1;
 						$lcLevel++;
 					} elseif ( $m[0][0] === '}-' ) {
@@ -550,7 +567,7 @@ class BlockLevelPass {
 						} else {
 							# ignore the excess close tag, but keep looking for
 							# colons. (This matches Parsoid behavior.)
-							wfDebug( __METHOD__ . ": Invalid input; too many close tags\n" );
+							wfDebug( __METHOD__ . ": Invalid input; too many close tags" );
 						}
 						$state = self::COLON_STATE_TEXT;
 					}
@@ -584,16 +601,18 @@ class BlockLevelPass {
 					}
 					break;
 				default:
-					throw new MWException( "State machine error in " . __METHOD__ );
+					throw new LogicException( "State machine error in " . __METHOD__ );
 			}
 		}
 		if ( $ltLevel > 0 || $lcLevel > 0 ) {
 			wfDebug(
 				__METHOD__ . ": Invalid input; not enough close tags " .
-				"(level $ltLevel/$lcLevel, state $state)\n"
+				"(level $ltLevel/$lcLevel, state $state)"
 			);
-			return false;
 		}
 		return false;
 	}
 }
+
+/** @deprecated class alias since 1.43 */
+class_alias( BlockLevelPass::class, 'BlockLevelPass' );

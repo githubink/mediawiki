@@ -1,16 +1,18 @@
 <?php
-/**
- * Initialize a user preference based on the value
- * of another preference.
- *
- * @ingroup Maintenance
- */
 
+use MediaWiki\Maintenance\Maintenance;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that initializes a user preference
  * based on the value of another preference.
+ *
+ * This is done by copying any non-empty (i.e. excluding 0 or null) value for a given
+ * source preference to be the value of the target preference. Only users with the value set
+ * will have the target preference set.
  *
  * @ingroup Maintenance
  */
@@ -39,37 +41,38 @@ class InitUserPreference extends Maintenance {
 		$source = $this->getOption( 'source' );
 		$this->output( "Initializing '$target' based on the value of '$source'\n" );
 
-		$dbr = $this->getDB( DB_REPLICA );
-		$dbw = $this->getDB( DB_MASTER );
+		$dbr = $this->getReplicaDB();
+		$dbw = $this->getPrimaryDB();
 
 		$iterator = new BatchRowIterator(
 			$dbr,
-			'user_properties',
+			$dbr->newSelectQueryBuilder()
+				->from( 'user_properties' )
+				->select( [ 'up_user', 'up_value' ] )
+				->where( [
+					'up_property' => $source,
+					$dbr->expr( 'up_value', '!=', null ),
+					$dbr->expr( 'up_value', '!=', '0' ),
+				] )
+				->caller( __METHOD__ ),
 			[ 'up_user', 'up_property' ],
 			$this->getBatchSize()
 		);
-		$iterator->setFetchColumns( [ 'up_user', 'up_value' ] );
-		$iterator->addConditions( [
-			'up_property' => $source,
-			'up_value IS NOT NULL',
-			'up_value != 0',
-		] );
 
 		$processed = 0;
 		foreach ( $iterator as $batch ) {
 			foreach ( $batch as $row ) {
-				$values = [
-					'up_user' => $row->up_user,
-					'up_property' => $target,
-					'up_value' => $row->up_value,
-				];
-				$dbw->upsert(
-					'user_properties',
-					$values,
-					[ 'up_user', 'up_property' ],
-					$values,
-					__METHOD__
-				);
+				$dbw->newInsertQueryBuilder()
+					->insertInto( 'user_properties' )
+					->row( [
+						'up_user' => $row->up_user,
+						'up_property' => $target,
+						'up_value' => $row->up_value,
+					] )
+					->onDuplicateKeyUpdate()
+					->uniqueIndexFields( [ 'up_user', 'up_property' ] )
+					->set( [ 'up_value' => $row->up_value ] )
+					->caller( __METHOD__ )->execute();
 
 				$processed += $dbw->affectedRows();
 			}
@@ -80,5 +83,7 @@ class InitUserPreference extends Maintenance {
 	}
 }
 
-$maintClass = InitUserPreference::class; // Tells it to run the class
+// @codeCoverageIgnoreStart
+$maintClass = InitUserPreference::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

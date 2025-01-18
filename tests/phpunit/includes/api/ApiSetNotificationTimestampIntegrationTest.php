@@ -1,51 +1,58 @@
 <?php
 
-use MediaWiki\MediaWikiServices;
+namespace MediaWiki\Tests\Api;
 
 /**
  * @author Addshore
- * @covers ApiSetNotificationTimestamp
+ * @covers \MediaWiki\Api\ApiSetNotificationTimestamp
  * @group API
  * @group medium
  * @group Database
  */
 class ApiSetNotificationTimestampIntegrationTest extends ApiTestCase {
 
-	protected function setUp() {
-		parent::setUp();
-		self::$users[__CLASS__] = new TestUser( __CLASS__ );
-	}
-
 	public function testStuff() {
-		$user = self::$users[__CLASS__]->getUser();
-		$page = WikiPage::factory( Title::newFromText( 'UTPage' ) );
+		$user = $this->getTestUser()->getUser();
+		$watchedPageTitle = 'PageWatched';
+		$pageWatched = $this->getExistingTestPage( $watchedPageTitle );
+		$notWatchedPageTitle = 'PageNotWatched';
+		$pageNotWatched = $this->getExistingTestPage( $notWatchedPageTitle );
 
-		$user->addWatch( $page->getTitle() );
+		$watchlistManager = $this->getServiceContainer()->getWatchlistManager();
+		$watchlistManager->addWatch( $user, $pageWatched );
 
 		$result = $this->doApiRequestWithToken(
 			[
 				'action' => 'setnotificationtimestamp',
 				'timestamp' => '20160101020202',
-				'pageids' => $page->getId(),
+				'titles' => "$watchedPageTitle|$notWatchedPageTitle",
 			],
 			null,
 			$user
 		);
 
-		$this->assertEquals(
+		$this->assertTrue( $result[0]['batchcomplete'] );
+		$this->assertArrayEquals(
 			[
-				'batchcomplete' => true,
-				'setnotificationtimestamp' => [
-					[ 'ns' => 0, 'title' => 'UTPage', 'notificationtimestamp' => '2016-01-01T02:02:02Z' ]
+				[
+					'ns' => NS_MAIN,
+					'title' => $watchedPageTitle,
+					'notificationtimestamp' => '2016-01-01T02:02:02Z'
+				],
+				[
+					'ns' => NS_MAIN,
+					'title' => $notWatchedPageTitle,
+					'notwatched' => true
 				],
 			],
-			$result[0]
+			$result[0]['setnotificationtimestamp']
 		);
 
-		$watchedItemStore = MediaWikiServices::getInstance()->getWatchedItemStore();
+		$watchedItemStore = $this->getServiceContainer()->getWatchedItemStore();
 		$this->assertEquals(
-			$watchedItemStore->getNotificationTimestampsBatch( $user, [ $page->getTitle() ] ),
-			[ [ 'UTPage' => '20160101020202' ] ]
+			[ [ $watchedPageTitle => '20160101020202', $notWatchedPageTitle => false, ] ],
+			$watchedItemStore->getNotificationTimestampsBatch(
+				$user, [ $pageWatched->getTitle(), $pageNotWatched->getTitle() ] )
 		);
 	}
 

@@ -21,9 +21,15 @@
  * @ingroup Maintenance
  */
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Content\ContentHandler;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Revision\SlotRecord;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script which reads in text files
@@ -61,6 +67,7 @@ class ImportTextFiles extends Maintenance {
 		// support an arbitrary number of arguments.
 		$files = [];
 		$i = 0;
+		// phpcs:ignore Generic.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
 		while ( $arg = $this->getArg( $i++ ) ) {
 			if ( file_exists( $arg ) ) {
 				$files[$arg] = file_get_contents( $arg );
@@ -82,7 +89,7 @@ class ImportTextFiles extends Maintenance {
 		$this->output( "Importing $count pages...\n" );
 
 		if ( $userName === false ) {
-			$user = User::newSystemUser( 'Maintenance script', [ 'steal' => true ] );
+			$user = User::newSystemUser( User::MAINTENANCE_SCRIPT_USER, [ 'steal' => true ] );
 		} else {
 			$user = User::newFromName( $userName );
 		}
@@ -100,6 +107,7 @@ class ImportTextFiles extends Maintenance {
 		$failCount = 0;
 		$skipCount = 0;
 
+		$revLookup = $this->getServiceContainer()->getRevisionLookup();
 		foreach ( $files as $file => $text ) {
 			$pageName = $prefix . pathinfo( $file, PATHINFO_FILENAME );
 			$timestamp = $useTimestamp ? wfTimestamp( TS_UNIX, filemtime( $file ) ) : wfTimestampNow();
@@ -114,7 +122,7 @@ class ImportTextFiles extends Maintenance {
 
 			$exists = $title->exists();
 			$oldRevID = $title->getLatestRevID();
-			$oldRev = $oldRevID ? Revision::newFromId( $oldRevID ) : null;
+			$oldRevRecord = $oldRevID ? $revLookup->getRevisionById( $oldRevID ) : null;
 			$actualTitle = $title->getPrefixedText();
 
 			if ( $exists ) {
@@ -131,14 +139,18 @@ class ImportTextFiles extends Maintenance {
 				}
 			}
 
-			$rev = new WikiRevision( MediaWikiServices::getInstance()->getMainConfig() );
-			$rev->setText( rtrim( $text ) );
+			$content = ContentHandler::makeContent( rtrim( $text ), $title );
+			$rev = new WikiRevision();
+			$rev->setContent( SlotRecord::MAIN, $content );
 			$rev->setTitle( $title );
 			$rev->setUserObj( $user );
 			$rev->setComment( $summary );
 			$rev->setTimestamp( $timestamp );
 
-			if ( $exists && $overwrite && $rev->getContent()->equals( $oldRev->getContent() ) ) {
+			if ( $exists &&
+				$overwrite &&
+				$rev->getContent()->equals( $oldRevRecord->getContent( SlotRecord::MAIN ) )
+			) {
 				$this->output( "File for title $actualTitle contains no changes from the current " .
 					"revision. Skipping.\n" );
 				$skipCount++;
@@ -162,8 +174,7 @@ class ImportTextFiles extends Maintenance {
 			// Create the RecentChanges entry if necessary
 			if ( $rc && $status ) {
 				if ( $exists ) {
-					if ( is_object( $oldRev ) ) {
-						$oldContent = $oldRev->getContent();
+					if ( is_object( $oldRevRecord ) ) {
 						RecentChange::notifyEdit(
 							$timestamp,
 							$title,
@@ -171,13 +182,14 @@ class ImportTextFiles extends Maintenance {
 							$user,
 							$summary,
 							$oldRevID,
-							$oldRev->getTimestamp(),
+							$oldRevRecord->getTimestamp(),
 							$bot,
 							'',
-							$oldContent ? $oldContent->getSize() : 0,
-							$rev->getContent()->getSize(),
+							$oldRevRecord->getSize(),
+							$rev->getSize(),
 							$newId,
-							1 /* the pages don't need to be patrolled */
+							// the pages don't need to be patrolled
+							1
 						);
 					}
 				} else {
@@ -189,7 +201,7 @@ class ImportTextFiles extends Maintenance {
 						$summary,
 						$bot,
 						'',
-						$rev->getContent()->getSize(),
+						$rev->getSize(),
 						$newId,
 						1
 					);
@@ -204,5 +216,7 @@ class ImportTextFiles extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = ImportTextFiles::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

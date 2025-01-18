@@ -1,7 +1,6 @@
 <?php
+
 /**
- * Core installer command line interface.
- *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -18,21 +17,32 @@
  * http://www.gnu.org/copyleft/gpl.html
  *
  * @file
- * @ingroup Deployment
+ * @ingroup Installer
  */
 
+namespace MediaWiki\Installer;
+
+use MediaWiki\Context\RequestContext;
+use MediaWiki\Installer\Task\Task;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Message\Message;
+use MediaWiki\Parser\Sanitizer;
+use MediaWiki\Password\UserPasswordPolicy;
+use MediaWiki\Status\Status;
+use MediaWiki\User\User;
+use Wikimedia\Message\MessageSpecifier;
 
 /**
  * Class for the core installer command line interface.
  *
- * @ingroup Deployment
+ * @ingroup Installer
  * @since 1.17
  */
 class CliInstaller extends Installer {
+	/** @var bool */
 	private $specifiedScriptPath = false;
 
-	private $optionMap = [
+	private const OPTION_MAP = [
 		'dbtype' => 'wgDBtype',
 		'dbserver' => 'wgDBserver',
 		'dbname' => 'wgDBname',
@@ -41,6 +51,7 @@ class CliInstaller extends Installer {
 		'dbprefix' => 'wgDBprefix',
 		'dbtableoptions' => 'wgDBTableOptions',
 		'dbport' => 'wgDBport',
+		'dbssl' => 'wgDBssl',
 		'dbschema' => 'wgDBmwschema',
 		'dbpath' => 'wgSQLiteDataDir',
 		'server' => 'wgServer',
@@ -51,9 +62,10 @@ class CliInstaller extends Installer {
 	 * @param string $siteName
 	 * @param string|null $admin
 	 * @param array $options
+	 * @throws InstallException
 	 */
-	function __construct( $siteName, $admin = null, array $options = [] ) {
-		global $wgContLang;
+	public function __construct( $siteName, $admin = null, array $options = [] ) {
+		global $wgPasswordPolicy;
 
 		parent::__construct();
 
@@ -61,7 +73,7 @@ class CliInstaller extends Installer {
 			$this->specifiedScriptPath = true;
 		}
 
-		foreach ( $this->optionMap as $opt => $global ) {
+		foreach ( self::OPTION_MAP as $opt => $global ) {
 			if ( isset( $options[$opt] ) ) {
 				$GLOBALS[$global] = $options[$opt];
 				$this->setVar( $global, $options[$opt] );
@@ -73,22 +85,19 @@ class CliInstaller extends Installer {
 			$this->setVar( '_UserLang', $options['lang'] );
 			$wgLanguageCode = $options['lang'];
 			$this->setVar( 'wgLanguageCode', $wgLanguageCode );
-			$wgContLang = MediaWikiServices::getInstance()->getContentLanguage();
-			$wgLang = Language::factory( $options['lang'] );
+			$wgLang = MediaWikiServices::getInstance()->getLanguageFactory()
+				->getLanguage( $options['lang'] );
 			RequestContext::getMain()->setLanguage( $wgLang );
 		}
 
 		$this->setVar( 'wgSitename', $siteName );
 
-		$metaNS = $wgContLang->ucfirst( str_replace( ' ', '_', $siteName ) );
+		$contLang = MediaWikiServices::getInstance()->getContentLanguage();
+		$metaNS = $contLang->ucfirst( str_replace( ' ', '_', $siteName ) );
 		if ( $metaNS == 'MediaWiki' ) {
 			$metaNS = 'Project';
 		}
 		$this->setVar( 'wgMetaNamespace', $metaNS );
-
-		if ( $admin ) {
-			$this->setVar( '_AdminName', $admin );
-		}
 
 		if ( !isset( $options['installdbuser'] ) ) {
 			$this->setVar( '_InstallUser',
@@ -105,8 +114,25 @@ class CliInstaller extends Installer {
 			$this->setVar( '_CreateDBAccount', true );
 		}
 
-		if ( isset( $options['pass'] ) ) {
-			$this->setVar( '_AdminPassword', $options['pass'] );
+		if ( $admin ) {
+			$this->setVar( '_AdminName', $admin );
+			if ( isset( $options['pass'] ) ) {
+				$adminUser = User::newFromName( $admin );
+				if ( !$adminUser ) {
+					throw new InstallException( Status::newFatal( 'config-admin-name-invalid' ) );
+				}
+				$upp = new UserPasswordPolicy(
+					$wgPasswordPolicy['policies'],
+					$wgPasswordPolicy['checks']
+				);
+				$status = $upp->checkUserPasswordForGroups( $adminUser, $options['pass'],
+					[ 'bureaucrat', 'sysop', 'interface-admin' ] ); // per Installer::createSysop()
+				if ( !$status->isGood() ) {
+					throw new InstallException( Status::newFatal(
+						$status->getMessage( 'config-admin-error-password-invalid' ) ) );
+				}
+				$this->setVar( '_AdminPassword', $options['pass'] );
+			}
 		}
 
 		// Detect and inject any extension found
@@ -114,22 +140,30 @@ class CliInstaller extends Installer {
 			$status = $this->validateExtensions(
 				'extension', 'extensions', $options['extensions'] );
 			if ( !$status->isOK() ) {
-				$this->showStatusMessage( $status );
+				throw new InstallException( $status );
 			}
 			$this->setVar( '_Extensions', $status->value );
 		} elseif ( isset( $options['with-extensions'] ) ) {
-			$this->setVar( '_Extensions', array_keys( $this->findExtensions() ) );
+			$status = $this->findExtensions();
+			if ( !$status->isOK() ) {
+				throw new InstallException( $status );
+			}
+			$this->setVar( '_Extensions', array_keys( $status->value ) );
 		}
 
 		// Set up the default skins
 		if ( isset( $options['skins'] ) ) {
 			$status = $this->validateExtensions( 'skin', 'skins', $options['skins'] );
 			if ( !$status->isOK() ) {
-				$this->showStatusMessage( $status );
+				throw new InstallException( $status );
 			}
 			$skins = $status->value;
 		} else {
-			$skins = array_keys( $this->findExtensions( 'skins' ) );
+			$status = $this->findExtensions( 'skins' );
+			if ( !$status->isOK() ) {
+				throw new InstallException( $status );
+			}
+			$skins = array_keys( $status->value );
 		}
 		$this->setVar( '_Skins', $skins );
 
@@ -137,6 +171,8 @@ class CliInstaller extends Installer {
 			$skinNames = array_map( 'strtolower', $skins );
 			$this->setVar( 'wgDefaultSkin', $this->getDefaultSkin( $skinNames ) );
 		}
+
+		$this->setVar( '_WithDevelopmentSettings', isset( $options['with-developmentsettings'] ) );
 	}
 
 	private function validateExtensions( $type, $directory, $nameLists ) {
@@ -163,11 +199,12 @@ class CliInstaller extends Installer {
 
 	/**
 	 * Main entry point.
+	 * @return Status
 	 */
 	public function execute() {
 		// If APC is available, use that as the MainCacheType, instead of nothing.
 		// This is hacky and should be consolidated with WebInstallerOptions.
-		// This is here instead of in __construct(), because it should run run after
+		// This is here instead of in __construct(), because it should run after
 		// doEnvironmentChecks(), which populates '_Caches'.
 		if ( count( $this->getVar( '_Caches' ) ) ) {
 			// We detected a CACHE_ACCEL implementation, use it.
@@ -176,15 +213,20 @@ class CliInstaller extends Installer {
 
 		$vars = Installer::getExistingLocalSettings();
 		if ( $vars ) {
-			$this->showStatusMessage(
-				Status::newFatal( "config-localsettings-cli-upgrade" )
-			);
+			$status = Status::newFatal( "config-localsettings-cli-upgrade" );
+			$this->showStatusMessage( $status );
+			return $status;
 		}
 
-		$this->performInstallation(
+		$status = $this->performInstallation(
 			[ $this, 'startStage' ],
 			[ $this, 'endStage' ]
 		);
+		if ( $status->isOK() ) {
+			return Status::newGood();
+		} else {
+			return $status;
+		}
 	}
 
 	/**
@@ -197,61 +239,65 @@ class CliInstaller extends Installer {
 		$ls->writeFile( "$path/LocalSettings.php" );
 	}
 
-	public function startStage( $step ) {
-		// Messages: config-install-database, config-install-tables, config-install-interwiki,
-		// config-install-stats, config-install-keys, config-install-sysop, config-install-mainpage,
-		// config-install-extensions
-		$this->showMessage( "config-install-$step" );
+	/**
+	 * @param Task $task
+	 */
+	public function startStage( $task ) {
+		// @phan-suppress-next-line SecurityCheck-XSS -- it's CLI
+		echo $this->formatMessage( $task->getDescriptionMessage() ) . '... ';
 	}
 
-	public function endStage( $step, $status ) {
+	/**
+	 * @param Task $task
+	 * @param Status $status
+	 */
+	public function endStage( $task, $status ) {
 		$this->showStatusMessage( $status );
-		$this->showMessage( 'config-install-step-done' );
+		if ( $status->isOK() ) {
+			$this->showMessage( 'config-install-step-done' );
+		} else {
+			$this->showError( 'config-install-step-failed' );
+		}
 	}
 
 	public function showMessage( $msg, ...$params ) {
+		// @phan-suppress-next-line SecurityCheck-XSS
 		echo $this->getMessageText( $msg, $params ) . "\n";
 		flush();
 	}
 
 	public function showError( $msg, ...$params ) {
+		// @phan-suppress-next-line SecurityCheck-XSS
 		echo "***{$this->getMessageText( $msg, $params )}***\n";
 		flush();
 	}
 
 	/**
-	 * @param string $msg
-	 * @param array $params
-	 *
+	 * @param string|MessageSpecifier $msg
+	 * @param (string|int|float)[] $params Message parameters
 	 * @return string
 	 */
 	protected function getMessageText( $msg, $params ) {
-		$text = wfMessage( $msg, $params )->parse();
-
-		$text = preg_replace( '/<a href="(.*?)".*?>(.*?)<\/a>/', '$2 &lt;$1&gt;', $text );
-
-		return Sanitizer::stripAllTags( $text );
+		return $this->formatMessage( wfMessage( $msg, $params ) );
 	}
 
 	/**
-	 * Dummy
+	 * @param Message $message
+	 * @return string
 	 */
-	public function showHelpBox( $msg /*, ... */ ) {
+	protected function formatMessage( $message ) {
+		$text = $message->parse();
+		$text = preg_replace( '/<a href="(.*?)".*?>(.*?)<\/a>/', '$2 &lt;$1&gt;', $text );
+		return Sanitizer::stripAllTags( $text );
 	}
 
 	public function showStatusMessage( Status $status ) {
-		$warnings = array_merge( $status->getWarningsArray(),
-			$status->getErrorsArray() );
-
-		if ( count( $warnings ) !== 0 ) {
-			foreach ( $warnings as $w ) {
-				$this->showMessage( ...$w );
-			}
+		// Show errors at the end in CLI installer to make them easier to notice
+		foreach ( $status->getMessages( 'warning' ) as $msg ) {
+			$this->showMessage( $msg );
 		}
-
-		if ( !$status->isOK() ) {
-			echo "\n";
-			exit( 1 );
+		foreach ( $status->getMessages( 'error' ) as $msg ) {
+			$this->showMessage( $msg );
 		}
 	}
 
@@ -264,7 +310,8 @@ class CliInstaller extends Installer {
 	}
 
 	protected function envGetDefaultServer() {
-		return null; // Do not guess if installing from CLI
+		// Use a basic value if the user didn't pass in --server
+		return 'http://localhost';
 	}
 
 	public function dirIsExecutable( $dir, $url ) {
