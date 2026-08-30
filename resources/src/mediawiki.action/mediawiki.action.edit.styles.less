@@ -1,13 +1,30 @@
 /*!
  * Styles for elements of the editing form.
  */
+@import 'mediawiki.skin.variables.less';
 
 /* stylelint-disable selector-class-pattern */
+
+#mw-sitecsspreview,
+#mw-sitejspreview,
+#mw-usercsspreview,
+#mw-userjspreview {
+	direction: ltr;
+	unicode-bidi: embed;
+}
+
+/* Stop floats from intruding into edit area in previews */
+#editform,
+#toolbar,
+#wpTextbox1 {
+	clear: both;
+}
 
 /*
  * Add a bit of margin space between the preview and the toolbar.
  * This replaces the ugly <p><br /></p> we used to insert into the page source
  */
+.previewnote,
 #wikiPreview.ontop {
 	margin-bottom: 1em;
 }
@@ -47,6 +64,21 @@
 		margin-right: 1em;
 	}
 
+	.mw-editpage-watchlistLabels {
+		margin-bottom: 1em;
+
+		.mw-widgets-tagMultiselectWidget-nojs {
+			.oo-ui-checkboxMultiselectInputWidget .oo-ui-fieldLayout-align-inline {
+				display: inline-block;
+				margin-right: @spacing-75;
+			}
+
+			.oo-ui-checkboxMultiselectInputWidget .oo-ui-fieldLayout {
+				padding: 0;
+			}
+		}
+	}
+
 	.editHelp {
 		margin-left: 0.5em;
 		vertical-align: middle;
@@ -57,12 +89,10 @@
 	}
 
 	.editOptions {
-		border-radius: 0 0 2px 2px;
+		border-radius: 0 0 @border-radius-base @border-radius-base;
 	}
 
-	// Use buttonElement to include ButtonInputWidget and ButtonWidget
-	.editButtons .oo-ui-buttonElement,
-	.editHelp {
+	.editButtons {
 		margin-top: 0.5em;
 	}
 
@@ -76,4 +106,13 @@
 	.templatesUsed .mw-redirect {
 		font-style: italic;
 	}
+}
+
+.editOptions {
+	background-color: @background-color-neutral;
+	color: @color-base;
+	border: @border-subtle;
+	border-top: 0;
+	padding: 1em 1em 1.5em 1em;
+	margin-bottom: 2em;
 }

@@ -1,34 +1,58 @@
-const Page = require( 'wdio-mediawiki/Page' ),
-	Api = require( 'wdio-mediawiki/Api' );
+import Page from 'wdio-mediawiki/Page.js';
+import { waitForModuleState } from 'wdio-mediawiki/Util.js';
 
 class EditPage extends Page {
-	get content() { return browser.element( '#wpTextbox1' ); }
-	get conflictingContent() { return browser.element( '#wpTextbox2' ); }
-	get displayedContent() { return browser.element( '#mw-content-text .mw-parser-output' ); }
-	get heading() { return browser.element( '#firstHeading' ); }
-	get save() { return browser.element( '#wpSave' ); }
-	get previewButton() { return browser.element( '#wpPreview' ); }
-
-	openForEditing( title ) {
-		super.openTitle( title, { action: 'edit' } );
+	get content() {
+		return $( '#wpTextbox1' );
 	}
 
-	preview( name, content ) {
-		this.openForEditing( name );
-		this.content.setValue( content );
-		this.previewButton.click();
+	get conflictingContent() {
+		return $( '#wpTextbox2' );
 	}
 
-	edit( name, content ) {
-		this.openForEditing( name );
-		this.content.setValue( content );
-		this.save.click();
+	get displayedContent() {
+		return $( '#mw-content-text .mw-parser-output' );
 	}
 
-	// @deprecated Use wdio-mediawiki/Api#edit() instead.
-	apiEdit( name, content ) {
-		return Api.edit( name, content );
+	get heading() {
+		return $( '#firstHeading' );
+	}
+
+	get save() {
+		return $( '#wpSave' );
+	}
+
+	get previewButton() {
+		return $( '#wpPreview' );
+	}
+
+	async openForEditing( title ) {
+		await super.openTitle( title, { action: 'submit', vehidebetadialog: 1, hidewelcomedialog: 1 } );
+		// Compatibility with CodeMirror extension (T324879)
+		await waitForModuleState( 'mediawiki.base' );
+		const hasToolbar = await this.save.isExisting() && await browser.execute( () => mw.loader.getState( 'ext.wikiEditor' ) !== null );
+		if ( !hasToolbar ) {
+			return;
+		}
+		await $( '#wikiEditor-ui-toolbar' ).waitForDisplayed();
+		const cmButton = $( '.mw-editbutton-codemirror-active' );
+		if ( await cmButton.isExisting() ) {
+			await cmButton.click();
+			await browser.waitUntil( async () => !( await cmButton.getAttribute( 'class' ) ).includes( 'mw-editbutton-codemirror-active' ) );
+		}
+	}
+
+	async preview( name, content ) {
+		await this.openForEditing( name );
+		await this.content.setValue( content );
+		await this.previewButton.click();
+	}
+
+	async edit( name, content ) {
+		await this.openForEditing( name );
+		await this.content.setValue( content );
+		await this.save.click();
 	}
 }
 
-module.exports = new EditPage();
+export default new EditPage();

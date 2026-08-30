@@ -1,17 +1,14 @@
 {
 	"root": true,
 	"extends": [
-		"wikimedia/server"
+		"wikimedia/selenium"
 	],
-	"env": {
-		"mocha": true
-	},
 	"globals": {
-		"browser": false,
-		"mw": false
+		"mw": "readonly",
+		"document": "readonly"
 	},
-	"rules": {
-		"no-console": "off",
-		"prefer-template": "off"
+	"parserOptions": {
+		"ecmaVersion": 2022,
+		"sourceType": "module"
 	}
 }

@@ -1,6 +1,6 @@
 {
 	"prefix": "oo-ui-icon",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"images": {
 		"add": {
 			"file": "../wikimediaui/images/icons/add.svg"
@@ -29,8 +29,14 @@
 		"close": {
 			"file": "../wikimediaui/images/icons/close.svg"
 		},
+		"configure": {
+			"file": "../wikimediaui/images/icons/configure.svg"
+		},
 		"ellipsis": {
 			"file": "../wikimediaui/images/icons/ellipsis.svg"
+		},
+		"verticalEllipsis": {
+			"file": "../wikimediaui/images/icons/verticalEllipsis.svg"
 		},
 		"feedback": {
 			"file": {
@@ -38,14 +44,26 @@
 				"rtl": "../wikimediaui/images/icons/feedback-rtl.svg"
 			}
 		},
+		"filter": {
+			"file": "../wikimediaui/images/icons/filter.svg"
+		},
 		"funnel": {
+			"file": "../wikimediaui/images/icons/funnel.svg"
+		},
+		"funnelMatch": {
 			"file": {
-				"ltr": "../wikimediaui/images/icons/funnel-ltr.svg",
-				"rtl": "../wikimediaui/images/icons/funnel-rtl.svg"
+				"ltr": "../wikimediaui/images/icons/funnelMatch-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/funnelMatch-rtl.svg"
 			}
+		},
+		"hand": {
+			"file": "../wikimediaui/images/icons/hand.svg"
 		},
 		"heart": {
 			"file": "../wikimediaui/images/icons/heart.svg"
+		},
+		"heartOutline": {
+			"file": "../wikimediaui/images/icons/heartOutline.svg"
 		},
 		"help": {
 			"file": {
@@ -65,6 +83,18 @@
 				}
 			}
 		},
+		"helpNoticeFilled": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/helpNoticeFilled-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/helpNoticeFilled-rtl.svg",
+				"lang": {
+					"he,yi": "../wikimediaui/images/icons/helpNoticeFilled-ltr.svg"
+				}
+			}
+		},
+		"home": {
+			"file": "../wikimediaui/images/icons/home.svg"
+		},
 		"key": {
 			"file": "../wikimediaui/images/icons/key.svg"
 		},
@@ -74,11 +104,29 @@
 		"lightbulb": {
 			"file": "../wikimediaui/images/icons/lightbulb.svg"
 		},
+		"lightbulbOutline": {
+			"file": "../wikimediaui/images/icons/lightbulbOutline.svg"
+		},
+		"logIn": {
+			"file": {
+				"ltr": "../wikimediaui/images/icons/logIn-ltr.svg",
+				"rtl": "../wikimediaui/images/icons/logIn-rtl.svg"
+			}
+		},
 		"logOut": {
 			"file": {
 				"ltr": "../wikimediaui/images/icons/logOut-ltr.svg",
 				"rtl": "../wikimediaui/images/icons/logOut-rtl.svg"
 			}
+		},
+		"magicWand": {
+			"file": "../wikimediaui/images/icons/magicWand.svg"
+		},
+		"network": {
+			"file": "../wikimediaui/images/icons/network.svg"
+		},
+		"networkOff": {
+			"file": "../wikimediaui/images/icons/networkOff.svg"
 		},
 		"newWindow": {
 			"file": {
@@ -89,10 +137,19 @@
 		"pageSettings": {
 			"file": "../wikimediaui/images/icons/pageSettings.svg"
 		},
+		"power": {
+			"file": "../wikimediaui/images/icons/power.svg"
+		},
 		"printer": {
 			"file": "../wikimediaui/images/icons/printer.svg"
 		},
 		"reload": {
+			"file": "../wikimediaui/images/icons/reload.svg"
+		},
+		"restart": {
+			"file": "../wikimediaui/images/icons/restart.svg"
+		},
+		"rotate": {
 			"file": "../wikimediaui/images/icons/reload.svg"
 		},
 		"search": {

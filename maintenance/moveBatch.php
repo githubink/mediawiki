@@ -2,40 +2,23 @@
 /**
  * Move a batch of pages.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  * @author Tim Starling
  *
- * USAGE: php moveBatch.php [-u <user>] [-r <reason>] [-i <interval>] [-noredirects] [listfile]
- *
- * [listfile] - file with two titles per line, separated with pipe characters;
- * the first title is the source, the second is the destination.
- * Standard input is used if listfile is not given.
- * <user> - username to perform moves as
- * <reason> - reason to be given for moves
- * <interval> - number of seconds to sleep after each move
- * <noredirects> - suppress creation of redirects
  *
  * This will print out error codes from Title::moveTo() if something goes wrong,
  * e.g. immobile_namespace for namespaces which can't be moved
  */
 
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script to move a batch of pages.
@@ -50,21 +33,19 @@ class MoveBatch extends Maintenance {
 		$this->addOption( 'r', "Reason to move page", false, true );
 		$this->addOption( 'i', "Interval to sleep between moves" );
 		$this->addOption( 'noredirects', "Suppress creation of redirects" );
-		$this->addArg( 'listfile', 'List of pages to move, newline delimited', false );
+		$this->addArg(
+			'listfile',
+			'List of pages to move (newline delimited) in the format <existing page name>|<new name>',
+			false
+		);
 	}
 
 	public function execute() {
-		global $wgUser;
-
-		# Change to current working directory
-		$oldCwd = getcwd();
-		chdir( $oldCwd );
-
 		# Options processing
-		$user = $this->getOption( 'u', false );
+		$username = $this->getOption( 'u', false );
 		$reason = $this->getOption( 'r', '' );
 		$interval = $this->getOption( 'i', 0 );
-		$noredirects = $this->hasOption( 'noredirects' );
+		$noRedirects = $this->hasOption( 'noredirects' );
 		if ( $this->hasArg( 0 ) ) {
 			$file = fopen( $this->getArg( 0 ), 'r' );
 		} else {
@@ -75,42 +56,44 @@ class MoveBatch extends Maintenance {
 		if ( !$file ) {
 			$this->fatalError( "Unable to read file, exiting" );
 		}
-		if ( $user === false ) {
-			$wgUser = User::newSystemUser( 'Move page script', [ 'steal' => true ] );
+		if ( $username === false ) {
+			$user = User::newSystemUser( 'Move page script', [ 'steal' => true ] );
 		} else {
-			$wgUser = User::newFromName( $user );
+			$user = User::newFromName( $username );
 		}
-		if ( !$wgUser ) {
+		if ( !$user || !$user->isRegistered() ) {
 			$this->fatalError( "Invalid username" );
 		}
 
+		$movePageFactory = $this->getServiceContainer()->getMovePageFactory();
+
 		# Setup complete, now start
-		$dbw = $this->getDB( DB_MASTER );
-		for ( $linenum = 1; !feof( $file ); $linenum++ ) {
+		for ( $lineNum = 1; !feof( $file ); $lineNum++ ) {
 			$line = fgets( $file );
 			if ( $line === false ) {
 				break;
 			}
 			$parts = array_map( 'trim', explode( '|', $line ) );
-			if ( count( $parts ) != 2 ) {
-				$this->error( "Error on line $linenum, no pipe character" );
+			if ( count( $parts ) !== 2 ) {
+				$this->error( "Error on line $lineNum, no pipe character" );
 				continue;
 			}
 			$source = Title::newFromText( $parts[0] );
 			$dest = Title::newFromText( $parts[1] );
-			if ( is_null( $source ) || is_null( $dest ) ) {
-				$this->error( "Invalid title on line $linenum" );
+			if ( $source === null || $dest === null ) {
+				$this->error( "Invalid title on line $lineNum" );
 				continue;
 			}
 
 			$this->output( $source->getPrefixedText() . ' --> ' . $dest->getPrefixedText() );
-			$this->beginTransaction( $dbw, __METHOD__ );
-			$mp = new MovePage( $source, $dest );
-			$status = $mp->move( $wgUser, $reason, !$noredirects );
+			$this->beginTransactionRound( __METHOD__ );
+			$mp = $movePageFactory->newMovePage( $source, $dest );
+			$status = $mp->move( $user, $reason, !$noRedirects );
 			if ( !$status->isOK() ) {
-				$this->output( "\nFAILED: " . $status->getWikiText( false, false, 'en' ) );
+				$this->output( " FAILED\n" );
+				$this->error( $status );
 			}
-			$this->commitTransaction( $dbw, __METHOD__ );
+			$this->commitTransactionRound( __METHOD__ );
 			$this->output( "\n" );
 
 			if ( $interval ) {
@@ -120,5 +103,7 @@ class MoveBatch extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = MoveBatch::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

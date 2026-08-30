@@ -2,93 +2,68 @@
 
 namespace MediaWiki\Tests\Storage;
 
+use ConcatenatedGzipHistoryBlob;
 use InvalidArgumentException;
-use Language;
-use MediaWiki\MediaWikiServices;
+use MediaWiki\ExternalStore\ExternalStoreFactory;
+use MediaWiki\Storage\BadBlobException;
+use MediaWiki\Storage\BlobAccessException;
 use MediaWiki\Storage\SqlBlobStore;
-use MediaWikiTestCase;
-use stdClass;
-use TitleValue;
+use MediaWikiIntegrationTestCase;
+use StatusValue;
+use Wikimedia\Rdbms\LoadBalancer;
 
 /**
- * @covers \MediaWiki\Storage\SqlBlobStore
  * @group Database
+ * @covers \MediaWiki\Storage\SqlBlobStore
  */
-class SqlBlobStoreTest extends MediaWikiTestCase {
+class SqlBlobStoreTest extends MediaWikiIntegrationTestCase {
 
-	/**
-	 * @return SqlBlobStore
-	 */
-	public function getBlobStore( $legacyEncoding = false, $compressRevisions = false ) {
-		$services = MediaWikiServices::getInstance();
-
-		$store = new SqlBlobStore(
+	public function createBlobStore(): SqlBlobStore {
+		$services = $this->getServiceContainer();
+		return new SqlBlobStore(
 			$services->getDBLoadBalancer(),
 			$services->getExternalStoreAccess(),
 			$services->getMainWANObjectCache()
 		);
-
-		if ( $compressRevisions ) {
-			$store->setCompressBlobs( $compressRevisions );
-		}
-		if ( $legacyEncoding ) {
-			$store->setLegacyEncoding( $legacyEncoding, Language::factory( 'en' ) );
-		}
-
-		return $store;
 	}
 
-	/**
-	 * @covers \MediaWiki\Storage\SqlBlobStore::getCompressBlobs()
-	 * @covers \MediaWiki\Storage\SqlBlobStore::setCompressBlobs()
-	 */
 	public function testGetSetCompressRevisions() {
-		$store = $this->getBlobStore();
+		$store = $this->createBlobStore();
 		$this->assertFalse( $store->getCompressBlobs() );
 		$store->setCompressBlobs( true );
 		$this->assertTrue( $store->getCompressBlobs() );
 	}
 
-	/**
-	 * @covers \MediaWiki\Storage\SqlBlobStore::getLegacyEncoding()
-	 * @covers \MediaWiki\Storage\SqlBlobStore::getLegacyEncodingConversionLang()
-	 * @covers \MediaWiki\Storage\SqlBlobStore::setLegacyEncoding()
-	 */
 	public function testGetSetLegacyEncoding() {
-		$store = $this->getBlobStore();
+		$store = $this->createBlobStore();
 		$this->assertFalse( $store->getLegacyEncoding() );
-		$this->assertNull( $store->getLegacyEncodingConversionLang() );
-		$en = Language::factory( 'en' );
-		$store->setLegacyEncoding( 'foo', $en );
+		$store->setLegacyEncoding( 'foo' );
 		$this->assertSame( 'foo', $store->getLegacyEncoding() );
-		$this->assertSame( $en, $store->getLegacyEncodingConversionLang() );
 	}
 
-	/**
-	 * @covers \MediaWiki\Storage\SqlBlobStore::getCacheExpiry()
-	 * @covers \MediaWiki\Storage\SqlBlobStore::setCacheExpiry()
-	 */
 	public function testGetSetCacheExpiry() {
-		$store = $this->getBlobStore();
+		$store = $this->createBlobStore();
 		$this->assertSame( 604800, $store->getCacheExpiry() );
 		$store->setCacheExpiry( 12 );
 		$this->assertSame( 12, $store->getCacheExpiry() );
 	}
 
-	/**
-	 * @covers \MediaWiki\Storage\SqlBlobStore::getUseExternalStore()
-	 * @covers \MediaWiki\Storage\SqlBlobStore::setUseExternalStore()
-	 */
 	public function testGetSetUseExternalStore() {
-		$store = $this->getBlobStore();
+		$store = $this->createBlobStore();
 		$this->assertFalse( $store->getUseExternalStore() );
 		$store->setUseExternalStore( true );
 		$this->assertTrue( $store->getUseExternalStore() );
 	}
 
-	public function provideDecompress() {
+	private static function makeObjectBlob( $text ) {
+		$obj = new ConcatenatedGzipHistoryBlob();
+		$obj->setText( $text );
+		return serialize( $obj );
+	}
+
+	public static function provideDecompress() {
 		yield '(no legacy encoding), empty in empty out' => [ false, '', [], '' ];
-		yield '(no legacy encoding), empty in empty out' => [ false, 'A', [], 'A' ];
+		yield '(no legacy encoding), string in string out' => [ false, 'A', [], 'A' ];
 		yield '(no legacy encoding), error flag -> false' => [ false, 'X', [ 'error' ], false ];
 		yield '(no legacy encoding), string in with gzip flag returns string' => [
 			// gzip string below generated with gzdeflate( 'AAAABBAAA' )
@@ -98,17 +73,16 @@ class SqlBlobStoreTest extends MediaWikiTestCase {
 			// gzip string below generated with serialize( 'JOJO' )
 			false, "s:4:\"JOJO\";", [ 'object' ], false,
 		];
+
 		yield '(no legacy encoding), serialized object in with object flag returns string' => [
 			false,
-			// Using a TitleValue object as it has a getText method (which is needed)
-			serialize( new TitleValue( 0, 'HHJJDDFF' ) ),
+			self::makeObjectBlob( 'HHJJDDFF' ),
 			[ 'object' ],
 			'HHJJDDFF',
 		];
 		yield '(no legacy encoding), serialized object in with object & gzip flag returns string' => [
 			false,
-			// Using a TitleValue object as it has a getText method (which is needed)
-			gzdeflate( serialize( new TitleValue( 0, '8219JJJ840' ) ) ),
+			gzdeflate( self::makeObjectBlob( '8219JJJ840' ) ),
 			[ 'object', 'gzip' ],
 			'8219JJJ840',
 		];
@@ -126,13 +100,13 @@ class SqlBlobStoreTest extends MediaWikiTestCase {
 		];
 		yield '(ISO-8859-1 encoding), serialized object in with object flags returns string' => [
 			'ISO-8859-1',
-			serialize( new TitleValue( 0, iconv( 'utf-8', 'ISO-8859-1', "3®Àþ3" ) ) ),
+			self::makeObjectBlob( iconv( 'utf-8', 'ISO-8859-1', "3®Àþ3" ) ),
 			[ 'object' ],
 			'3®Àþ3',
 		];
 		yield '(ISO-8859-1 encoding), serialized object in with object & gzip flags returns string' => [
 			'ISO-8859-1',
-			gzdeflate( serialize( new TitleValue( 0, iconv( 'utf-8', 'ISO-8859-1', "2®Àþ2" ) ) ) ),
+			gzdeflate( self::makeObjectBlob( iconv( 'utf-8', 'ISO-8859-1', "2®Àþ2" ) ) ),
 			[ 'gzip', 'object' ],
 			'2®Àþ2',
 		];
@@ -152,107 +126,219 @@ class SqlBlobStoreTest extends MediaWikiTestCase {
 
 	/**
 	 * @dataProvider provideDecompress
-	 * @covers \MediaWiki\Storage\SqlBlobStore::decompressData
-	 *
 	 * @param string|bool $legacyEncoding
 	 * @param mixed $data
 	 * @param array $flags
 	 * @param mixed $expected
 	 */
 	public function testDecompressData( $legacyEncoding, $data, $flags, $expected ) {
-		$store = $this->getBlobStore( $legacyEncoding );
+		$store = $this->createBlobStore();
+
+		if ( $legacyEncoding ) {
+			$store->setLegacyEncoding( $legacyEncoding );
+		}
+
 		$this->assertSame(
 			$expected,
 			$store->decompressData( $data, $flags )
 		);
 	}
 
-	/**
-	 * @covers \MediaWiki\Storage\SqlBlobStore::decompressData
-	 */
-	public function testDecompressData_InvalidArgumentException() {
-		$store = $this->getBlobStore();
-
-		$this->setExpectedException( InvalidArgumentException::class );
-		$store->decompressData( false, [] );
-	}
-
-	/**
-	 * @covers \MediaWiki\Storage\SqlBlobStore::compressData
-	 */
 	public function testCompressRevisionTextUtf8() {
-		$store = $this->getBlobStore();
-		$row = new stdClass;
-		$row->old_text = "Wiki est l'\xc3\xa9cole superieur !";
+		$store = $this->createBlobStore();
+		$row = (object)[ 'old_text' => "Wiki est l'\xc3\xa9cole superieur !" ];
 		$row->old_flags = $store->compressData( $row->old_text );
-		$this->assertTrue( strpos( $row->old_flags, 'utf-8' ) !== false,
+		$this->assertStringContainsString( 'utf-8', $row->old_flags,
 			"Flags should contain 'utf-8'" );
-		$this->assertFalse( strpos( $row->old_flags, 'gzip' ) !== false,
+		$this->assertStringNotContainsString( 'gzip', $row->old_flags,
 			"Flags should not contain 'gzip'" );
 		$this->assertEquals( "Wiki est l'\xc3\xa9cole superieur !",
 			$row->old_text, "Direct check" );
 	}
 
 	/**
-	 * @covers \MediaWiki\Storage\SqlBlobStore::compressData
+	 * @requires extension zlib
 	 */
 	public function testCompressRevisionTextUtf8Gzip() {
-		$store = $this->getBlobStore( false, true );
-		$this->checkPHPExtension( 'zlib' );
+		$store = $this->createBlobStore();
+		$store->setCompressBlobs( true );
 
-		$row = new stdClass;
-		$row->old_text = "Wiki est l'\xc3\xa9cole superieur !";
+		$row = (object)[ 'old_text' => "Wiki est l'\xc3\xa9cole superieur !" ];
 		$row->old_flags = $store->compressData( $row->old_text );
-		$this->assertTrue( strpos( $row->old_flags, 'utf-8' ) !== false,
+		$this->assertStringContainsString( 'utf-8', $row->old_flags,
 			"Flags should contain 'utf-8'" );
-		$this->assertTrue( strpos( $row->old_flags, 'gzip' ) !== false,
+		$this->assertStringContainsString( 'gzip', $row->old_flags,
 			"Flags should contain 'gzip'" );
 		$this->assertEquals( "Wiki est l'\xc3\xa9cole superieur !",
 			gzinflate( $row->old_text ), "Direct check" );
 	}
 
-	public function provideBlobs() {
+	public static function provideBlobs() {
 		yield [ '' ];
 		yield [ 'someText' ];
-		yield [ "sammansättningar" ];
+		yield [ "söme\ntäxt" ];
+	}
+
+	public function testSimpleStoreGetBlobKnownBad() {
+		$store = $this->createBlobStore();
+		$this->expectException( BadBlobException::class );
+		$store->getBlob( 'bad:lost?bug=T12345' );
 	}
 
 	/**
+	 * @param string $blob
 	 * @dataProvider provideBlobs
-	 * @covers \MediaWiki\Storage\SqlBlobStore::storeBlob
-	 * @covers \MediaWiki\Storage\SqlBlobStore::getBlob
 	 */
 	public function testSimpleStoreGetBlobSimpleRoundtrip( $blob ) {
-		$store = $this->getBlobStore();
+		$store = $this->createBlobStore();
 		$address = $store->storeBlob( $blob );
 		$this->assertSame( $blob, $store->getBlob( $address ) );
 	}
 
+	public function testSimpleStorageGetBlobBatchSimpleEmpty() {
+		$store = $this->createBlobStore();
+		$this->assertArrayEquals(
+			[],
+			$store->getBlobBatch( [] )->getValue()
+		);
+	}
+
+	/**
+	 * @param string $blob
+	 * @dataProvider provideBlobs
+	 */
+	public function testSimpleStorageGetBlobBatchSimpleRoundtrip( $blob ) {
+		$store = $this->createBlobStore();
+		$addresses = [
+			$store->storeBlob( $blob ),
+			$store->storeBlob( $blob . '1' )
+		];
+		$this->assertArrayEquals(
+			array_combine( $addresses, [ $blob, $blob . '1' ] ),
+			$store->getBlobBatch( $addresses )->getValue()
+		);
+	}
+
+	public function testCachingConsistency() {
+		$store = $this->createBlobStore();
+
+		$addrA = $store->storeBlob( 'A' );
+		$addrB = $store->storeBlob( 'B' );
+		$addrC = $store->storeBlob( 'C' );
+		$addrD = $store->storeBlob( 'D' );
+		$addrX = 'tt:0';
+
+		$dataZ = "söme\ntäxt!";
+		$addrZ = $store->storeBlob( $dataZ );
+
+		$this->assertArrayEquals(
+			[ $addrA => 'A', $addrC => 'C', $addrX => null ],
+			$store->getBlobBatch( [ $addrA, $addrC, $addrX ] )->getValue(),
+			false, true
+		);
+
+		$this->assertEquals( 'A', $store->getBlob( $addrA ) );
+		$this->assertEquals( 'B', $store->getBlob( $addrB ) );
+		$this->assertEquals( 'C', $store->getBlob( $addrC ) );
+
+		$this->assertArrayEquals(
+			[ $addrB => 'B', $addrC => 'C', $addrD => 'D' ],
+			$store->getBlobBatch( [ $addrB, $addrC, $addrD ] )->getValue(),
+			false, true
+		);
+
+		$this->assertEquals( $dataZ, $store->getBlob( $addrZ ) );
+
+		$this->assertArrayEquals(
+			[ $addrA => 'A', $addrZ => $dataZ ],
+			$store->getBlobBatch( [ $addrA, $addrZ ] )->getValue(),
+			false, true
+		);
+	}
+
+	public function testSimpleStorageNonExistentBlob() {
+		$this->expectException( BlobAccessException::class );
+		$store = $this->createBlobStore();
+		$store->getBlob( 'tt:this_will_not_exist' );
+	}
+
+	public function testSimpleStorageNonExistentBlobBatch() {
+		$store = $this->createBlobStore();
+		$result = $store->getBlobBatch( [
+			'tt:this_will_not_exist',
+			'tt:0',
+			'tt:-1',
+			'tt:10000',
+			'bla:1001'
+		] );
+		$resultBlobs = $result->getValue();
+		$expected = [
+			'tt:this_will_not_exist' => null,
+			'tt:0' => null,
+			'tt:-1' => null,
+			'tt:10000' => null,
+			'bla:1001' => null
+		];
+
+		ksort( $expected );
+		ksort( $resultBlobs );
+		$this->assertSame( $expected, $resultBlobs );
+
+		$this->assertStatusMessagesExactly(
+			StatusValue::newGood()
+				->warning( 'internalerror', 'Bad blob address: tt:this_will_not_exist. Use findBadBlobs.php to remedy.' )
+				->warning( 'internalerror', 'Bad blob address: tt:0. Use findBadBlobs.php to remedy.' )
+				->warning( 'internalerror', 'Bad blob address: tt:-1. Use findBadBlobs.php to remedy.' )
+				->warning( 'internalerror', 'Unknown blob address schema: bla. Use findBadBlobs.php to remedy.' )
+				->warning( 'internalerror', 'Unable to fetch blob at tt:10000. Use findBadBlobs.php to remedy.' ),
+			$result
+		);
+	}
+
+	public function testSimpleStoragePartialNonExistentBlobBatch() {
+		$store = $this->createBlobStore();
+		$address = $store->storeBlob( 'test_data' );
+		$result = $store->getBlobBatch( [ $address, 'tt:this_will_not_exist_too' ] );
+		$resultBlobs = $result->getValue();
+		$expected = [
+			$address => 'test_data',
+			'tt:this_will_not_exist_too' => null
+		];
+
+		ksort( $expected );
+		ksort( $resultBlobs );
+		$this->assertSame( $expected, $resultBlobs );
+		$this->assertStatusMessagesExactly(
+			StatusValue::newGood()
+				->warning( 'internalerror', 'Bad blob address: tt:this_will_not_exist_too. Use findBadBlobs.php to remedy.' ),
+			$result
+		);
+	}
+
 	/**
 	 * @dataProvider provideBlobs
-	 * @covers \MediaWiki\Storage\SqlBlobStore::storeBlob
-	 * @covers \MediaWiki\Storage\SqlBlobStore::getBlob
 	 */
 	public function testSimpleStoreGetBlobSimpleRoundtripWindowsLegacyEncoding( $blob ) {
-		$store = $this->getBlobStore( 'windows-1252' );
+		$store = $this->createBlobStore();
+		$store->setLegacyEncoding( 'windows-1252' );
 		$address = $store->storeBlob( $blob );
 		$this->assertSame( $blob, $store->getBlob( $address ) );
 	}
 
 	/**
 	 * @dataProvider provideBlobs
-	 * @covers \MediaWiki\Storage\SqlBlobStore::storeBlob
-	 * @covers \MediaWiki\Storage\SqlBlobStore::getBlob
 	 */
 	public function testSimpleStoreGetBlobSimpleRoundtripWindowsLegacyEncodingGzip( $blob ) {
-		// FIXME: fails under postgres
+		// FIXME: fails under postgres - T298692
 		$this->markTestSkippedIfDbType( 'postgres' );
-		$store = $this->getBlobStore( 'windows-1252', true );
+		$store = $this->createBlobStore();
+		$store->setLegacyEncoding( 'windows-1252' );
+		$store->setCompressBlobs( true );
 		$address = $store->storeBlob( $blob );
 		$this->assertSame( $blob, $store->getBlob( $address ) );
 	}
 
-	public function provideGetTextIdFromAddress() {
+	public static function provideGetTextIdFromAddress() {
 		yield [ 'tt:17', 17 ];
 		yield [ 'xy:17', null ];
 		yield [ 'xy:xyzzy', null ];
@@ -262,12 +348,11 @@ class SqlBlobStoreTest extends MediaWikiTestCase {
 	 * @dataProvider provideGetTextIdFromAddress
 	 */
 	public function testGetTextIdFromAddress( $address, $textId ) {
-		$store = $this->getBlobStore();
+		$store = $this->createBlobStore();
 		$this->assertSame( $textId, $store->getTextIdFromAddress( $address ) );
 	}
 
-	public function provideGetTextIdFromAddressInvalidArgumentException() {
-		yield [ 'tt:-17' ];
+	public static function provideGetTextIdFromAddressInvalidArgumentException() {
 		yield [ 'tt:xy' ];
 		yield [ 'tt:0' ];
 		yield [ 'tt:' ];
@@ -279,8 +364,8 @@ class SqlBlobStoreTest extends MediaWikiTestCase {
 	 * @dataProvider provideGetTextIdFromAddressInvalidArgumentException
 	 */
 	public function testGetTextIdFromAddressInvalidArgumentException( $address ) {
-		$this->setExpectedException( InvalidArgumentException::class );
-		$store = $this->getBlobStore();
+		$this->expectException( InvalidArgumentException::class );
+		$store = $this->createBlobStore();
 		$store->getTextIdFromAddress( $address );
 	}
 
@@ -288,4 +373,292 @@ class SqlBlobStoreTest extends MediaWikiTestCase {
 		$this->assertSame( 'tt:17', SqlBlobStore::makeAddressFromTextId( 17 ) );
 	}
 
+	public static function providerSplitBlobAddress() {
+		yield [ 'tt:123', 'tt', '123', [] ];
+		yield [ 'bad:foo?x=y', 'bad', 'foo', [ 'x' => 'y' ] ];
+		yield [ 'http://test.com/foo/bar?a=b', 'http', 'test.com/foo/bar', [ 'a' => 'b' ] ];
+	}
+
+	/**
+	 * @dataProvider providerSplitBlobAddress
+	 */
+	public function testSplitBlobAddress( $address, $schema, $id, $parameters ) {
+		$this->assertSame( 'tt:17', SqlBlobStore::makeAddressFromTextId( 17 ) );
+	}
+
+	public static function provideExpandBlob() {
+		yield 'Generic test' => [
+			'expected' => 'This is a goat of revision text.',
+			'flags' => '',
+			'raw' => 'This is a goat of revision text.',
+		];
+	}
+
+	/**
+	 * @dataProvider provideExpandBlob
+	 */
+	public function testExpandBlob( $expected, $flags, $raw ) {
+		$blobStore = $this->createBlobStore();
+		$this->assertEquals(
+			$expected,
+			$blobStore->expandBlob( $raw, explode( ',', $flags ) )
+		);
+	}
+
+	public static function provideExpandBlobWithZlibExtension() {
+		yield 'Generic gzip test' => [
+			'expected' => 'This is a small goat of revision text.',
+			'flags' => 'gzip',
+			'raw' => gzdeflate( 'This is a small goat of revision text.' ),
+		];
+	}
+
+	/**
+	 * @dataProvider provideExpandBlobWithZlibExtension
+	 * @requires extension zlib
+	 */
+	public function testGetRevisionWithZlibExtension( $expected, $flags, $raw ) {
+		$blobStore = $this->createBlobStore();
+		$this->assertEquals(
+			$expected,
+			$blobStore->expandBlob( $raw, explode( ',', $flags ) )
+		);
+	}
+
+	public static function provideExpandBlobWithZlibExtension_badData() {
+		yield 'Generic gzip test' => [
+			'flags' => 'gzip',
+			'raw' => 'DEAD BEEF',
+		];
+	}
+
+	/**
+	 * @dataProvider provideExpandBlobWithZlibExtension_badData
+	 * @requires extension zlib
+	 */
+	public function testGetRevisionWithZlibExtension_badData( $flags, $raw ) {
+		$blobStore = $this->createBlobStore();
+
+		$this->assertFalse(
+			@$blobStore->expandBlob( $raw, explode( ',', $flags ) )
+		);
+	}
+
+	public static function provideExpandBlobWithLegacyEncoding() {
+		yield 'Utf8Native' => [
+			'expected' => "Wiki est l'\xc3\xa9cole superieur !",
+			'encoding' => 'iso-8859-1',
+			'flags' => 'utf-8',
+			'raw' => "Wiki est l'\xc3\xa9cole superieur !",
+		];
+		yield 'Utf8Legacy' => [
+			'expected' => "Wiki est l'\xc3\xa9cole superieur !",
+			'encoding' => 'iso-8859-1',
+			'flags' => '',
+			'raw' => "Wiki est l'\xe9cole superieur !",
+		];
+	}
+
+	/**
+	 * @dataProvider provideExpandBlobWithLegacyEncoding
+	 */
+	public function testGetRevisionWithLegacyEncoding( $expected, $encoding, $flags, $raw ) {
+		$blobStore = $this->createBlobStore();
+		$blobStore->setLegacyEncoding( $encoding );
+
+		$this->assertEquals(
+			$expected,
+			$blobStore->expandBlob( $raw, explode( ',', $flags ) )
+		);
+	}
+
+	public static function provideExpandBlobWithGzipAndLegacyEncoding() {
+		/**
+		 * WARNING!
+		 * Do not set the external flag!
+		 * Otherwise, getRevisionText will hit the live database (if ExternalStore is enabled)!
+		 */
+		yield 'Utf8NativeGzip' => [
+			'expected' => "Wiki est l'\xc3\xa9cole superieur !",
+			'encoding' => 'iso-8859-1',
+			'flags' => 'gzip,utf-8',
+			'raw' => gzdeflate( "Wiki est l'\xc3\xa9cole superieur !" ),
+		];
+		yield 'Utf8LegacyGzip' => [
+			'expected' => "Wiki est l'\xc3\xa9cole superieur !",
+			'encoding' => 'iso-8859-1',
+			'flags' => 'gzip',
+			'raw' => gzdeflate( "Wiki est l'\xe9cole superieur !" ),
+		];
+	}
+
+	/**
+	 * @dataProvider provideExpandBlobWithGzipAndLegacyEncoding
+	 * @requires extension zlib
+	 */
+	public function testGetRevisionWithGzipAndLegacyEncoding( $expected, $encoding, $flags, $raw ) {
+		$blobStore = $this->createBlobStore();
+		$blobStore->setLegacyEncoding( $encoding );
+
+		$this->assertEquals(
+			$expected,
+			$blobStore->expandBlob( $raw, explode( ',', $flags ) )
+		);
+	}
+
+	public static function provideTestGetRevisionText_returnsDecompressedTextFieldWhenNotExternal() {
+		yield 'Just text' => [
+			'flags' => '',
+			'raw' => 'SomeText',
+			'expected' => 'SomeText',
+		];
+		// gzip string below generated with gzdeflate( 'AAAABBAAA' )
+		yield 'gzip text' => [
+			'flags' => 'gzip',
+			'raw' => "sttttr\002\022\000",
+			'expected' => 'AAAABBAAA',
+		];
+	}
+
+	/**
+	 * @dataProvider provideTestGetRevisionText_returnsDecompressedTextFieldWhenNotExternal
+	 */
+	public function testGetRevisionText_returnsDecompressedTextFieldWhenNotExternal(
+		$flags,
+		$raw,
+		$expected
+	) {
+		$blobStore = $this->createBlobStore();
+		$this->assertSame( $expected, $blobStore->expandBlob( $raw, $flags ) );
+	}
+
+	public static function provideTestGetRevisionText_external_returnsFalseWhenNotEnoughUrlParts() {
+		yield 'Just some text' => [ 'someNonUrlText' ];
+		yield 'No second URL part' => [ 'someProtocol://' ];
+	}
+
+	/**
+	 * @dataProvider provideTestGetRevisionText_external_returnsFalseWhenNotEnoughUrlParts
+	 */
+	public function testGetRevisionText_external_returnsFalseWhenNotEnoughUrlParts(
+		$text
+	) {
+		$blobStore = $this->createBlobStore();
+		$this->assertFalse(
+			$blobStore->expandBlob(
+				$text,
+				[ 'external' ]
+			)
+		);
+	}
+
+	public function testGetRevisionText_external_noOldId() {
+		$this->setService(
+			'ExternalStoreFactory',
+			new ExternalStoreFactory( [ 'ForTesting' ], [ 'ForTesting://cluster1' ], 'test-id' )
+		);
+		$blobStore = $this->createBlobStore();
+		$this->assertSame(
+			'AAAABBAAA',
+			$blobStore->expandBlob(
+				'ForTesting://cluster1/12345',
+				[ 'external', 'gzip' ]
+			)
+		);
+	}
+
+	public function testGetRevisionText_external_oldId() {
+		$cache = $this->getServiceContainer()->getMainWANObjectCache();
+
+		$this->setService(
+			'ExternalStoreFactory',
+			new ExternalStoreFactory( [ 'ForTesting' ], [ 'ForTesting://cluster1' ], 'test-id' )
+		);
+
+		$lb = $this->createMock( LoadBalancer::class );
+		$access = $this->getServiceContainer()->getExternalStoreAccess();
+
+		$blobStore = new SqlBlobStore( $lb, $access, $cache );
+
+		$this->assertSame(
+			'AAAABBAAA',
+			$blobStore->expandBlob(
+				'ForTesting://cluster1/12345',
+				'external,gzip',
+				'tt:7777'
+			)
+		);
+
+		$cacheKey = $cache->makeGlobalKey(
+			'SqlBlobStore-blob',
+			$lb->getLocalDomainID(),
+			'tt:7777'
+		);
+		$this->assertSame( 'AAAABBAAA', $cache->get( $cacheKey ) );
+	}
+
+	public function testGetRevisionText_external_oldId_direct_access() {
+		$cache = $this->getServiceContainer()->getMainWANObjectCache();
+
+		$this->setService(
+			'ExternalStoreFactory',
+			new ExternalStoreFactory( [ 'ForTesting' ], [ 'ForTesting://cluster1' ], 'test-id' )
+		);
+
+		$lb = $this->createMock( LoadBalancer::class );
+		$access = $this->getServiceContainer()->getExternalStoreAccess();
+
+		$blobStore = new SqlBlobStore( $lb, $access, $cache );
+
+		$this->assertSame(
+			'AAAABBAAA',
+			$blobStore->getBlob( 'es:ForTesting://cluster1/12345?flags=external,gzip' )
+		);
+
+		$cacheKey = $cache->makeGlobalKey(
+			'SqlBlobStore-blob',
+			$lb->getLocalDomainID(),
+			// See ExternalStoreForTesting for the path
+			'es:ForTesting://cluster1/12345?flags=external,gzip'
+		);
+		$this->assertSame( 'AAAABBAAA', $cache->get( $cacheKey ) );
+	}
+
+	public static function provideTestGetRevisionText_external_oldId_direct_store() {
+		yield 'no compression' => [ false ];
+		yield 'compression' => [ true ];
+	}
+
+	/**
+	 * @dataProvider provideTestGetRevisionText_external_oldId_direct_store
+	 */
+	public function testGetRevisionText_external_oldId_direct_store( bool $compression ) {
+		$cache = $this->getServiceContainer()->getMainWANObjectCache();
+
+		$this->setService(
+			'ExternalStoreFactory',
+			new ExternalStoreFactory( [ 'ForTesting' ], [ 'ForTesting://cluster1' ], 'test-id' )
+		);
+
+		$lb = $this->createMock( LoadBalancer::class );
+		$access = $this->getServiceContainer()->getExternalStoreAccess();
+
+		$blobStore = new SqlBlobStore( $lb, $access, $cache );
+		$blobStore->setUseExternalStore( true );
+		$blobStore->setCompressBlobs( $compression );
+		$id = $blobStore->storeBlob( 'A very unique text' );
+		$this->assertStringStartsWith( 'es:ForTesting://cluster1/', $id );
+
+		$this->assertSame(
+			'A very unique text',
+			$blobStore->getBlob( $id )
+		);
+
+		$cacheKey = $cache->makeGlobalKey(
+			'SqlBlobStore-blob',
+			$lb->getLocalDomainID(),
+			$id
+		);
+		$this->assertSame( 'A very unique text', $cache->get( $cacheKey ) );
+	}
 }

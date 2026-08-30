@@ -2,43 +2,28 @@
 /**
  * A RevisionStoreRecord loaded from the cache.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  */
 
 namespace MediaWiki\Revision;
 
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Page\PageIdentity;
+use MediaWiki\Permissions\Authority;
 use MediaWiki\User\UserIdentity;
-use MediaWiki\User\UserIdentityValue;
-use CommentStoreComment;
-use InvalidArgumentException;
-use Title;
-use User;
 
 /**
  * A cached RevisionStoreRecord.  Ensures that changes performed "behind the back"
  * of the cache do not cause the revision record to deliver stale data.
  *
+ * @internal
  * @since 1.33
  */
 class RevisionStoreCacheRecord extends RevisionStoreRecord {
 
 	/**
-	 * @var callable
+	 * @var null|callable ( int $revId ): [ int $rev_deleted, UserIdentity $user ]
 	 */
 	private $mCallback;
 
@@ -46,25 +31,27 @@ class RevisionStoreCacheRecord extends RevisionStoreRecord {
 	 * @note Avoid calling this constructor directly. Use the appropriate methods
 	 * in RevisionStore instead.
 	 *
-	 * @param callable $callback Callback for loading data.  Signature: function ( $id ): object
-	 * @param Title $title The title of the page this Revision is associated with.
+	 * @param callable $callback Callback for loading data.
+	 *        Signature: function ( int $revId ): [ int $rev_deleted, UserIdentity $user ]
+	 *        This function will only be called once.
+	 * @param PageIdentity $page The page this RevisionRecord is associated with.
 	 * @param UserIdentity $user
 	 * @param CommentStoreComment $comment
-	 * @param object $row A row from the revision table. Use RevisionStore::getQueryInfo() to build
+	 * @param \stdClass $row A row from the revision table. Use RevisionStore::getQueryInfo() to build
 	 *        a query that yields the required fields.
 	 * @param RevisionSlots $slots The slots of this revision.
-	 * @param bool|string $dbDomain DB domain of the relevant wiki or false for the current one.
+	 * @param false|string $wikiID Relevant wiki id or self::LOCAL for the current one.
 	 */
-	function __construct(
-		$callback,
-		Title $title,
+	public function __construct(
+		callable $callback,
+		PageIdentity $page,
 		UserIdentity $user,
 		CommentStoreComment $comment,
 		$row,
 		RevisionSlots $slots,
-		$dbDomain = false
+		$wikiID = self::LOCAL
 	) {
-		parent::__construct( $title, $user, $comment, $row, $slots, $dbDomain );
+		parent::__construct( $page, $user, $comment, $row, $slots, $wikiID );
 		$this->mCallback = $callback;
 	}
 
@@ -80,55 +67,41 @@ class RevisionStoreCacheRecord extends RevisionStoreRecord {
 		return parent::getVisibility();
 	}
 
-	/**
-	 * Overridden to ensure that we return a fresh value and not a cached one.
-	 *
-	 * @param int $audience
-	 * @param User|null $user
-	 *
-	 * @return UserIdentity The identity of the revision author, null if access is forbidden.
-	 */
-	public function getUser( $audience = self::FOR_PUBLIC, User $user = null ) {
+	/** @inheritDoc */
+	public function getUser( int $audience = self::FOR_PUBLIC, ?Authority $performer = null ) {
 		if ( $this->mCallback ) {
 			$this->loadFreshRow();
 		}
-		return parent::getUser( $audience, $user );
+		return parent::getUser( $audience, $performer );
 	}
 
 	/**
-	 * Load a fresh row from the database to ensure we return updated information
-
+	 * Load a fresh row from the database to ensure we return updated information.
+	 * Once loading a fresh row is attempted on this RevisionStoreCacheRecord instance,
+	 * it will not be attempted again. Subsequent calls to methods on this instance
+	 * will not go back to the database for a 'fresh row'.
+	 *
+	 * If a RevisionAccessException is thrown and is caught in the caller, it is possible
+	 * to continue using this RevisionStoreCacheRecord instance to access RevisionRecord
+	 * data, but there is no guarantee that the data will be 'fresh'.
+	 * See: https://phabricator.wikimedia.org/T400380#11207694
+	 *
 	 * @throws RevisionAccessException if the row could not be loaded
 	 */
 	private function loadFreshRow() {
-		$freshRow = call_user_func( $this->mCallback, $this->mId );
+		[ $freshRevDeleted, $freshUser ] = ( $this->mCallback )( $this->mId );
 
 		// Set to null to ensure we do not make unnecessary queries for subsequent getter calls,
 		// and to allow the closure to be freed.
 		$this->mCallback = null;
 
-		if ( $freshRow ) {
-			$this->mDeleted = intval( $freshRow->rev_deleted );
-
-			try {
-				$this->mUser = User::newFromAnyId(
-					$freshRow->rev_user ?? null,
-					$freshRow->rev_user_text ?? null,
-					$freshRow->rev_actor ?? null
-				);
-			} catch ( InvalidArgumentException $ex ) {
-				wfWarn(
-					__METHOD__
-					. ': '
-					. $this->mTitle->getPrefixedDBkey()
-					. ': '
-					. $ex->getMessage()
-				);
-				$this->mUser = new UserIdentityValue( 0, 'Unknown user', 0 );
-			}
+		if ( $freshRevDeleted !== null && $freshUser !== null ) {
+			$this->mDeleted = intval( $freshRevDeleted );
+			$this->mUser = $freshUser;
 		} else {
 			throw new RevisionAccessException(
-				'Unable to load fresh row for rev_id: ' . $this->mId
+				'Unable to load fresh row for rev_id: {rev_id}',
+				[ 'rev_id' => $this->mId ]
 			);
 		}
 	}

@@ -2,32 +2,25 @@
 
 namespace MediaWiki\Rest\BasicAccess;
 
-use User;
-use MediaWiki\Permissions\PermissionManager;
+use MediaWiki\Permissions\Authority;
 use MediaWiki\Rest\Handler;
 use MediaWiki\Rest\RequestInterface;
 
 /**
- * A factory for MWBasicRequestAuthorizer which passes through a User object
+ * A factory for MWBasicRequestAuthorizer which passes through a UserIdentity.
  *
  * @internal
  */
 class MWBasicAuthorizer extends BasicAuthorizerBase {
-	/** @var User */
-	private $user;
+	private Authority $authority;
 
-	/** @var PermissionManager */
-	private $permissionManager;
-
-	public function __construct( User $user, PermissionManager $permissionManager ) {
-		$this->user = $user;
-		$this->permissionManager = $permissionManager;
+	public function __construct( Authority $authority ) {
+		$this->authority = $authority;
 	}
 
 	protected function createRequestAuthorizer( RequestInterface $request,
 		Handler $handler
 	): BasicRequestAuthorizer {
-		return new MWBasicRequestAuthorizer( $request, $handler, $this->user,
-			$this->permissionManager );
+		return new MWBasicRequestAuthorizer( $request, $handler, $this->authority );
 	}
 }

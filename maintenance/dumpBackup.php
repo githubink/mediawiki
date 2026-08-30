@@ -3,33 +3,24 @@
  * Script that dumps wiki pages or logging database into an XML interchange
  * wrapper format for export or backup
  *
- * Copyright © 2005 Brion Vibber <brion@pobox.com>
+ * Copyright © 2005 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Dump
  * @ingroup Maintenance
  */
 
+use MediaWiki\Export\WikiExporter;
+use MediaWiki\Maintenance\BackupDumper;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/includes/BackupDumper.php';
+// @codeCoverageIgnoreEnd
 
 class DumpBackup extends BackupDumper {
-	function __construct( $args = null ) {
+	public function __construct( ?array $args = null ) {
 		parent::__construct();
 
 		$this->addDescription( <<<TEXT
@@ -43,7 +34,7 @@ WARNING: this is not a full database dump! It is merely for public export
          https://www.mediawiki.org/wiki/Backup
 TEXT
 		);
-		$this->stderr = fopen( "php://stderr", "wt" );
+
 		// Actions
 		$this->addOption( 'full', 'Dump all revisions of every page' );
 		$this->addOption( 'current', 'Dump only the latest revision of every page.' );
@@ -73,7 +64,7 @@ TEXT
 		}
 	}
 
-	function execute() {
+	public function execute() {
 		$this->processOptions();
 
 		$textMode = $this->hasOption( 'stub' ) ? WikiExporter::STUB : WikiExporter::TEXT;
@@ -93,7 +84,7 @@ TEXT
 		}
 	}
 
-	function processOptions() {
+	protected function processOptions() {
 		parent::processOptions();
 
 		// Evaluate options specific to this class
@@ -106,7 +97,7 @@ TEXT
 				$this->fatalError( "Unable to open file {$filename}\n" );
 			}
 			$pages = array_map( 'trim', $pages );
-			$this->pages = array_filter( $pages, function ( $x ) {
+			$this->pages = array_filter( $pages, static function ( $x ) {
 				return $x !== '';
 			} );
 		}
@@ -140,5 +131,7 @@ TEXT
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = DumpBackup::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

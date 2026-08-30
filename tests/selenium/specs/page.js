@@ -1,160 +1,101 @@
-const assert = require( 'assert' ),
-	Api = require( 'wdio-mediawiki/Api' ),
-	BlankPage = require( 'wdio-mediawiki/BlankPage' ),
-	DeletePage = require( '../pageobjects/delete.page' ),
-	RestorePage = require( '../pageobjects/restore.page' ),
-	EditPage = require( '../pageobjects/edit.page' ),
-	HistoryPage = require( '../pageobjects/history.page' ),
-	UndoPage = require( '../pageobjects/undo.page' ),
-	UserLoginPage = require( 'wdio-mediawiki/LoginPage' ),
-	Util = require( 'wdio-mediawiki/Util' );
+import BlankPage from 'wdio-mediawiki/BlankPage.js';
+import { createApiClient } from 'wdio-mediawiki/Api.js';
+import EditPage from '../pageobjects/edit.page.js';
+import HistoryPage from '../pageobjects/history.page.js';
+import UndoPage from '../pageobjects/undo.page.js';
+import LoginPage from 'wdio-mediawiki/LoginPage.js';
+import { getTestString, isTargetNotWikitext } from 'wdio-mediawiki/Util.js';
 
-describe( 'Page', function () {
-	var content,
-		name;
+describe( 'Page', () => {
+	let content, name, apiClient;
 
-	before( function () {
-		// disable VisualEditor welcome dialog
-		BlankPage.open();
-		browser.localStorage( 'POST', { key: 've-beta-welcome-dialog', value: '1' } );
+	before( async () => {
+		apiClient = await createApiClient();
+
+		await LoginPage.loginAdmin();
 	} );
 
-	beforeEach( function () {
-		browser.deleteCookie();
-		content = Util.getTestString( 'beforeEach-content-' );
-		name = Util.getTestString( 'BeforeEach-name-' );
+	beforeEach( async function () {
+		content = getTestString( 'beforeEach-content-' );
+		name = getTestString( 'BeforeEach-name-' );
+
+		// First try to load a blank page, so the next command works.
+		await BlankPage.open();
+		// Don't try to run wikitext-specific tests if the test namespace isn't wikitext by default.
+		if ( await isTargetNotWikitext( name ) ) {
+			this.skip();
+		}
 	} );
 
-	it( 'should be previewable', function () {
-		EditPage.preview( name, content );
+	it( 'should be previewable', async () => {
+		await EditPage.preview( name, content );
 
-		assert.strictEqual( EditPage.heading.getText(), 'Creating ' + name );
-		assert.strictEqual( EditPage.displayedContent.getText(), content );
-		assert( EditPage.content.isVisible(), 'editor is still present' );
-		assert( !EditPage.conflictingContent.isVisible(), 'no edit conflict happened' );
-		// provoke and dismiss reload warning due to unsaved content
-		browser.url( 'data:text/html,Done' );
-		try {
-			browser.alertAccept();
-		} catch ( e ) {}
+		await expect( EditPage.heading ).toHaveText( `Creating ${ name }` );
+		await expect( EditPage.displayedContent ).toHaveText( content );
+		await expect( EditPage.content ).toBeDisplayed( { message: 'editor is still present' } );
+		await expect( EditPage.conflictingContent ).not.toBeDisplayed( { message: 'no edit conflict happened' } );
+
 	} );
 
-	it( 'should be creatable', function () {
+	it( 'should be creatable', async () => {
 		// create
-		EditPage.edit( name, content );
+		await EditPage.edit( name, content );
 
 		// check
-		assert.strictEqual( EditPage.heading.getText(), name );
-		assert.strictEqual( EditPage.displayedContent.getText(), content );
+		await expect( EditPage.heading ).toHaveText( name );
+		await expect( EditPage.displayedContent ).toHaveText( content );
 	} );
 
-	it( 'should be re-creatable', function () {
-		const initialContent = Util.getTestString( 'initialContent-' );
+	it( 'should be re-creatable', async () => {
+		const initialContent = getTestString( 'initialContent-' );
 
-		// create
-		browser.call( function () {
-			return Api.edit( name, initialContent );
-		} );
+		// create and delete
+		await apiClient.edit( name, initialContent, 'create for delete' );
+		await apiClient.delete( name, 'delete prior to recreate' );
 
-		// delete
-		browser.call( function () {
-			return Api.delete( name, 'delete prior to recreate' );
-		} );
-
-		// create
-		EditPage.edit( name, content );
+		// re-create
+		await EditPage.edit( name, content );
 
 		// check
-		assert.strictEqual( EditPage.heading.getText(), name );
-		assert.strictEqual( EditPage.displayedContent.getText(), content );
+		await expect( EditPage.heading ).toHaveText( name );
+		await expect( EditPage.displayedContent ).toHaveText( content );
 	} );
 
-	it( 'should be editable @daily', function () {
+	it( 'should be editable', async () => {
 		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
+		await apiClient.edit( name, content, 'create for edit' );
 
 		// edit
-		const editContent = Util.getTestString( 'editContent-' );
-		EditPage.edit( name, editContent );
+		const editContent = getTestString( 'editContent-' );
+		await EditPage.edit( name, editContent );
 
 		// check
-		assert.strictEqual( EditPage.heading.getText(), name );
-		// eslint-disable-next-line no-restricted-syntax
-		assert( EditPage.displayedContent.getText().includes( editContent ) );
+		await expect( EditPage.heading ).toHaveText( name );
+		await expect( EditPage.displayedContent )
+			.toHaveText( expect.stringContaining( editContent ) );
 	} );
 
-	it( 'should have history @daily', function () {
+	it( 'should have history', async () => {
 		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
+		await apiClient.edit( name, content, `created with "${ content }"` );
 
 		// check
-		HistoryPage.open( name );
-		assert.strictEqual( HistoryPage.comment.getText(), `Created or updated page with "${content}"` );
+		await HistoryPage.open( name );
+		await expect( HistoryPage.comment ).toHaveText( `created with "${ content }"` );
 	} );
 
-	it( 'should be deletable', function () {
-		// login
-		UserLoginPage.loginAdmin();
-
+	it( 'should be undoable', async () => {
 		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
-
-		// delete
-		DeletePage.delete( name, content + '-deletereason' );
-
-		// check
-		assert.strictEqual(
-			DeletePage.displayedContent.getText(),
-			'"' + name + '" has been deleted. See deletion log for a record of recent deletions.\nReturn to Main Page.'
-		);
-	} );
-
-	it( 'should be restorable', function () {
-		// login
-		UserLoginPage.loginAdmin();
-
-		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
-
-		// delete
-		browser.call( function () {
-			return Api.delete( name, content + '-deletereason' );
-		} );
-
-		// restore
-		RestorePage.restore( name, content + '-restorereason' );
-
-		// check
-		assert.strictEqual( RestorePage.displayedContent.getText(), name + ' has been restored\nConsult the deletion log for a record of recent deletions and restorations.' );
-	} );
-
-	it( 'should be undoable', function () {
-		// create
-		browser.call( function () {
-			return Api.edit( name, content );
-		} );
+		await apiClient.edit( name, content, 'create to edit and undo' );
 
 		// edit
-		let previousRev, undoRev;
-		browser.call( function () {
-			return Api.edit( name, Util.getTestString( 'editContent-' ) )
-				.then( ( response ) => {
-					previousRev = response.edit.oldrevid;
-					undoRev = response.edit.newrevid;
-				} );
-		} );
+		const response = await apiClient.edit( name, getTestString( 'editContent-' ) );
+		const previousRev = response.edit.oldrevid;
+		const undoRev = response.edit.newrevid;
 
-		UndoPage.undo( name, previousRev, undoRev );
+		await UndoPage.undo( name, previousRev, undoRev );
 
-		assert.strictEqual( EditPage.displayedContent.getText(), content );
+		await expect( EditPage.displayedContent ).toHaveText( expect.stringContaining( content ) );
 	} );
 
 } );

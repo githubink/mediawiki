@@ -2,28 +2,19 @@
 /**
  * Maintenance script to generate first letter data files for Collation.php.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup MaintenanceLanguage
  */
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/../Maintenance.php';
+// @codeCoverageIgnoreEnd
 
+use MediaWiki\Collation\IcuCollation;
+use MediaWiki\Maintenance\Maintenance;
 use Wikimedia\StaticArrayWriter;
+use Wikimedia\StringUtils\StringUtils;
 
 /**
  * Generate first letter data files for Collation.php
@@ -31,26 +22,25 @@ use Wikimedia\StaticArrayWriter;
  * @ingroup MaintenanceLanguage
  */
 class GenerateCollationData extends Maintenance {
-	/** The directory with source data files in it */
+	/** @var string The directory with source data files in it */
 	public $dataDir;
 
-	/** The primary weights, indexed by codepoint */
+	/** @var int The primary weights, indexed by codepoint */
 	public $weights;
 
 	/**
 	 * A hashtable keyed by codepoint, where presence indicates that a character
 	 * has a decomposition mapping. This makes it non-preferred for group header
 	 * selection.
+	 * @var string[]
 	 */
 	public $mappedChars;
 
+	/** @var string */
 	public $debugOutFile;
 
-	/**
-	 * Important tertiary weights from UTS #10 section 7.2
-	 */
-	const NORMAL_UPPERCASE = 0x08;
-	const NORMAL_HIRAGANA = 0x0E;
+	/** @var string[] */
+	private $groups;
 
 	public function __construct() {
 		parent::__construct();
@@ -67,14 +57,9 @@ class GenerateCollationData extends Maintenance {
 		$allkeysPresent = file_exists( "{$this->dataDir}/allkeys.txt" );
 		$ucdallPresent = file_exists( "{$this->dataDir}/ucd.all.grouped.xml" );
 
-		// As of January 2013, these links work for all versions of Unicode
-		// between 5.1 and 6.2, inclusive.
-		$allkeysURL = "https://www.unicode.org/Public/UCA/<Unicode version>/allkeys.txt";
-		$ucdallURL = "https://www.unicode.org/Public/<Unicode version>/ucdxml/ucd.all.grouped.zip";
-
 		if ( !$allkeysPresent || !$ucdallPresent ) {
 			$icuVersion = INTL_ICU_VERSION;
-			$unicodeVersion = IcuCollation::getUnicodeVersionForICU();
+			$unicodeVersion = implode( '.', array_slice( IntlChar::getUnicodeVersion(), 0, 3 ) );
 
 			$error = "";
 
@@ -89,33 +74,11 @@ class GenerateCollationData extends Maintenance {
 					. "\n\n";
 			}
 
-			$versionKnown = false;
-			if ( version_compare( $icuVersion, "4.0", "<" ) ) {
-				// Extra old version
-				$error .= "You are using outdated version of ICU ($icuVersion), intended for "
-					. ( $unicodeVersion ? "Unicode $unicodeVersion" : "an unknown version of Unicode" )
-					. "; this file might not be avalaible for it, and it's not supported by MediaWiki. "
-					. " You are on your own; consider upgrading PHP's intl extension or try "
-					. "one of the files available at:";
-			} elseif ( version_compare( $icuVersion, "51.0", ">=" ) ) {
-				// Extra recent version
-				$error .= "You are using ICU $icuVersion, released after this script was last updated. "
-					. "Check what is the Unicode version it is using at http://site.icu-project.org/download . "
-					. "It can't be guaranteed everything will work, but appropriate file(s) should "
-					. "be available at:";
-			} else {
-				// ICU 4.0 to 50.x
-				$versionKnown = true;
-				$error .= "You are using ICU $icuVersion, intended for "
-					. ( $unicodeVersion ? "Unicode $unicodeVersion" : "an unknown version of Unicode" )
-					. ". Appropriate file(s) should be available at:";
-			}
-			$error .= "\n";
+			$error .= "You are using ICU $icuVersion, intended for Unicode $unicodeVersion. "
+				. "Appropriate file(s) should be available at:\n";
 
-			if ( $versionKnown && $unicodeVersion ) {
-				$allkeysURL = str_replace( "<Unicode version>", "$unicodeVersion.0", $allkeysURL );
-				$ucdallURL = str_replace( "<Unicode version>", "$unicodeVersion.0", $ucdallURL );
-			}
+			$allkeysURL = "https://www.unicode.org/Public/UCA/$unicodeVersion/allkeys.txt";
+			$ucdallURL = "https://www.unicode.org/Public/$unicodeVersion/ucdxml/ucd.all.grouped.zip";
 
 			if ( !$allkeysPresent ) {
 				$error .= "* $allkeysURL\n";
@@ -138,17 +101,17 @@ class GenerateCollationData extends Maintenance {
 		$this->generateFirstChars();
 	}
 
-	function loadUcd() {
+	private function loadUcd() {
 		$uxr = new UcdXmlReader( "{$this->dataDir}/ucd.all.grouped.xml" );
-		$uxr->readChars( [ $this, 'charCallback' ] );
+		$uxr->readChars( $this->charCallback( ... ) );
 	}
 
-	function charCallback( $data ) {
+	private function charCallback( array $data ) {
 		// Skip non-printable characters,
 		// but do not skip a normal space (U+0020) since
 		// people like to use that as a fake no header symbol.
 		$category = substr( $data['gc'], 0, 1 );
-		if ( strpos( 'LNPS', $category ) === false
+		if ( !str_contains( 'LNPS', $category )
 			&& $data['cp'] !== '0020'
 		) {
 			return;
@@ -167,19 +130,16 @@ class GenerateCollationData extends Maintenance {
 			return;
 		}
 
-		// Calculate implicit weight per UTS #10 v6.0.0, sec 7.1.3
-		if ( $data['UIdeo'] === 'Y' ) {
-			if ( $data['block'] == 'CJK Unified Ideographs'
-				|| $data['block'] == 'CJK Compatibility Ideographs'
-			) {
-				$base = 0xFB40;
-			} else {
-				$base = 0xFB80;
-			}
-		} else {
-			$base = 0xFBC0;
+		// Skip characters that mapped to a single character we skipped above.
+		// e.g. U+2329 -> U+3008 (from CJK Symbols and Punctuation)
+		if ( $data['dm'] !== '#' && !str_contains( $data['dm'], ' ' ) &&
+			!isset( $this->weights[ hexdec( $data['dm'] ) ] )
+		) {
+			return;
 		}
-		$a = $base + ( $cp >> 15 );
+
+		// Calculate implicit weight per UTS #10 v6.0.0, sec 7.1.3
+		$a = 0xFBC0 + ( $cp >> 15 );
 		$b = ( $cp & 0x7fff ) | 0x8000;
 
 		$this->weights[$cp] = sprintf( ".%04X.%04X", $a, $b );
@@ -193,7 +153,7 @@ class GenerateCollationData extends Maintenance {
 		}
 	}
 
-	function generateFirstChars() {
+	private function generateFirstChars() {
 		$file = fopen( "{$this->dataDir}/allkeys.txt", 'r' );
 		if ( !$file ) {
 			$this->fatalError( "Unable to open allkeys.txt" );
@@ -204,6 +164,7 @@ class GenerateCollationData extends Maintenance {
 		// For each character with an entry in allkeys.txt, overwrite the implicit
 		// entry in $this->weights that came from the UCD.
 		// Also gather a list of tertiary weights, for use in selecting the group header
+		// phpcs:ignore Generic.CodeAnalysis.AssignmentInCondition.FoundInWhileCondition
 		while ( ( $line = fgets( $file ) ) !== false ) {
 			// We're only interested in single-character weights, pick them out with a regex
 			$line = trim( $line );
@@ -221,8 +182,7 @@ class GenerateCollationData extends Maintenance {
 				continue;
 			}
 			foreach ( StringUtils::explode( '[', $allWeights ) as $weightStr ) {
-				preg_match_all( '/[*.]([0-9A-F]+)/', $weightStr, $m );
-				if ( !empty( $m[1] ) ) {
+				if ( preg_match_all( '/[*.]([0-9A-F]+)/', $weightStr, $m ) ) {
 					if ( $m[1][0] !== '0000' ) {
 						$primary .= '.' . $m[1][0];
 					}
@@ -312,35 +272,44 @@ class GenerateCollationData extends Maintenance {
 
 			if ( $this->debugOutFile ) {
 				fwrite( $this->debugOutFile, sprintf( "%05X %s %s (%s)\n", $cp, $weight, $char,
-					implode( ' ', array_map( 'UtfNormal\Utils::codepointToUtf8', $group ) ) ) );
+					implode( ' ', array_map( [ UtfNormal\Utils::class, 'codepointToUtf8' ], $group ) ) ) );
 			}
 		}
 
 		print "Out of order: $numOutOfOrder / " . count( $headerChars ) . "\n";
 
-		global $IP;
 		$writer = new StaticArrayWriter();
 		file_put_contents(
-			"$IP/includes/collation/data/first-letters-root.php",
-			$writer->create( $headerChars, 'File created by generateCollationData.php' )
+			MW_INSTALL_PATH . '/languages/data/first-letters-root.php',
+			$writer->create(
+				$headerChars,
+				"File created by maintenance/language/generateCollationData.php\n"
+					. "@codeCoverageIgnore"
+			)
 		);
 		echo "first-letters-root: file written.\n";
 	}
 }
 
 class UcdXmlReader {
+	/** @var string */
 	public $fileName;
+	/** @var callable */
 	public $callback;
+	/** @var array */
 	public $groupAttrs;
+	/** @var XMLReader */
 	public $xml;
+	/** @var array[] */
 	public $blocks = [];
+	/** @var array */
 	public $currentBlock;
 
-	function __construct( $fileName ) {
+	public function __construct( string $fileName ) {
 		$this->fileName = $fileName;
 	}
 
-	public function readChars( $callback ) {
+	public function readChars( callable $callback ) {
 		$this->getBlocks();
 		$this->currentBlock = reset( $this->blocks );
 		$xml = $this->open();
@@ -364,11 +333,10 @@ class UcdXmlReader {
 		$xml->close();
 	}
 
-	protected function open() {
+	protected function open(): XMLReader {
 		$this->xml = new XMLReader;
-		$this->xml->open( $this->fileName );
-		if ( !$this->xml ) {
-			throw new MWException( __METHOD__ . ": unable to open {$this->fileName}" );
+		if ( !$this->xml->open( $this->fileName ) ) {
+			throw new RuntimeException( __METHOD__ . ": unable to open {$this->fileName}" );
 		}
 		while ( $this->xml->name !== 'ucd' && $this->xml->read() );
 		$this->xml->read();
@@ -421,11 +389,11 @@ class UcdXmlReader {
 			}
 
 			$attrs['cp'] = $hexCp;
-			call_user_func( $this->callback, $attrs );
+			( $this->callback )( $attrs );
 		}
 	}
 
-	public function getBlocks() {
+	public function getBlocks(): array {
 		if ( $this->blocks ) {
 			return $this->blocks;
 		}
@@ -449,5 +417,7 @@ class UcdXmlReader {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = GenerateCollationData::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

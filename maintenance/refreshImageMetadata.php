@@ -7,30 +7,27 @@
  * Copyright © 2011 Brian Wolff
  * https://www.mediawiki.org/
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @author Brian Wolff
  * @ingroup Maintenance
  */
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
-use Wikimedia\Rdbms\IDatabase;
-use Wikimedia\Rdbms\IMaintainableDatabase;
+use MediaWiki\FileRepo\File\File;
+use MediaWiki\FileRepo\File\FileSelectQueryBuilder;
+use MediaWiki\FileRepo\LocalRepo;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Title\MalformedTitleException;
+use MediaWiki\Title\TitleParser;
+use Wikimedia\Rdbms\IExpression;
+use Wikimedia\Rdbms\IReadableDatabase;
+use Wikimedia\Rdbms\IResultWrapper;
+use Wikimedia\Rdbms\LikeValue;
+use Wikimedia\Rdbms\SelectQueryBuilder;
 
 /**
  * Maintenance script to refresh image metadata fields.
@@ -38,13 +35,9 @@ use Wikimedia\Rdbms\IMaintainableDatabase;
  * @ingroup Maintenance
  */
 class RefreshImageMetadata extends Maintenance {
+	private ?TitleParser $titleParser = null;
 
-	/**
-	 * @var IMaintainableDatabase
-	 */
-	protected $dbw;
-
-	function __construct() {
+	public function __construct() {
 		parent::__construct();
 
 		$this->addDescription( 'Script to update image metadata records' );
@@ -60,6 +53,14 @@ class RefreshImageMetadata extends Maintenance {
 		$this->addOption(
 			'broken-only',
 			'Only fix really broken records, leave old but still compatible records alone.'
+		);
+		$this->addOption(
+			'convert-to-json',
+			'Fix records with an out of date serialization format.'
+		);
+		$this->addOption(
+			'split',
+			'Enable splitting out large metadata items to the text table. Implies --convert-to-json.'
 		);
 		$this->addOption(
 			'verbose',
@@ -92,173 +93,371 @@ class RefreshImageMetadata extends Maintenance {
 			false,
 			true
 		);
+		$this->addOption(
+			'sleep',
+			'Time to sleep between each batch (in seconds). Default: 0',
+			false,
+			true
+		);
+		$this->addOption( 'oldimage', 'Run and refresh on oldimage table.' );
+		$this->addOption(
+			'listfile',
+			'File with file titles to refresh, one per line (newline delimited). '
+				. 'If provided, other filtering options (--mime, --mediatype, --metadata-contains, '
+				. '--start, --end) will be ignored.',
+			false,
+			true
+		);
 	}
 
 	public function execute() {
 		$force = $this->hasOption( 'force' );
 		$brokenOnly = $this->hasOption( 'broken-only' );
 		$verbose = $this->hasOption( 'verbose' );
-		$start = $this->getOption( 'start', false );
-		$this->setupParameters( $force, $brokenOnly );
+		$split = $this->hasOption( 'split' );
+		$sleep = (int)$this->getOption( 'sleep', 0 );
+		$reserialize = $this->hasOption( 'convert-to-json' );
+		$oldimage = $this->hasOption( 'oldimage' );
+		$listFile = $this->getOption( 'listfile', false );
 
-		$upgraded = 0;
-		$leftAlone = 0;
-		$error = 0;
-
-		$dbw = $this->getDB( DB_MASTER );
-		$batchSize = $this->getBatchSize();
+		$batchSize = (int)$this->getBatchSize();
 		if ( $batchSize <= 0 ) {
 			$this->fatalError( "Batch size is too low...", 12 );
 		}
 
-		$repo = RepoGroup::singleton()->getLocalRepo();
-		$conds = $this->getConditions( $dbw );
+		$this->titleParser = $this->getServiceContainer()->getTitleParser();
+		$repo = $this->newLocalRepo( $force, $brokenOnly, $reserialize, $split );
 
-		// For the WHERE img_name > 'foo' condition that comes after doing a batch
-		$conds2 = [];
-		if ( $start !== false ) {
-			$conds2[] = 'img_name >= ' . $dbw->addQuotes( $start );
-		}
-
-		$options = [
-			'LIMIT' => $batchSize,
-			'ORDER BY' => 'img_name ASC',
-		];
-
-		$fileQuery = LocalFile::getQueryInfo();
-
-		do {
-			$res = $dbw->select(
-				$fileQuery['tables'],
-				$fileQuery['fields'],
-				array_merge( $conds, $conds2 ),
-				__METHOD__,
-				$options,
-				$fileQuery['joins']
-			);
-
-			if ( $res->numRows() > 0 ) {
-				$row1 = $res->current();
-				$this->output( "Processing next {$res->numRows()} row(s) starting with {$row1->img_name}.\n" );
-				$res->rewind();
-			}
-
-			foreach ( $res as $row ) {
-				try {
-					// LocalFile will upgrade immediately here if obsolete
-					$file = $repo->newFileFromRow( $row );
-					if ( $file->getUpgraded() ) {
-						// File was upgraded.
-						$upgraded++;
-						$newLength = strlen( $file->getMetadata() );
-						$oldLength = strlen( $row->img_metadata );
-						if ( $newLength < $oldLength - 5 ) {
-							// If after updating, the metadata is smaller then
-							// what it was before, that's probably not a good thing
-							// because we extract more data with time, not less.
-							// Thus this probably indicates an error of some sort,
-							// or at the very least is suspicious. Have the - 5 just
-							// to weed out any inconsequential changes.
-							$error++;
-							$this->output(
-								"Warning: File:{$row->img_name} used to have " .
-								"$oldLength bytes of metadata but now has $newLength bytes.\n"
-							);
-						} elseif ( $verbose ) {
-							$this->output( "Refreshed File:{$row->img_name}.\n" );
-						}
-					} else {
-						$leftAlone++;
-						if ( $force ) {
-							$file->upgradeRow();
-							$newLength = strlen( $file->getMetadata() );
-							$oldLength = strlen( $row->img_metadata );
-							if ( $newLength < $oldLength - 5 ) {
-								$error++;
-								$this->output(
-									"Warning: File:{$row->img_name} used to have " .
-									"$oldLength bytes of metadata but now has $newLength bytes. (forced)\n"
-								);
-							}
-							if ( $verbose ) {
-								$this->output( "Forcibly refreshed File:{$row->img_name}.\n" );
-							}
-						} else {
-							if ( $verbose ) {
-								$this->output( "Skipping File:{$row->img_name}.\n" );
-							}
-						}
-					}
-				} catch ( Exception $e ) {
-					$this->output( "{$row->img_name} failed. {$e->getMessage()}\n" );
-				}
-			}
-			$conds2 = [ 'img_name > ' . $dbw->addQuotes( $row->img_name ) ];
-			wfWaitForSlaves();
-		} while ( $res->numRows() === $batchSize );
-
-		$total = $upgraded + $leftAlone;
-		if ( $force ) {
-			$this->output( "\nFinished refreshing file metadata for $total files. "
-				. "$upgraded needed to be refreshed, $leftAlone did not need to "
-				. "be but were refreshed anyways, and $error refreshes were suspicious.\n" );
+		if ( $listFile !== false ) {
+			// Process files by title list
+			$this->processFilesByTitles( $listFile, $repo, $oldimage, $force, $verbose, $sleep );
 		} else {
-			$this->output( "\nFinished refreshing file metadata for $total files. "
-				. "$upgraded were refreshed, $leftAlone were already up to date, "
-				. "and $error refreshes were suspicious.\n" );
+			// Process files by database query
+			$this->processFilesByDatabase( $repo, $oldimage, $force, $verbose, $sleep );
 		}
 	}
 
 	/**
-	 * @param IDatabase $dbw
-	 * @return array
+	 * Process files specified in a list file using batch DB queries
+	 *
+	 * @param string $listFile Path to file with titles
+	 * @param LocalRepo $repo
+	 * @param bool $oldimage
+	 * @param bool $force
+	 * @param bool $verbose
+	 * @param int $sleep
 	 */
-	function getConditions( $dbw ) {
-		$conds = [];
+	private function processFilesByTitles(
+		string $listFile,
+		LocalRepo $repo,
+		bool $oldimage,
+		bool $force,
+		bool $verbose,
+		int $sleep
+	): void {
+		if ( !file_exists( $listFile ) ) {
+			$this->fatalError( "List file does not exist: $listFile" );
+		}
 
+		$file = fopen( $listFile, 'r' );
+		if ( !$file ) {
+			$this->fatalError( "Unable to read list file: $listFile" );
+		}
+
+		// Read and validate all titles from the file
+		$requestedNames = [];
+		$invalidTitles = [];
+		$lineNum = 0;
+
+		while ( !feof( $file ) ) {
+			$line = trim( fgets( $file ) );
+			$lineNum++;
+
+			if ( $line === '' ) {
+				continue;
+			}
+
+			try {
+				$titleValue = $this->titleParser->parseTitle( $line, NS_FILE );
+				if ( $titleValue->getNamespace() !== NS_FILE ) {
+					$invalidTitles[] = [ 'line' => $lineNum, 'title' => $line ];
+					continue;
+				}
+				$requestedNames[$titleValue->getDBkey()] = $line;
+			} catch ( MalformedTitleException ) {
+				$invalidTitles[] = [ 'line' => $lineNum, 'title' => $line ];
+				continue;
+			}
+		}
+		fclose( $file );
+
+		// Report invalid titles
+		foreach ( $invalidTitles as $invalid ) {
+			$this->output( "Invalid file title on line {$invalid['line']}: '{$invalid['title']}'\n" );
+		}
+
+		if ( count( $requestedNames ) === 0 ) {
+			$this->output( "No valid titles found in list file.\n" );
+			return;
+		}
+
+		$this->output( "Found " . count( $requestedNames ) . " valid title(s) to process.\n" );
+
+		$dbw = $this->getPrimaryDB();
+		$batchSize = (int)$this->getBatchSize();
+		$nameField = $oldimage ? 'oi_name' : 'img_name';
+		$upgraded = 0;
+		$leftAlone = 0;
+		$foundNames = [];
+
+		$nameBatches = array_chunk( array_keys( $requestedNames ), $batchSize );
+
+		foreach ( $nameBatches as $nameBatch ) {
+			if ( $oldimage ) {
+				$queryBuilder = FileSelectQueryBuilder::newForOldFile( $dbw );
+			} else {
+				$queryBuilder = FileSelectQueryBuilder::newForFile( $dbw );
+			}
+			$queryBuilder
+				->where( [ $nameField => $nameBatch ] )
+				->caller( __METHOD__ );
+
+			$res = $queryBuilder->fetchResultSet();
+
+			[ $up, $left, $found ] = $this->processBatch( $res, $repo, $nameField, $force, $verbose );
+			$upgraded += $up;
+			$leftAlone += $left;
+			$foundNames += $found;
+
+			$this->waitForReplication();
+			if ( $sleep ) {
+				sleep( $sleep );
+			}
+		}
+
+		// Report files that were not found in the database
+		$notFound = array_diff_key( $requestedNames, $foundNames );
+		if ( count( $notFound ) > 0 ) {
+			$this->output( "\nThe following " . count( $notFound ) . " file(s) were not found in the database:\n" );
+			foreach ( $notFound as $dbKey => $originalTitle ) {
+				$this->output( "  - $originalTitle\n" );
+			}
+		}
+
+		$this->outputResult( $upgraded, $leftAlone, $force );
+	}
+
+	/**
+	 * Process files using database query with filters
+	 *
+	 * @param LocalRepo $repo
+	 * @param bool $oldimage
+	 * @param bool $force
+	 * @param bool $verbose
+	 * @param int $sleep
+	 */
+	private function processFilesByDatabase(
+		LocalRepo $repo,
+		bool $oldimage,
+		bool $force,
+		bool $verbose,
+		int $sleep
+	): void {
+		$start = $this->getOption( 'start', false );
+		$dbw = $this->getPrimaryDB();
+		if ( $oldimage ) {
+			$fieldPrefix = 'oi_';
+			$queryBuilderTemplate = FileSelectQueryBuilder::newForOldFile( $dbw );
+		} else {
+			$fieldPrefix = 'img_';
+			$queryBuilderTemplate = FileSelectQueryBuilder::newForFile( $dbw );
+		}
+
+		$batchSize = (int)$this->getBatchSize();
+		$nameField = $fieldPrefix . 'name';
+		$upgraded = 0;
+		$leftAlone = 0;
+
+		$this->setConditions( $dbw, $queryBuilderTemplate, $fieldPrefix );
+		$queryBuilderTemplate
+			->orderBy( $nameField, SelectQueryBuilder::SORT_ASC )
+			->limit( $batchSize );
+
+		$batchCondition = [];
+		if ( $start !== false ) {
+			$batchCondition[] = $dbw->expr( $nameField, '>=', $start );
+		}
+
+		do {
+			$queryBuilder = clone $queryBuilderTemplate;
+			$res = $queryBuilder->andWhere( $batchCondition )
+				->caller( __METHOD__ )->fetchResultSet();
+
+			[ $up, $left, $found ] = $this->processBatch( $res, $repo, $nameField, $force, $verbose );
+			$upgraded += $up;
+			$leftAlone += $left;
+
+			if ( $res->numRows() > 0 ) {
+				$lastName = array_key_last( $found );
+				$batchCondition = [ $dbw->expr( $nameField, '>', $lastName ) ];
+			}
+
+			$this->waitForReplication();
+			if ( $sleep ) {
+				sleep( $sleep );
+			}
+		} while ( $res->numRows() === $batchSize );
+
+		$this->outputResult( $upgraded, $leftAlone, $force );
+	}
+
+	/**
+	 * Process a batch of file rows
+	 *
+	 * @param IResultWrapper $res Database result set
+	 * @param LocalRepo $repo
+	 * @param string $nameField Field name containing the file name
+	 * @param bool $force
+	 * @param bool $verbose
+	 * @return array [ upgraded count, left alone count, found names keyed by name ]
+	 */
+	private function processBatch(
+		IResultWrapper $res,
+		LocalRepo $repo,
+		string $nameField,
+		bool $force,
+		bool $verbose
+	): array {
+		$upgraded = 0;
+		$leftAlone = 0;
+		$foundNames = [];
+
+		if ( $res->numRows() > 0 ) {
+			$firstRow = $res->current();
+			$firstName = $firstRow->$nameField;
+			$res->rewind();
+			$this->output( "Processing next {$res->numRows()} row(s) starting with $firstName.\n" );
+		}
+
+		foreach ( $res as $row ) {
+			$name = $row->$nameField;
+			$foundNames[$name] = true;
+
+			try {
+				$file = $repo->newFileFromRow( $row );
+				$file->maybeUpgradeRow();
+				if ( $file->getUpgraded() ) {
+					$this->output( "Refreshed File:$name.\n" );
+					$upgraded++;
+				} else {
+					if ( $force ) {
+						$file->upgradeRow();
+						if ( $verbose ) {
+							$this->output( "Forcibly refreshed File:$name.\n" );
+						}
+					} elseif ( $verbose ) {
+						$this->output( "Skipping File:$name.\n" );
+					}
+					$leftAlone++;
+				}
+			} catch ( Exception $e ) {
+				$this->output( "$name failed. {$e->getMessage()}\n" );
+			}
+		}
+
+		return [ $upgraded, $leftAlone, $foundNames ];
+	}
+
+	/**
+	 * Output the final result summary
+	 *
+	 * @param int $upgraded
+	 * @param int $leftAlone
+	 * @param bool $force
+	 */
+	private function outputResult( int $upgraded, int $leftAlone, bool $force ): void {
+		$total = $upgraded + $leftAlone;
+		if ( $force ) {
+			$this->output( "\nFinished refreshing file metadata for $total files. "
+				. "$upgraded needed to be refreshed, $leftAlone did not need to "
+				. "be but were refreshed anyways.\n" );
+		} else {
+			$this->output( "\nFinished refreshing file metadata for $total files. "
+				. "$upgraded were refreshed, $leftAlone were already up to date.\n" );
+		}
+	}
+
+	/**
+	 * @param IReadableDatabase $dbw
+	 * @param SelectQueryBuilder $queryBuilder
+	 * @param string $fieldPrefix like img_ or oi_
+	 */
+	private function setConditions(
+		IReadableDatabase $dbw,
+		SelectQueryBuilder $queryBuilder,
+		string $fieldPrefix
+	): void {
 		$end = $this->getOption( 'end', false );
 		$mime = $this->getOption( 'mime', false );
 		$mediatype = $this->getOption( 'mediatype', false );
 		$like = $this->getOption( 'metadata-contains', false );
 
 		if ( $end !== false ) {
-			$conds[] = 'img_name <= ' . $dbw->addQuotes( $end );
+			$queryBuilder->andWhere( $dbw->expr( $fieldPrefix . 'name', '<=', $end ) );
 		}
 		if ( $mime !== false ) {
-			list( $major, $minor ) = File::splitMime( $mime );
-			$conds['img_major_mime'] = $major;
+			[ $major, $minor ] = File::splitMime( $mime );
+			$queryBuilder->andWhere( [ $fieldPrefix . 'major_mime' => $major ] );
 			if ( $minor !== '*' ) {
-				$conds['img_minor_mime'] = $minor;
+				$queryBuilder->andWhere( [ $fieldPrefix . 'minor_mime' => $minor ] );
 			}
 		}
 		if ( $mediatype !== false ) {
-			$conds['img_media_type'] = $mediatype;
+			$queryBuilder->andWhere( [ $fieldPrefix . 'media_type' => $mediatype ] );
 		}
 		if ( $like ) {
-			$conds[] = 'img_metadata ' . $dbw->buildLike( $dbw->anyString(), $like, $dbw->anyString() );
+			$queryBuilder->andWhere(
+				$dbw->expr( $fieldPrefix . 'metadata', IExpression::LIKE,
+					new LikeValue( $dbw->anyString(), $like, $dbw->anyString() ) )
+			);
 		}
-
-		return $conds;
 	}
 
 	/**
 	 * @param bool $force
 	 * @param bool $brokenOnly
+	 * @param bool $reserialize
+	 * @param bool $split
+	 *
+	 * @return LocalRepo
 	 */
-	function setupParameters( $force, $brokenOnly ) {
-		global $wgUpdateCompatibleMetadata;
-
-		if ( $brokenOnly ) {
-			$wgUpdateCompatibleMetadata = false;
-		} else {
-			$wgUpdateCompatibleMetadata = true;
-		}
-
+	private function newLocalRepo( bool $force, bool $brokenOnly, bool $reserialize, bool $split ): LocalRepo {
 		if ( $brokenOnly && $force ) {
 			$this->fatalError( 'Cannot use --broken-only and --force together. ', 2 );
 		}
+		$reserialize = $reserialize || $split;
+		if ( $brokenOnly && $reserialize ) {
+			$this->fatalError( 'Cannot use --broken-only with --convert-to-json or --split. ',
+				2 );
+		}
+
+		$overrides = [
+			'updateCompatibleMetadata' => !$brokenOnly,
+		];
+		if ( $reserialize ) {
+			$overrides['reserializeMetadata'] = true;
+			$overrides['useJsonMetadata'] = true;
+		}
+		if ( $split ) {
+			$overrides['useSplitMetadata'] = true;
+		}
+
+		return $this->getServiceContainer()->getRepoGroup()
+			->newCustomLocalRepo( $overrides );
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = RefreshImageMetadata::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

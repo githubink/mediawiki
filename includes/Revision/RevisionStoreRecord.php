@@ -2,32 +2,21 @@
 /**
  * A RevisionRecord representing an existing revision persisted in the revision table.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  */
 
 namespace MediaWiki\Revision;
 
-use CommentStoreComment;
 use InvalidArgumentException;
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Page\PageIdentity;
+use MediaWiki\Page\ProperPageIdentity;
+use MediaWiki\Permissions\Authority;
 use MediaWiki\User\UserIdentity;
-use Title;
-use User;
+use MediaWiki\Utils\MWTimestamp;
 use Wikimedia\Assert\Assert;
+use Wikimedia\Timestamp\TimestampFormat as TS;
 
 /**
  * A RevisionRecord representing an existing revision persisted in the revision table.
@@ -45,34 +34,48 @@ class RevisionStoreRecord extends RevisionRecord {
 	 * @note Avoid calling this constructor directly. Use the appropriate methods
 	 * in RevisionStore instead.
 	 *
-	 * @param Title $title The title of the page this Revision is associated with.
+	 * @param PageIdentity $page The page this RevisionRecord is associated with.
 	 * @param UserIdentity $user
 	 * @param CommentStoreComment $comment
-	 * @param object $row A row from the revision table. Use RevisionStore::getQueryInfo() to build
+	 * @param \stdClass $row A row from the revision table. Use RevisionStore::getQueryInfo() to build
 	 *        a query that yields the required fields.
 	 * @param RevisionSlots $slots The slots of this revision.
-	 * @param bool|string $dbDomain DB domain of the relevant wiki or false for the current one.
+	 * @param false|string $wikiId Relevant wiki id or self::LOCAL for the current one.
 	 */
-	function __construct(
-		Title $title,
+	public function __construct(
+		PageIdentity $page,
 		UserIdentity $user,
 		CommentStoreComment $comment,
-		$row,
+		\stdClass $row,
 		RevisionSlots $slots,
-		$dbDomain = false
+		$wikiId = self::LOCAL
 	) {
-		parent::__construct( $title, $slots, $dbDomain );
-		Assert::parameterType( 'object', $row, '$row' );
-
+		parent::__construct( $page, $slots, $wikiId );
 		$this->mId = intval( $row->rev_id );
 		$this->mPageId = intval( $row->rev_page );
 		$this->mComment = $comment;
 
-		$timestamp = wfTimestamp( TS_MW, $row->rev_timestamp );
-		Assert::parameter( is_string( $timestamp ), '$row->rev_timestamp', 'must be a valid timestamp' );
+		Assert::parameter(
+			$page->exists(),
+			'$page',
+			'must represent an existing page'
+		);
+		Assert::parameter(
+			$page->getId( $wikiId ) === $this->mPageId,
+			'$page',
+			'must match the rev_page field in $row'
+		);
+		Assert::postcondition(
+			parent::getPage() instanceof ProperPageIdentity,
+			'The parent constructor should have ensured that we have a ProperPageIdentity now.'
+		);
+
+		// Don't use MWTimestamp::convert, instead let any detailed exception from MWTimestamp
+		// bubble up (T254210)
+		$timestamp = ( new MWTimestamp( $row->rev_timestamp ) )->getTimestamp( TS::MW );
 
 		$this->mUser = $user;
-		$this->mMinorEdit = boolval( $row->rev_minor_edit );
+		$this->mMinorEdit = (bool)$row->rev_minor_edit;
 		$this->mTimestamp = $timestamp;
 		$this->mDeleted = intval( $row->rev_deleted );
 
@@ -81,7 +84,6 @@ class RevisionStoreRecord extends RevisionRecord {
 		// allows rev_parent_id to be NULL.
 		$this->mParentId = isset( $row->rev_parent_id ) ? intval( $row->rev_parent_id ) : null;
 		$this->mSize = isset( $row->rev_len ) ? intval( $row->rev_len ) : null;
-		$this->mSha1 = !empty( $row->rev_sha1 ) ? $row->rev_sha1 : null;
 
 		// NOTE: we must not call $this->mTitle->getLatestRevID() here, since the state of
 		// page_latest may be in limbo during revision creation. In that case, calling
@@ -91,37 +93,39 @@ class RevisionStoreRecord extends RevisionRecord {
 			$this->mCurrent = ( $row->rev_id == $row->page_latest );
 		}
 
-		// sanity check
-		if (
-			$this->mPageId && $this->mTitle->exists()
-			&& $this->mPageId !== $this->mTitle->getArticleID()
-		) {
+		$pageIdBasedOnPage = $this->getArticleId( $this->mPage );
+		if ( $this->mPageId && $pageIdBasedOnPage && $this->mPageId !== $pageIdBasedOnPage ) {
 			throw new InvalidArgumentException(
-				'The given Title does not belong to page ID ' . $this->mPageId .
-				' but actually belongs to ' . $this->mTitle->getArticleID()
+				'The given page (' . $this->mPage . ')' .
+				' does not belong to page ID ' . $this->mPageId .
+				' but actually belongs to ' . $this->getArticleId( $this->mPage )
 			);
 		}
 	}
 
 	/**
-	 * MCR migration note: this replaces Revision::isCurrent
+	 * Returns the page this revision belongs to.
 	 *
-	 * @return bool
+	 * @return ProperPageIdentity (before 1.44, this was returning a PageIdentity)
+	 */
+	public function getPage(): ProperPageIdentity {
+		// Override to narrow the return type.
+		// We checked in the constructor that the page is a proper page.
+		// @phan-suppress-next-line PhanTypeMismatchReturnSuperType
+		return parent::getPage();
+	}
+
+	/**
+	 * @inheritDoc
 	 */
 	public function isCurrent() {
 		return $this->mCurrent;
 	}
 
-	/**
-	 * MCR migration note: this replaces Revision::isDeleted
-	 *
-	 * @param int $field One of DELETED_* bitfield constants
-	 *
-	 * @return bool
-	 */
-	public function isDeleted( $field ) {
+	/** @inheritDoc */
+	public function isDeleted( int $field ) {
 		if ( $this->isCurrent() && $field === self::DELETED_TEXT ) {
-			// Current revisions of pages cannot have the content hidden. Skipping this
+			// Latest revisions of pages cannot have the content hidden. Skipping this
 			// check is very useful for Parser as it fetches templates using newKnownCurrent().
 			// Calling getVisibility() in that case triggers a verification database query.
 			return false; // no need to check
@@ -130,35 +134,35 @@ class RevisionStoreRecord extends RevisionRecord {
 		return parent::isDeleted( $field );
 	}
 
-	protected function userCan( $field, User $user ) {
+	/** @inheritDoc */
+	public function userCan( int $field, Authority $performer ) {
 		if ( $this->isCurrent() && $field === self::DELETED_TEXT ) {
-			// Current revisions of pages cannot have the content hidden. Skipping this
+			// Latest revisions of pages cannot have the content hidden. Skipping this
 			// check is very useful for Parser as it fetches templates using newKnownCurrent().
 			// Calling getVisibility() in that case triggers a verification database query.
 			return true; // no need to check
 		}
 
-		return parent::userCan( $field, $user );
+		return parent::userCan( $field, $performer );
 	}
 
 	/**
-	 * @return int The revision id, never null.
+	 * @param string|false $wikiId The wiki ID expected by the caller.
+	 * @return int|null The revision id, never null.
 	 */
-	public function getId() {
+	public function getId( $wikiId = self::LOCAL ) {
 		// overwritten just to add a guarantee to the contract
-		return parent::getId();
+		return parent::getId( $wikiId );
 	}
 
 	/**
 	 * @throws RevisionAccessException if the size was unknown and could not be calculated.
-	 * @return string The nominal revision size, never null. May be computed on the fly.
+	 * @return int The nominal revision size, never null. May be computed on the fly.
 	 */
 	public function getSize() {
 		// If length is null, calculate and remember it (potentially SLOW!).
 		// This is for compatibility with old database rows that don't have the field set.
-		if ( $this->mSize === null ) {
-			$this->mSize = $this->mSlots->computeSize();
-		}
+		$this->mSize ??= $this->mSlots->computeSize();
 
 		return $this->mSize;
 	}
@@ -168,35 +172,19 @@ class RevisionStoreRecord extends RevisionRecord {
 	 * @return string The revision hash, never null. May be computed on the fly.
 	 */
 	public function getSha1() {
-		// If hash is null, calculate it and remember (potentially SLOW!)
-		// This is for compatibility with old database rows that don't have the field set.
-		if ( $this->mSha1 === null ) {
-			$this->mSha1 = $this->mSlots->computeSha1();
-		}
-
-		return $this->mSha1;
+		return $this->mSlots->computeSha1();
 	}
 
-	/**
-	 * @param int $audience
-	 * @param User|null $user
-	 *
-	 * @return UserIdentity The identity of the revision author, null if access is forbidden.
-	 */
-	public function getUser( $audience = self::FOR_PUBLIC, User $user = null ) {
+	/** @inheritDoc */
+	public function getUser( int $audience = self::FOR_PUBLIC, ?Authority $performer = null ) {
 		// overwritten just to add a guarantee to the contract
-		return parent::getUser( $audience, $user );
+		return parent::getUser( $audience, $performer );
 	}
 
-	/**
-	 * @param int $audience
-	 * @param User|null $user
-	 *
-	 * @return CommentStoreComment The revision comment, null if access is forbidden.
-	 */
-	public function getComment( $audience = self::FOR_PUBLIC, User $user = null ) {
+	/** @inheritDoc */
+	public function getComment( int $audience = self::FOR_PUBLIC, ?Authority $performer = null ) {
 		// overwritten just to add a guarantee to the contract
-		return parent::getComment( $audience, $user );
+		return parent::getComment( $audience, $performer );
 	}
 
 	/**
@@ -217,9 +205,3 @@ class RevisionStoreRecord extends RevisionRecord {
 	}
 
 }
-
-/**
- * Retain the old class name for backwards compatibility.
- * @deprecated since 1.32
- */
-class_alias( RevisionStoreRecord::class, 'MediaWiki\Storage\RevisionStoreRecord' );

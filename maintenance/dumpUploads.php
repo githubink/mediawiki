@@ -2,28 +2,19 @@
 /**
  * Dump a the list of files uploaded, for feeding to tar or similar.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Deferred\LinksUpdate\ImageLinksTable;
+use MediaWiki\FileRepo\File\File;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Maintenance\Maintenance;
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script to dump a the list of files uploaded,
@@ -32,6 +23,11 @@ require_once __DIR__ . '/Maintenance.php';
  * @ingroup Maintenance
  */
 class DumpUploads extends Maintenance {
+	/** @var string */
+	private $mBasePath;
+
+	private int $fileMigrationStage;
+
 	public function __construct() {
 		parent::__construct();
 		$this->addDescription( 'Generates list of uploaded files which can be fed to tar or similar.
@@ -40,34 +36,34 @@ By default, outputs relative paths against the parent directory of $wgUploadDire
 		$this->addOption( 'local', 'List all local files, used or not. No shared files included' );
 		$this->addOption( 'used', 'Skip local images that are not used' );
 		$this->addOption( 'shared', 'Include images used from shared repository' );
+
+		$this->fileMigrationStage = $this->getConfig()->get( MainConfigNames::FileSchemaMigrationStage );
 	}
 
 	public function execute() {
-		global $IP;
-		$this->mAction = 'fetchLocal';
-		$this->mBasePath = $this->getOption( 'base', $IP );
-		$this->mShared = false;
-		$this->mSharedSupplement = false;
-
-		if ( $this->hasOption( 'local' ) ) {
-			$this->mAction = 'fetchLocal';
-		}
-
-		if ( $this->hasOption( 'used' ) ) {
-			$this->mAction = 'fetchUsed';
-		}
+		$this->mBasePath = $this->getOption( 'base', MW_INSTALL_PATH );
+		$shared = false;
+		$sharedSupplement = false;
 
 		if ( $this->hasOption( 'shared' ) ) {
 			if ( $this->hasOption( 'used' ) ) {
 				// Include shared-repo files in the used check
-				$this->mShared = true;
+				$shared = true;
 			} else {
 				// Grab all local *plus* used shared
-				$this->mSharedSupplement = true;
+				$sharedSupplement = true;
 			}
 		}
-		$this->{$this->mAction} ( $this->mShared );
-		if ( $this->mSharedSupplement ) {
+
+		if ( $this->hasOption( 'local' ) ) {
+			$this->fetchLocal( $shared );
+		} elseif ( $this->hasOption( 'used' ) ) {
+			$this->fetchUsed( $shared );
+		} else {
+			$this->fetchLocal( $shared );
+		}
+
+		if ( $sharedSupplement ) {
 			$this->fetchUsed( true );
 		}
 	}
@@ -77,19 +73,39 @@ By default, outputs relative paths against the parent directory of $wgUploadDire
 	 *
 	 * @param bool $shared True to pass shared-dir settings to hash func
 	 */
-	function fetchUsed( $shared ) {
-		$dbr = $this->getDB( DB_REPLICA );
-		$image = $dbr->tableName( 'image' );
-		$imagelinks = $dbr->tableName( 'imagelinks' );
+	private function fetchUsed( $shared ) {
+		$imageLinksTargetTitles = $this->getReplicaDB( ImageLinksTable::VIRTUAL_DOMAIN )
+			->newSelectQueryBuilder()
+			->select( 'lt_title' )
+			->distinct()
+			->from( 'imagelinks' )
+			->join( 'linktarget', null, 'il_target_id = lt_id' )
+			->caller( __METHOD__ )
+			->fetchFieldValues();
 
-		$sql = "SELECT DISTINCT il_to, img_name
-			FROM $imagelinks
-			LEFT JOIN $image
-			ON il_to=img_name";
-		$result = $dbr->query( $sql );
+		$dbr = $this->getReplicaDB();
+
+		if ( $this->fileMigrationStage & SCHEMA_COMPAT_READ_OLD ) {
+			$result = $dbr->newSelectQueryBuilder()
+				->select( [ 'name' => 'img_name' ] )
+				->from( 'image' )
+				->where( [ 'img_name' => $imageLinksTargetTitles ] )
+				->caller( __METHOD__ )
+				->fetchResultSet();
+		} else {
+			$result = $dbr->newSelectQueryBuilder()
+				->select( [ 'name' => 'file_name' ] )
+				->from( 'file' )
+				->where( [
+					'file_name' => $imageLinksTargetTitles,
+					'file_deleted' => 0
+				] )
+				->caller( __METHOD__ )
+				->fetchResultSet();
+		}
 
 		foreach ( $result as $row ) {
-			$this->outputItem( $row->il_to, $shared );
+			$this->outputItem( $row->name, $shared );
 		}
 	}
 
@@ -98,33 +114,46 @@ By default, outputs relative paths against the parent directory of $wgUploadDire
 	 *
 	 * @param bool $shared True to pass shared-dir settings to hash func
 	 */
-	function fetchLocal( $shared ) {
-		$dbr = $this->getDB( DB_REPLICA );
-		$result = $dbr->select( 'image',
-			[ 'img_name' ],
-			'',
-			__METHOD__ );
+	private function fetchLocal( $shared ) {
+		$dbr = $this->getReplicaDB();
+
+		if ( $this->fileMigrationStage & SCHEMA_COMPAT_READ_OLD ) {
+			$result = $dbr->newSelectQueryBuilder()
+				->select( 'img_name' )
+				->from( 'image' )
+				->caller( __METHOD__ )
+				->fetchResultSet();
+		} else {
+			$result = $dbr->newSelectQueryBuilder()
+				->select( 'file_name' )
+				->from( 'file' )
+				->where( [ 'file_deleted' => 0 ] )
+				->caller( __METHOD__ )
+				->fetchResultSet();
+		}
 
 		foreach ( $result as $row ) {
-			$this->outputItem( $row->img_name, $shared );
+			$this->outputItem( $row->img_name ?? $row->file_name, $shared );
 		}
 	}
 
-	function outputItem( $name, $shared ) {
-		$file = MediaWikiServices::getInstance()->getRepoGroup()->findFile( $name );
+	private function outputItem( string $name, bool $shared ) {
+		$file = $this->getServiceContainer()->getRepoGroup()->findFile( $name );
 		if ( $file && $this->filterItem( $file, $shared ) ) {
 			$filename = $file->getLocalRefPath();
 			$rel = wfRelativePath( $filename, $this->mBasePath );
 			$this->output( "$rel\n" );
 		} else {
-			wfDebug( __METHOD__ . ": base file? $name\n" );
+			wfDebug( __METHOD__ . ": base file? $name" );
 		}
 	}
 
-	function filterItem( $file, $shared ) {
+	private function filterItem( File $file, bool $shared ): bool {
 		return $shared || $file->isLocal();
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = DumpUploads::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

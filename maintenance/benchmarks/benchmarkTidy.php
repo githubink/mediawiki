@@ -1,51 +1,43 @@
 <?php
+/**
+ * @license GPL-2.0-or-later
+ * @file
+ * @ingroup Benchmark
+ */
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Maintenance\Benchmarker;
 
-require __DIR__ . '/Benchmarker.php';
+// @codeCoverageIgnoreStart
+require_once __DIR__ . '/../includes/Benchmarker.php';
+// @codeCoverageIgnoreEnd
 
 class BenchmarkTidy extends Benchmarker {
 	public function __construct() {
 		parent::__construct();
 		$this->addOption( 'file', 'Path to file containing the input text', false, true );
-		$this->addOption( 'driver', 'The Tidy driver name, or false to use the configured instance',
-			false,  true );
-		$this->addOption( 'tidy-config', 'JSON encoded value for the tidy configuration array',
-			false, true );
 	}
 
 	public function execute() {
-		$file = $this->getOption( 'file', __DIR__ . '/tidy/australia-untidy.html.gz' );
+		$file = $this->getOption( 'file', __DIR__ . '/data/tidy/australia-untidy.html.gz' );
 		$html = $this->loadFile( $file );
 		if ( $html === false ) {
 			$this->fatalError( "Unable to open input file" );
 		}
-		if ( $this->hasOption( 'driver' ) || $this->hasOption( 'tidy-config' ) ) {
-			$config = json_decode( $this->getOption( 'tidy-config', '{}' ), true );
-			if ( !is_array( $config ) ) {
-				$this->fatalError( "Invalid JSON tidy config" );
-			}
-			$config += [ 'driver' => $this->getOption( 'driver', 'RemexHtml' ) ];
-			$driver = MWTidy::factory( $config );
-		} else {
-			$driver = MWTidy::singleton();
-			if ( !$driver ) {
-				$this->fatalError( "Tidy disabled or not installed" );
-			}
-		}
 
-		$this->benchmark( $driver, $html );
+		$this->benchmark( $html );
 	}
 
-	private function benchmark( $driver, $html ) {
-		$contLang = MediaWikiServices::getInstance()->getContentLanguage();
+	private function benchmark( string $html ) {
+		$services = $this->getServiceContainer();
+		$contLang = $services->getContentLanguage();
+		$tidy = $services->getTidy();
 		$times = [];
 		$innerCount = 10;
 		$outerCount = 10;
 		for ( $j = 1; $j <= $outerCount; $j++ ) {
 			$t = microtime( true );
 			for ( $i = 0; $i < $innerCount; $i++ ) {
-				$driver->tidy( $html );
+				$tidy->tidy( $html );
 				print $contLang->formatSize( memory_get_usage( true ) ) . "\n";
 			}
 			$t = ( ( microtime( true ) - $t ) / $innerCount ) * 1000;
@@ -59,6 +51,7 @@ class BenchmarkTidy extends Benchmarker {
 		$min = $times[0];
 		$max = end( $times );
 		if ( $n % 2 ) {
+			// @phan-suppress-next-line PhanTypeMismatchDimFetch
 			$median = $times[ ( $n - 1 ) / 2 ];
 		} else {
 			$median = ( $times[$n / 2] + $times[$n / 2 - 1] ) / 2;
@@ -75,5 +68,7 @@ class BenchmarkTidy extends Benchmarker {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = BenchmarkTidy::class;
-require RUN_MAINTENANCE_IF_MAIN;
+require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

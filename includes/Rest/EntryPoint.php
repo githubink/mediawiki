@@ -2,96 +2,230 @@
 
 namespace MediaWiki\Rest;
 
-use ExtensionRegistry;
+use MediaWiki\Config\ServiceOptions;
+use MediaWiki\Context\IContextSource;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\EntryPointEnvironment;
+use MediaWiki\Exception\MWExceptionRenderer;
+use MediaWiki\MainConfigNames;
+use MediaWiki\MediaWikiEntryPoint;
 use MediaWiki\MediaWikiServices;
+use MediaWiki\Registration\ExtensionRegistry;
+use MediaWiki\Rest\BasicAccess\CompoundAuthorizer;
 use MediaWiki\Rest\BasicAccess\MWBasicAuthorizer;
-use RequestContext;
-use Title;
-use WebResponse;
+use MediaWiki\Rest\Module\ModuleManager;
+use MediaWiki\Rest\Reporter\MWErrorReporter;
+use MediaWiki\Rest\Validator\Validator;
+use Wikimedia\Message\ITextFormatter;
 
-class EntryPoint {
-	/** @var RequestInterface */
-	private $request;
-	/** @var WebResponse */
-	private $webResponse;
-	/** @var Router */
-	private $router;
+/**
+ * @internal
+ */
+class EntryPoint extends MediaWikiEntryPoint {
 
-	public static function main() {
-		// URL safety checks
-		global $wgRequest;
-		if ( !$wgRequest->checkUrlExtension() ) {
-			return;
-		}
+	private RequestInterface $request;
+	private ?Router $router = null;
+	private ?CorsUtils $cors  = null;
 
-		// Set $wgTitle and the title in RequestContext, as in api.php
-		global $wgTitle;
-		$wgTitle = Title::makeTitle( NS_SPECIAL, 'Badtitle/rest.php' );
-		RequestContext::getMain()->setTitle( $wgTitle );
-
-		$services = MediaWikiServices::getInstance();
+	/**
+	 * @internal Public for use in core tests
+	 *
+	 * @param MediaWikiServices $services
+	 * @param IContextSource $context
+	 * @param RequestInterface $request
+	 * @param ResponseFactory $responseFactory
+	 * @param ITextFormatter[] $textFormatters
+	 * @param bool $showExceptionDetails
+	 * @param CorsUtils $cors
+	 *
+	 * @return Router
+	 */
+	public static function createRouter(
+		MediaWikiServices $services,
+		IContextSource $context,
+		RequestInterface $request,
+		ResponseFactory $responseFactory,
+		array $textFormatters,
+		bool $showExceptionDetails,
+		CorsUtils $cors
+	): Router {
 		$conf = $services->getMainConfig();
 
-		if ( !$conf->get( 'EnableRestAPI' ) ) {
-			wfHttpError( 403, 'Access Denied',
-				'Set $wgEnableRestAPI to true to enable the experimental REST API' );
-			return;
-		}
+		$authority = $context->getAuthority();
+		$authorizer = new CompoundAuthorizer();
+		$authorizer
+			->addAuthorizer( new MWBasicAuthorizer( $authority ) )
+			->addAuthorizer( $cors );
 
-		$request = new RequestFromGlobals( [
-			'cookiePrefix' => $conf->get( 'CookiePrefix' )
-		] );
-
-		$authorizer = new MWBasicAuthorizer( RequestContext::getMain()->getUser(),
-			$services->getPermissionManager() );
-
-		global $IP;
-		$router = new Router(
-			[ "$IP/includes/Rest/coreRoutes.json" ],
-			ExtensionRegistry::getInstance()->getAttribute( 'RestRoutes' ),
-			$conf->get( 'RestPath' ),
-			$services->getLocalServerObjectCache(),
-			new ResponseFactory,
-			$authorizer
+		$objectFactory = $services->getObjectFactory();
+		$restValidator = new Validator( $objectFactory,
+			$request,
+			$authority
 		);
 
-		$entryPoint = new self(
-			$request,
-			$wgRequest->response(),
-			$router );
-		$entryPoint->execute();
+		$stats = $services->getStatsFactory();
+
+		$moduleManager = new ModuleManager(
+			new ServiceOptions( ModuleManager::CONSTRUCTOR_OPTIONS, $conf ),
+			ExtensionRegistry::getInstance()->getAttribute( 'RestModuleFiles' ),
+			$services->getLocalServerObjectCache(),
+			$responseFactory
+		);
+
+		return ( new Router(
+			$moduleManager,
+			ExtensionRegistry::getInstance()->getAttribute( 'RestRoutes' ),
+			new ServiceOptions( Router::CONSTRUCTOR_OPTIONS, $conf ),
+			$services->getLocalServerObjectCache(),
+			$textFormatters,
+			$showExceptionDetails,
+			$authorizer,
+			$authority,
+			$objectFactory,
+			$restValidator,
+			new MWErrorReporter(),
+			$services->getHookContainer(),
+			$context->getRequest()->getSession()
+		) )
+			->setCors( $cors )
+			->setStats( $stats );
 	}
 
-	public function __construct( RequestInterface $request, WebResponse $webResponse,
-		Router $router
+	/**
+	 * @internal
+	 * @return RequestInterface The RequestInterface object used by this entry point.
+	 */
+	public static function getMainRequest(): RequestInterface {
+		static $mainRequest = null;
+
+		if ( $mainRequest === null ) {
+			$conf = MediaWikiServices::getInstance()->getMainConfig();
+			$mainRequest = new RequestFromGlobals( [
+				'cookiePrefix' => $conf->get( MainConfigNames::CookiePrefix )
+			] );
+		}
+
+		return $mainRequest;
+	}
+
+	protected function doSetup() {
+		parent::doSetup();
+
+		$context = $this->getContext();
+		$textFormatters = $this->getTextFormatters();
+		$showExceptionDetails = MWExceptionRenderer::shouldShowExceptionDetails();
+		$responseFactory = Router::makeResponseFactory( $textFormatters, $showExceptionDetails );
+
+		$this->cors = new CorsUtils(
+			new ServiceOptions(
+				CorsUtils::CONSTRUCTOR_OPTIONS,
+				$this->getServiceContainer()->getMainConfig()
+			),
+			$responseFactory,
+			$context->getUser()
+		);
+
+		if ( !$this->router ) {
+			$this->router = $this->createRouter(
+				$this->getServiceContainer(),
+				$context,
+				$this->request,
+				$responseFactory,
+				$textFormatters,
+				$showExceptionDetails,
+				$this->cors
+			);
+		}
+	}
+
+	/**
+	 * Get a TextFormatter array from MediaWikiServices
+	 *
+	 * @return ITextFormatter[]
+	 */
+	private function getTextFormatters() {
+		$services = $this->getServiceContainer();
+
+		$code = $services->getContentLanguageCode()->toString();
+		$langs = [];
+
+		$queryParams = $this->request->getQueryParams();
+		$requestedLang = $queryParams['lang'] ?? null;
+		if ( is_string( $requestedLang ) && $requestedLang !== '' ) {
+			$internalCode = \MediaWiki\Language\LanguageCode::bcp47ToInternal( $requestedLang );
+			if ( $services->getLanguageNameUtils()->isSupportedLanguage( $internalCode ) ) {
+				$langs = [ $internalCode ];
+			}
+		}
+
+		$langs = array_unique( array_merge( $langs, [ $code, 'en' ] ) );
+		$textFormatters = [];
+		$factory = $services->getMessageFormatterFactory();
+
+		foreach ( $langs as $lang ) {
+			$textFormatters[] = $factory->getTextFormatter( $lang );
+		}
+
+		return $textFormatters;
+	}
+
+	public function __construct(
+		RequestInterface $request,
+		RequestContext $context,
+		EntryPointEnvironment $environment,
+		MediaWikiServices $mediaWikiServices
 	) {
+		parent::__construct( $context, $environment, $mediaWikiServices );
+
 		$this->request = $request;
-		$this->webResponse = $webResponse;
+	}
+
+	/**
+	 * Sets the router to use.
+	 * Intended for testing.
+	 */
+	public function setRouter( Router $router ): void {
 		$this->router = $router;
 	}
 
 	public function execute() {
-		$response = $this->router->execute( $this->request );
+		$this->startOutputBuffer();
 
-		$this->webResponse->header(
-			'HTTP/' . $response->getProtocolVersion() . ' ' .
-			$response->getStatusCode() . ' ' .
-			$response->getReasonPhrase() );
+		// IDEA: Move the call to cors->modifyResponse() into Module,
+		//       so it's in the same class as cors->createPreflightResponse().
+		$response = $this->cors->modifyResponse(
+			$this->request,
+			$this->router->execute( $this->request )
+		);
+
+		$webResponse = $this->getResponse();
+
+		$webResponse->header(
+			'HTTP/' . $response->getProtocolVersion() . ' ' . $response->getStatusCode() . ' ' .
+			$response->getReasonPhrase()
+		);
 
 		foreach ( $response->getRawHeaderLines() as $line ) {
-			$this->webResponse->header( $line );
+			$webResponse->header( $line );
 		}
 
 		foreach ( $response->getCookies() as $cookie ) {
-			$this->webResponse->setCookie(
+			$webResponse->setCookie(
 				$cookie['name'],
 				$cookie['value'],
 				$cookie['expiry'],
-				$cookie['options'] );
+				$cookie['options']
+			);
 		}
+
+		// Clear all errors that might have been displayed if display_errors=On
+		$this->discardOutputBuffer();
 
 		$stream = $response->getBody();
 		$stream->rewind();
+
+		$this->prepareForOutput();
+
 		if ( $stream instanceof CopyableStreamInterface ) {
 			$stream->copyToStream( fopen( 'php://output', 'w' ) );
 		} else {
@@ -100,8 +234,9 @@ class EntryPoint {
 				if ( $buffer === '' ) {
 					break;
 				}
-				echo $buffer;
+				$this->print( $buffer );
 			}
 		}
 	}
+
 }

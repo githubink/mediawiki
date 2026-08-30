@@ -5,6 +5,8 @@ namespace MediaWiki\Rest;
 use GuzzleHttp\Psr7\LazyOpenStream;
 use GuzzleHttp\Psr7\ServerRequest;
 use GuzzleHttp\Psr7\Uri;
+use InvalidArgumentException;
+use MediaWiki\Request\WebRequest;
 
 // phpcs:disable MediaWiki.Usage.SuperGlobalsUsage.SuperGlobals
 
@@ -13,8 +15,11 @@ use GuzzleHttp\Psr7\Uri;
  * other global PHP state, notably php://input.
  */
 class RequestFromGlobals extends RequestBase {
+	/** @var Uri|null */
 	private $uri;
+	/** @var string|null */
 	private $protocol;
+	/** @var array|null */
 	private $uploadedFiles;
 
 	/**
@@ -27,25 +32,46 @@ class RequestFromGlobals extends RequestBase {
 
 	// RequestInterface
 
+	/** @inheritDoc */
 	public function getMethod() {
-		return $_SERVER['REQUEST_METHOD'] ?? 'GET';
+		// Even though the spec says that method names should always be
+		// upper case, some clients may send lower case method names (T359306).
+		return strtoupper( $_SERVER['REQUEST_METHOD'] ?? 'GET' );
 	}
 
+	/** @inheritDoc */
 	public function getUri() {
 		if ( $this->uri === null ) {
-			$this->uri = new Uri( \WebRequest::getGlobalRequestURL() );
+			$requestUrl = WebRequest::getGlobalRequestURL();
+
+			try {
+				$uriInstance = new Uri( $requestUrl );
+			} catch ( InvalidArgumentException ) {
+				// Uri constructor will throw exception if the URL is
+				// relative and contains colon-number pattern that
+				// looks like a port.
+				//
+				// Since $requestUrl here is absolute-path references
+				// so all titles that contain colon followed by a
+				// number would be inaccessible if the exception occurs.
+				$uriInstance = (
+					new Uri( '//HOST:80' . $requestUrl )
+				)->withScheme( '' )->withHost( '' )->withPort( null );
+			}
+			$this->uri = $uriInstance;
 		}
 		return $this->uri;
 	}
 
 	// MessageInterface
 
+	/** @inheritDoc */
 	public function getProtocolVersion() {
 		if ( $this->protocol === null ) {
 			$serverProtocol = $_SERVER['SERVER_PROTOCOL'] ?? '';
-			$prefixLength = strlen( 'HTTP/' );
-			if ( strncmp( $serverProtocol, 'HTTP/', $prefixLength ) === 0 ) {
-				$this->protocol = substr( $serverProtocol, $prefixLength );
+			$prefix = 'HTTP/';
+			if ( str_starts_with( $serverProtocol, $prefix ) ) {
+				$this->protocol = substr( $serverProtocol, strlen( $prefix ) );
 			} else {
 				$this->protocol = '1.1';
 			}
@@ -54,48 +80,40 @@ class RequestFromGlobals extends RequestBase {
 	}
 
 	protected function initHeaders() {
-		if ( function_exists( 'apache_request_headers' ) ) {
-			$this->setHeaders( apache_request_headers() );
-		} else {
-			$headers = [];
-			foreach ( $_SERVER as $name => $value ) {
-				if ( substr( $name, 0, 5 ) === 'HTTP_' ) {
-					$name = strtolower( str_replace( '_', '-', substr( $name, 5 ) ) );
-					$headers[$name] = $value;
-				} elseif ( $name === 'CONTENT_LENGTH' ) {
-					$headers['content-length'] = $value;
-				}
-			}
-			$this->setHeaders( $headers );
-		}
+		$this->setHeaders( getallheaders() );
 	}
 
+	/** @inheritDoc */
 	public function getBody() {
 		return new LazyOpenStream( 'php://input', 'r' );
 	}
 
 	// ServerRequestInterface
 
+	/** @inheritDoc */
 	public function getServerParams() {
 		return $_SERVER;
 	}
 
+	/** @inheritDoc */
 	public function getCookieParams() {
 		return $_COOKIE;
 	}
 
+	/** @inheritDoc */
 	public function getQueryParams() {
 		return $_GET;
 	}
 
+	/** @inheritDoc */
 	public function getUploadedFiles() {
-		if ( $this->uploadedFiles === null ) {
-			$this->uploadedFiles = ServerRequest::normalizeFiles( $_FILES );
-		}
+		$this->uploadedFiles ??= ServerRequest::normalizeFiles( $_FILES );
 		return $this->uploadedFiles;
 	}
 
+	/** @inheritDoc */
 	public function getPostParams() {
 		return $_POST;
 	}
+
 }

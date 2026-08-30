@@ -1,43 +1,49 @@
-var GroupWidget = require( './GroupWidget.js' ),
-	ViewSwitchWidget;
-
 /**
- * A widget for the footer for the default view, allowing to switch views
+ * A widget for the footer for the default view, allowing to switch views.
  *
  * @class mw.rcfilters.ui.ViewSwitchWidget
+ * @ignore
  * @extends OO.ui.Widget
  *
- * @constructor
  * @param {mw.rcfilters.Controller} controller Controller
  * @param {mw.rcfilters.dm.FiltersViewModel} model View model
  * @param {Object} [config] Configuration object
  */
-ViewSwitchWidget = function MwRcfiltersUiViewSwitchWidget( controller, model, config ) {
+const ViewSwitchWidget = function MwRcfiltersUiViewSwitchWidget( controller, model, config ) {
+	const items = [
+		new OO.ui.ButtonWidget( {
+			data: 'namespaces',
+			icon: 'article',
+			label: mw.msg( 'namespaces' )
+		} ),
+		new OO.ui.ButtonWidget( {
+			data: 'tags',
+			icon: 'tag',
+			label: mw.msg( 'rcfilters-view-tags' )
+		} )
+	];
 	config = config || {};
+	if ( mw.config.get( 'enableWatchlistLabels' ) && config.specialPage === 'Watchlist' ) {
+		items.push(
+			new OO.ui.ButtonWidget( {
+				data: 'wllabels',
+				icon: 'folderPlaceholder',
+				label: mw.msg( 'watchlist-filters-labels-title' )
+			} )
+		);
+	}
 
 	// Parent
-	ViewSwitchWidget.parent.call( this, config );
+	ViewSwitchWidget.super.call( this, config );
 
 	this.controller = controller;
 	this.model = model;
 
-	this.buttons = new GroupWidget( {
-		events: {
-			click: 'buttonClick'
-		},
-		items: [
-			new OO.ui.ButtonWidget( {
-				data: 'namespaces',
-				icon: 'article',
-				label: mw.msg( 'namespaces' )
-			} ),
-			new OO.ui.ButtonWidget( {
-				data: 'tags',
-				icon: 'tag',
-				label: mw.msg( 'rcfilters-view-tags' )
-			} )
-		]
+	this.buttons = new OO.ui.ButtonGroupWidget( {
+		items: items
 	} );
+
+	this.buttons.aggregate( { click: 'buttonClick' } );
 
 	// Events
 	this.model.connect( this, { update: 'onModelUpdate' } );
@@ -63,9 +69,9 @@ OO.inheritClass( ViewSwitchWidget, OO.ui.Widget );
  * Respond to model update event
  */
 ViewSwitchWidget.prototype.onModelUpdate = function () {
-	var currentView = this.model.getCurrentView();
+	const currentView = this.model.getCurrentView();
 
-	this.buttons.getItems().forEach( function ( buttonWidget ) {
+	this.buttons.getItems().forEach( ( buttonWidget ) => {
 		buttonWidget.setActive( buttonWidget.getData() === currentView );
 	} );
 };

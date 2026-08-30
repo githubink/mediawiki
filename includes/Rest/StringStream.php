@@ -2,6 +2,9 @@
 
 namespace MediaWiki\Rest;
 
+use InvalidArgumentException;
+use Stringable;
+
 /**
  * A stream class which uses a string as the underlying storage. Surprisingly,
  * Guzzle does not appear to have one of these. BufferStream does not do what
@@ -13,8 +16,11 @@ namespace MediaWiki\Rest;
  * Seeking is supported, however seeking past the end of the string does not
  * fill with null bytes as in a real file, it throws an exception instead.
  */
-class StringStream implements CopyableStreamInterface {
-	private $contents = '';
+class StringStream implements Stringable, CopyableStreamInterface {
+
+	/** @var string */
+	private $contents;
+	/** @var int */
 	private $offset = 0;
 
 	/**
@@ -29,38 +35,45 @@ class StringStream implements CopyableStreamInterface {
 		$this->contents = $contents;
 	}
 
+	/** @inheritDoc */
 	public function copyToStream( $stream ) {
 		fwrite( $stream, $this->getContents() );
 	}
 
-	public function __toString() {
+	public function __toString(): string {
 		return $this->contents;
 	}
 
-	public function close() {
+	public function close(): void {
 	}
 
+	/** @inheritDoc */
 	public function detach() {
 		return null;
 	}
 
-	public function getSize() {
+	/** @inheritDoc */
+	public function getSize(): ?int {
 		return strlen( $this->contents );
 	}
 
-	public function tell() {
+	/** @inheritDoc */
+	public function tell(): int {
 		return $this->offset;
 	}
 
-	public function eof() {
+	/** @inheritDoc */
+	public function eof(): bool {
 		return $this->offset >= strlen( $this->contents );
 	}
 
-	public function isSeekable() {
+	/** @inheritDoc */
+	public function isSeekable(): bool {
 		return true;
 	}
 
-	public function seek( $offset, $whence = SEEK_SET ) {
+	/** @inheritDoc */
+	public function seek( int $offset, int $whence = SEEK_SET ): void {
 		switch ( $whence ) {
 			case SEEK_SET:
 				$this->offset = $offset;
@@ -75,25 +88,28 @@ class StringStream implements CopyableStreamInterface {
 				break;
 
 			default:
-				throw new \InvalidArgumentException( "Invalid value for \$whence" );
+				throw new InvalidArgumentException( "Invalid value for \$whence" );
 		}
 		if ( $this->offset > strlen( $this->contents ) ) {
-			throw new \InvalidArgumentException( "Cannot seek beyond the end of a StringStream" );
+			throw new InvalidArgumentException( "Cannot seek beyond the end of a StringStream" );
 		}
 		if ( $this->offset < 0 ) {
-			throw new \InvalidArgumentException( "Cannot seek before the start of a StringStream" );
+			throw new InvalidArgumentException( "Cannot seek before the start of a StringStream" );
 		}
 	}
 
-	public function rewind() {
+	/** @inheritDoc */
+	public function rewind(): void {
 		$this->offset = 0;
 	}
 
-	public function isWritable() {
+	/** @inheritDoc */
+	public function isWritable(): bool {
 		return true;
 	}
 
-	public function write( $string ) {
+	/** @inheritDoc */
+	public function write( string $string ): int {
 		if ( $this->offset === strlen( $this->contents ) ) {
 			$this->contents .= $string;
 		} else {
@@ -104,11 +120,13 @@ class StringStream implements CopyableStreamInterface {
 		return strlen( $string );
 	}
 
-	public function isReadable() {
+	/** @inheritDoc */
+	public function isReadable(): bool {
 		return true;
 	}
 
-	public function read( $length ) {
+	/** @inheritDoc */
+	public function read( int $length ): string {
 		if ( $this->offset === 0 && $length >= strlen( $this->contents ) ) {
 			$ret = $this->contents;
 		} elseif ( $this->offset >= strlen( $this->contents ) ) {
@@ -120,7 +138,8 @@ class StringStream implements CopyableStreamInterface {
 		return $ret;
 	}
 
-	public function getContents() {
+	/** @inheritDoc */
+	public function getContents(): string {
 		if ( $this->offset === 0 ) {
 			$ret = $this->contents;
 		} elseif ( $this->offset >= strlen( $this->contents ) ) {
@@ -132,7 +151,8 @@ class StringStream implements CopyableStreamInterface {
 		return $ret;
 	}
 
-	public function getMetadata( $key = null ) {
+	/** @inheritDoc */
+	public function getMetadata( ?string $key = null ) {
 		return null;
 	}
 }

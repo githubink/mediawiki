@@ -2,60 +2,58 @@
 /**
  * Build file cache for content pages
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
-use MediaWiki\MediaWikiServices;
+use MediaWiki\Actions\Action;
+use MediaWiki\Cache\HTMLFileCache;
+use MediaWiki\Context\RequestContext;
+use MediaWiki\Debug\MWDebug;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Page\Article;
+use MediaWiki\Settings\SettingsBuilder;
+use MediaWiki\Title\Title;
+use Wikimedia\Rdbms\SelectQueryBuilder;
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
- * Maintenance script that builds file cache for content pages.
+ * Maintenance script that builds the file cache.
  *
  * @ingroup Maintenance
  */
 class RebuildFileCache extends Maintenance {
+	/** @var bool */
 	private $enabled = true;
 
 	public function __construct() {
 		parent::__construct();
-		$this->addDescription( 'Build file cache for content pages' );
+		$this->addDescription( 'Build the file cache' );
 		$this->addOption( 'start', 'Page_id to start from', false, true );
 		$this->addOption( 'end', 'Page_id to end on', false, true );
 		$this->addOption( 'overwrite', 'Refresh page cache' );
+		$this->addOption( 'all', 'Build the file cache for pages in all namespaces, not just content pages' );
 		$this->setBatchSize( 100 );
 	}
 
-	public function finalSetup() {
-		global $wgDebugToolbar, $wgUseFileCache;
-
-		$this->enabled = $wgUseFileCache;
+	public function finalSetup( SettingsBuilder $settingsBuilder ) {
+		$this->enabled = $settingsBuilder->getConfig()->get( MainConfigNames::UseFileCache );
 		// Script will handle capturing output and saving it itself
-		$wgUseFileCache = false;
-		// Debug toolbar makes content uncacheable so we disable it.
-		// Has to be done before Setup.php initialize MWDebug
-		$wgDebugToolbar = false;
-		//  Avoid DB writes (like enotif/counters)
-		MediaWiki\MediaWikiServices::getInstance()->getReadOnlyMode()
+		$settingsBuilder->putConfigValue( MainConfigNames::UseFileCache, false );
+
+		// Avoid DB writes (like enotif/counters)
+		$this->getServiceContainer()->getReadOnlyMode()
 			->setReason( 'Building cache' );
 
-		parent::finalSetup();
+		// Ensure no debug-specific logic ends up in the cache (must be after Setup.php)
+		MWDebug::deinit();
+
+		parent::finalSetup( $settingsBuilder );
 	}
 
 	public function execute() {
@@ -75,19 +73,33 @@ class RebuildFileCache extends Maintenance {
 		}
 		$end = intval( $end );
 
-		$this->output( "Building content page file cache from page {$start}!\n" );
+		$this->output( "Building page file cache from page_id {$start}!\n" );
 
-		$dbr = $this->getDB( DB_REPLICA );
+		$dbr = $this->getReplicaDB();
 		$batchSize = $this->getBatchSize();
 		$overwrite = $this->hasOption( 'overwrite' );
 		$start = ( $start > 0 )
 			? $start
-			: $dbr->selectField( 'page', 'MIN(page_id)', '', __METHOD__ );
+			: $dbr->newSelectQueryBuilder()
+				->select( 'MIN(page_id)' )
+				->from( 'page' )
+				->caller( __METHOD__ )->fetchField();
 		$end = ( $end > 0 )
 			? $end
-			: $dbr->selectField( 'page', 'MAX(page_id)', '', __METHOD__ );
+			: $dbr->newSelectQueryBuilder()
+				->select( 'MAX(page_id)' )
+				->from( 'page' )
+				->caller( __METHOD__ )->fetchField();
 		if ( !$start ) {
 			$this->fatalError( "Nothing to do." );
+		}
+
+		$where = [];
+		if ( !$this->getOption( 'all' ) ) {
+			// If 'all' isn't passed as an option, just fall back to previous behaviour
+			// of using content namespaces
+			$where['page_namespace'] =
+				$this->getServiceContainer()->getNamespaceInfo()->getContentNamespaces();
 		}
 
 		// Mock request (hack, no real client)
@@ -98,20 +110,23 @@ class RebuildFileCache extends Maintenance {
 		$blockStart = $start;
 		$blockEnd = $start + $batchSize - 1;
 
-		$dbw = $this->getDB( DB_MASTER );
+		$dbw = $this->getPrimaryDB();
 		// Go through each page and save the output
 		while ( $blockEnd <= $end ) {
 			// Get the pages
-			$res = $dbr->select( 'page',
-				[ 'page_namespace', 'page_title', 'page_id' ],
-				[ 'page_namespace' => MediaWikiServices::getInstance()->getNamespaceInfo()->
-					getContentNamespaces(),
-					"page_id BETWEEN " . (int)$blockStart . " AND " . (int)$blockEnd ],
-				__METHOD__,
-				[ 'ORDER BY' => 'page_id ASC', 'USE INDEX' => 'PRIMARY' ]
-			);
+			$res = $dbr->newSelectQueryBuilder()
+				->select( [ 'page_namespace', 'page_title', 'page_id' ] )
+				->from( 'page' )
+				->useIndex( 'PRIMARY' )
+				->where( $where )
+				->andWhere( [
+					$dbr->expr( 'page_id', '>=', (int)$blockStart ),
+					$dbr->expr( 'page_id', '<=', (int)$blockEnd ),
+				] )
+				->orderBy( 'page_id', SelectQueryBuilder::SORT_ASC )
+				->caller( __METHOD__ )->fetchResultSet();
 
-			$this->beginTransaction( $dbw, __METHOD__ ); // for any changes
+			$this->beginTransactionRound( __METHOD__ ); // for any changes
 			foreach ( $res as $row ) {
 				$rebuilt = false;
 
@@ -142,14 +157,13 @@ class RebuildFileCache extends Maintenance {
 						}
 					}
 
-					Wikimedia\suppressWarnings(); // header notices
-
 					// 1. Cache ?action=view
 					// Be sure to reset the mocked request time (T24852)
 					$_SERVER['REQUEST_TIME_FLOAT'] = microtime( true );
 					ob_start();
 					$article->view();
-					$context->getOutput()->output();
+					// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- causes "header already sent" notices
+					@$context->getOutput()->output();
 					$context->getOutput()->clearHTML();
 					$viewHtml = ob_get_clean();
 					$viewCache->saveToFileCache( $viewHtml );
@@ -159,12 +173,11 @@ class RebuildFileCache extends Maintenance {
 					$_SERVER['REQUEST_TIME_FLOAT'] = microtime( true );
 					ob_start();
 					Action::factory( 'history', $article, $context )->show();
-					$context->getOutput()->output();
+					// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged -- causes "header already sent" notices
+					@$context->getOutput()->output();
 					$context->getOutput()->clearHTML();
 					$historyHtml = ob_get_clean();
 					$historyCache->saveToFileCache( $historyHtml );
-
-					Wikimedia\restoreWarnings();
 
 					if ( $rebuilt ) {
 						$this->output( "Re-cached page '$title' (id {$row->page_id})..." );
@@ -177,7 +190,7 @@ class RebuildFileCache extends Maintenance {
 					$this->output( "Page '$title' (id {$row->page_id}) not cacheable\n" );
 				}
 			}
-			$this->commitTransaction( $dbw, __METHOD__ ); // commit any changes (just for sanity)
+			$this->commitTransactionRound( __METHOD__ ); // commit any changes
 
 			$blockStart += $batchSize;
 			$blockEnd += $batchSize;
@@ -186,5 +199,7 @@ class RebuildFileCache extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = RebuildFileCache::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

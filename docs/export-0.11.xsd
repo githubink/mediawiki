@@ -26,7 +26,7 @@
 	Fix type for <id> within <contributor> to "nonNegativeInteger"
 
 	Version 0.8 adds support for a <model> and a <format> tag for
-	each revision. See contenthandler.txt.
+	each revision. See contenthandler.md.
 
 	Version 0.9 adds the database name to the site information.
 
@@ -35,10 +35,10 @@
 	Version 0.11 introduced <content> tag.
 
 	The canonical URL to the schema document is:
-	http://www.mediawiki.org/xml/export-0.11.xsd
+	https://www.mediawiki.org/xml/export-0.11.xsd
 
 	Use the namespace:
-	http://www.mediawiki.org/xml/export-0.11/
+	https://www.mediawiki.org/xml/export-0.11/
 -->
 <schema xmlns="http://www.w3.org/2001/XMLSchema"
 		xmlns:mw="http://www.mediawiki.org/xml/export-0.11/"
@@ -182,11 +182,11 @@
 	<complexType name="RevisionType">
 		<sequence>
 			<element name="id" type="positiveInteger" />
-			<element name="parentid" type="positiveInteger" minOccurs="0" maxOccurs="1"/>
+			<element name="parentid" type="positiveInteger" minOccurs="0" maxOccurs="1" />
 			<element name="timestamp" type="dateTime" />
 			<element name="contributor" type="mw:ContributorType" />
-			<element name="minor" minOccurs="0" maxOccurs="1"/>
-			<element name="comment" type="mw:CommentType"/>
+			<element name="minor" minOccurs="0" maxOccurs="1" />
+			<element name="comment" type="mw:CommentType" minOccurs="0" maxOccurs="1" />
 			<!-- corresponds to slot origin for the main slot -->
 			<element name="origin" type="positiveInteger" />
 			<!-- the main slot's content model -->
@@ -226,6 +226,7 @@
 				<!-- This allows deleted=deleted on non-empty elements, but XSD is not omnipotent -->
 				<attribute name="deleted" type="mw:DeletedFlagType" />
 				<attribute name="location" type="anyURI" />
+				<attribute name="sha1" type="string" />
 				<attribute name="bytes" type="nonNegativeInteger" />
 			</extension>
 		</simpleContent>

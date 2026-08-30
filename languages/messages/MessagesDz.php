@@ -1,11 +1,8 @@
 <?php
 /** Dzongkha (ཇོང་ཁ)
  *
- * To improve a translation please visit https://translatewiki.net
- *
- * @ingroup Language
  * @file
- *
+ * @ingroup Languages
  */
 
 $digitTransformTable = [
@@ -20,3 +17,5 @@ $digitTransformTable = [
 	'8' => '༨', # U+0F28
 	'9' => '༩', # U+0F29
 ];
+
+$numberingSystem = 'tibt';

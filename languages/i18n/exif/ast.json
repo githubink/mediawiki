@@ -1,9 +1,9 @@
 {
 	"@metadata": {
 		"authors": [
+			"Enolp",
 			"Esbardu",
-			"Xuacu",
-			"Enolp"
+			"Xuacu"
 		]
 	},
 	"exif-imagewidth": "Anchor",
@@ -195,7 +195,6 @@
 	"exif-photometricinterpretation-3": "Paleta",
 	"exif-photometricinterpretation-4": "Mázcara de tresparencia",
 	"exif-photometricinterpretation-5": "Separaos (Probablemente CMYK)",
-	"exif-photometricinterpretation-8": "CIE L*a*b*",
 	"exif-photometricinterpretation-9": "CIE L*a*b* (codificación ICC)",
 	"exif-photometricinterpretation-10": "CIE L*a*b* (codificación ITU)",
 	"exif-unknowndate": "Fecha desconocida",
@@ -270,6 +269,12 @@
 	"exif-scenetype-1": "Una imaxe fotografiada direutamente",
 	"exif-customrendered-0": "Procesu normal",
 	"exif-customrendered-1": "Procesu personalizáu",
+	"exif-customrendered-2": "HDR (nun se guardó l'orixinal)",
+	"exif-customrendered-3": "HDR (orixinal guardáu)",
+	"exif-customrendered-4": "Orixinal (pa HDR)",
+	"exif-customrendered-6": "Panorama",
+	"exif-customrendered-7": "Retratu HDR",
+	"exif-customrendered-8": "Retratu",
 	"exif-exposuremode-0": "Esposición automática",
 	"exif-exposuremode-1": "Esposición manual",
 	"exif-exposuremode-2": "Puesta ente paréntesis automática",

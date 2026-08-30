@@ -1,29 +1,16 @@
 <?php
 /**
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  */
 
-use Wikimedia\RunningStat;
+namespace Wikimedia;
+
+use Closure;
 
 /**
  * Convenience class for working with XHProf profiling data
- * <https://github.com/phacility/xhprof>. XHProf can be installed as a PECL
- * package for use with PHP5 (Zend PHP) and is built-in to HHVM 3.3.0.
+ * <https://github.com/phacility/xhprof>. XHProf can be installed via PECL.
  *
  * @copyright © 2014 Wikimedia Foundation and contributors
  * @since 1.28
@@ -31,25 +18,25 @@ use Wikimedia\RunningStat;
 class XhprofData {
 
 	/**
-	 * @var array $config
+	 * @var array
 	 */
 	protected $config;
 
 	/**
 	 * Hierarchical profiling data returned by xhprof.
-	 * @var array $hieraData
+	 * @var array[]
 	 */
 	protected $hieraData;
 
 	/**
 	 * Per-function inclusive data.
-	 * @var array $inclusive
+	 * @var array[][]
 	 */
 	protected $inclusive;
 
 	/**
 	 * Per-function inclusive and exclusive data.
-	 * @var array $complete
+	 * @var array[]
 	 */
 	protected $complete;
 
@@ -62,10 +49,10 @@ class XhprofData {
 	 * @param array $config
 	 */
 	public function __construct( array $data, array $config = [] ) {
-		$this->config = array_merge( [
+		$this->config = $config + [
 			'include' => null,
 			'sort' => 'wt',
-		], $config );
+		];
 
 		$this->hieraData = $this->pruneData( $data );
 	}
@@ -74,7 +61,7 @@ class XhprofData {
 	 * Get raw data collected by xhprof.
 	 *
 	 * Each key in the returned array is an edge label for the call graph in
-	 * the form "caller==>callee". There is once special case edge labled
+	 * the form "caller==>callee". There is once special case edge labeled
 	 * simply "main()" which represents the global scope entry point of the
 	 * application.
 	 *
@@ -108,7 +95,7 @@ class XhprofData {
 	 * with no parent (eg 'main()') will return [null, 'function'].
 	 *
 	 * @param string $key
-	 * @return array
+	 * @return array{0:?string,1:string}
 	 */
 	public static function splitKey( $key ) {
 		return array_pad( explode( '==>', $key, 2 ), -2, null );
@@ -118,8 +105,8 @@ class XhprofData {
 	 * Remove data for functions that are not included in the 'include'
 	 * configuration array.
 	 *
-	 * @param array $data Raw xhprof data
-	 * @return array
+	 * @param array[] $data Raw xhprof data
+	 * @return array[]
 	 */
 	protected function pruneData( $data ) {
 		if ( !$this->config['include'] ) {
@@ -131,8 +118,8 @@ class XhprofData {
 
 		$keep = [];
 		foreach ( $data as $key => $stats ) {
-			list( $parent, $child ) = self::splitKey( $key );
-			if ( isset( $want[$parent] ) || isset( $want[$child] ) ) {
+			[ $parent, $child ] = self::splitKey( $key );
+			if ( ( $parent !== null && isset( $want[$parent] ) ) || isset( $want[$child] ) ) {
 				$keep[$key] = $stats;
 			}
 		}
@@ -145,7 +132,7 @@ class XhprofData {
 	 * called from that function during the measurement period.
 	 *
 	 * See getRawData() for a description of the metric that are returned for
-	 * each funcition call. The values for the wt, cpu, mu and pmu metrics are
+	 * each function call. The values for the wt, cpu, mu and pmu metrics are
 	 * arrays with these values:
 	 * - total: Cumulative value
 	 * - min: Minimum value
@@ -153,7 +140,7 @@ class XhprofData {
 	 * - max: Maximum value
 	 * - variance: Variance (spread) of the values
 	 *
-	 * @return array
+	 * @return array[][]
 	 * @see getRawData()
 	 * @see getCompleteMetrics()
 	 */
@@ -164,40 +151,40 @@ class XhprofData {
 			$hasMu = isset( $main['mu'] );
 			$hasAlloc = isset( $main['alloc'] );
 
-			$this->inclusive = [];
+			$inclusive = [];
 			foreach ( $this->hieraData as $key => $stats ) {
-				list( $parent, $child ) = self::splitKey( $key );
-				if ( !isset( $this->inclusive[$child] ) ) {
-					$this->inclusive[$child] = [
+				[ , $child ] = self::splitKey( $key );
+				if ( !isset( $inclusive[$child] ) ) {
+					$inclusive[$child] = [
 						'ct' => 0,
 						'wt' => new RunningStat(),
 					];
 					if ( $hasCpu ) {
-						$this->inclusive[$child]['cpu'] = new RunningStat();
+						$inclusive[$child]['cpu'] = new RunningStat();
 					}
 					if ( $hasMu ) {
-						$this->inclusive[$child]['mu'] = new RunningStat();
-						$this->inclusive[$child]['pmu'] = new RunningStat();
+						$inclusive[$child]['mu'] = new RunningStat();
+						$inclusive[$child]['pmu'] = new RunningStat();
 					}
 					if ( $hasAlloc ) {
-						$this->inclusive[$child]['alloc'] = new RunningStat();
-						$this->inclusive[$child]['free'] = new RunningStat();
+						$inclusive[$child]['alloc'] = new RunningStat();
+						$inclusive[$child]['free'] = new RunningStat();
 					}
 				}
 
-				$this->inclusive[$child]['ct'] += $stats['ct'];
+				$inclusive[$child]['ct'] += $stats['ct'];
 				foreach ( $stats as $stat => $value ) {
 					if ( $stat === 'ct' ) {
 						continue;
 					}
 
-					if ( !isset( $this->inclusive[$child][$stat] ) ) {
+					if ( !isset( $inclusive[$child][$stat] ) ) {
 						// Ignore unknown stats
 						continue;
 					}
 
 					for ( $i = 0; $i < $stats['ct']; $i++ ) {
-						$this->inclusive[$child][$stat]->addObservation(
+						$inclusive[$child][$stat]->addObservation(
 							$value / $stats['ct']
 						);
 					}
@@ -206,14 +193,14 @@ class XhprofData {
 
 			// Convert RunningStat instances to static arrays and add
 			// percentage stats.
-			foreach ( $this->inclusive as $func => $stats ) {
+			foreach ( $inclusive as $func => $stats ) {
 				foreach ( $stats as $name => $value ) {
 					if ( $value instanceof RunningStat ) {
 						$total = $value->getMean() * $value->getCount();
 						$percent = ( isset( $main[$name] ) && $main[$name] )
 							? 100 * $total / $main[$name]
 							: 0;
-						$this->inclusive[$func][$name] = [
+						$inclusive[$func][$name] = [
 							'total' => $total,
 							'min' => $value->min,
 							'mean' => $value->getMean(),
@@ -225,9 +212,10 @@ class XhprofData {
 				}
 			}
 
-			uasort( $this->inclusive, self::makeSortFunction(
+			uasort( $inclusive, self::makeSortFunction(
 				$this->config['sort'], 'total'
 			) );
+			$this->inclusive = $inclusive;
 		}
 		return $this->inclusive;
 	}
@@ -239,7 +227,7 @@ class XhprofData {
 	 * metrics have an additional 'exclusive' measurement which is the total
 	 * minus the totals of all child function calls.
 	 *
-	 * @return array
+	 * @return array[]
 	 * @see getRawData()
 	 * @see getInclusiveMetrics()
 	 */
@@ -256,20 +244,20 @@ class XhprofData {
 					// Initialize exclusive data with inclusive totals
 					$this->complete[$func][$stat]['exclusive'] = $value['total'];
 				}
-				// Add sapce for call tree information to be filled in later
+				// Add space for call tree information to be filled in later
 				$this->complete[$func]['calls'] = [];
 				$this->complete[$func]['subcalls'] = [];
 			}
 
 			foreach ( $this->hieraData as $key => $stats ) {
-				list( $parent, $child ) = self::splitKey( $key );
+				[ $parent, $child ] = self::splitKey( $key );
 				if ( $parent !== null ) {
 					// Track call tree information
 					$this->complete[$child]['calls'][$parent] = $stats;
 					$this->complete[$parent]['subcalls'][$child] = $stats;
 				}
 
-				if ( isset( $this->complete[$parent] ) ) {
+				if ( $parent !== null && isset( $this->complete[$parent] ) ) {
 					// Deduct child inclusive data from exclusive data
 					foreach ( $stats as $stat => $value ) {
 						if ( $stat === 'ct' ) {
@@ -367,7 +355,7 @@ class XhprofData {
 	 * @return Closure
 	 */
 	public static function makeSortFunction( $key, $sub ) {
-		return function ( $a, $b ) use ( $key, $sub ) {
+		return static function ( $a, $b ) use ( $key, $sub ) {
 			if ( isset( $a[$key] ) && isset( $b[$key] ) ) {
 				// Descending sort: larger values will be first in result.
 				// Values for 'main()' will not have sub keys
@@ -381,3 +369,6 @@ class XhprofData {
 		};
 	}
 }
+
+/** @deprecated class alias since 1.47 */
+class_alias( XhprofData::class, 'XhprofData' );

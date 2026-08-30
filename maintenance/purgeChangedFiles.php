@@ -2,26 +2,20 @@
 /**
  * Scan the logging table and purge affected files within a timeframe.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
+use MediaWiki\FileRepo\File\LocalFile;
+use MediaWiki\FileRepo\LocalRepo;
+use MediaWiki\Logging\LogEntryBase;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Title\Title;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that scans the deletion log and purges affected files
@@ -92,21 +86,20 @@ class PurgeChangedFiles extends Maintenance {
 
 		// Find out which actions we should be concerned with
 		$typeOpt = $this->getOption( 'type', 'all' );
-		$validTypes = array_keys( self::$typeMappings );
 		if ( $typeOpt === 'all' ) {
 			// Convert 'all' to all registered types
-			$typeOpt = implode( ',', $validTypes );
+			$typeOpt = implode( ',', array_keys( self::$typeMappings ) );
 		}
 		$typeList = explode( ',', $typeOpt );
 		foreach ( $typeList as $type ) {
-			if ( !in_array( $type, $validTypes ) ) {
+			if ( !isset( self::$typeMappings[$type] ) ) {
 				$this->error( "\nERROR: Unknown type: {$type}\n" );
 				$this->maybeHelp( true );
 			}
 		}
 
 		// Validate the timestamps
-		$dbr = $this->getDB( DB_REPLICA );
+		$dbr = $this->getReplicaDB();
 		$this->startTimestamp = $dbr->timestamp( $this->getOption( 'starttime' ) );
 		$this->endTimestamp = $dbr->timestamp( $this->getOption( 'endtime' ) );
 
@@ -117,7 +110,7 @@ class PurgeChangedFiles extends Maintenance {
 
 		// Turn on verbose when dry-run is enabled
 		if ( $this->hasOption( 'dry-run' ) ) {
-			$this->mOptions['verbose'] = 1;
+			$this->setOption( 'verbose', 1 );
 		}
 
 		$this->verbose( 'Purging files that were: ' . implode( ', ', $typeList ) . "\n" );
@@ -136,24 +129,23 @@ class PurgeChangedFiles extends Maintenance {
 	 * @param string $type Type of change to find
 	 */
 	protected function purgeFromLogType( $type ) {
-		$repo = RepoGroup::singleton()->getLocalRepo();
-		$dbr = $this->getDB( DB_REPLICA );
+		$repo = $this->getServiceContainer()->getRepoGroup()->getLocalRepo();
+		$dbr = $this->getReplicaDB();
 
 		foreach ( self::$typeMappings[$type] as $logType => $logActions ) {
 			$this->verbose( "Scanning for {$logType}/" . implode( ',', $logActions ) . "\n" );
 
-			$res = $dbr->select(
-				'logging',
-				[ 'log_title', 'log_timestamp', 'log_params' ],
-				[
+			$res = $dbr->newSelectQueryBuilder()
+				->select( [ 'log_title', 'log_timestamp', 'log_params' ] )
+				->from( 'logging' )
+				->where( [
 					'log_namespace' => NS_FILE,
 					'log_type' => $logType,
 					'log_action' => $logActions,
-					'log_timestamp >= ' . $dbr->addQuotes( $this->startTimestamp ),
-					'log_timestamp <= ' . $dbr->addQuotes( $this->endTimestamp ),
-				],
-				__METHOD__
-			);
+					$dbr->expr( 'log_timestamp', '>=', $this->startTimestamp ),
+					$dbr->expr( 'log_timestamp', '<=', $this->endTimestamp ),
+				] )
+				->caller( __METHOD__ )->fetchResultSet();
 
 			$bSize = 0;
 			foreach ( $res as $row ) {
@@ -176,7 +168,7 @@ class PurgeChangedFiles extends Maintenance {
 					if ( !$file->exists() && $repo->fileExists( $file->getPath() ) ) {
 						$dpath = $this->getDeletedPath( $repo, $file );
 						if ( $repo->fileExists( $dpath ) ) {
-							// Sanity check to avoid data loss
+							// Check to avoid data loss
 							$repo->getBackend()->delete( [ 'src' => $file->getPath() ] );
 							$this->verbose( "Deleted orphan file: {$file->getPath()}.\n" );
 						} else {
@@ -188,8 +180,8 @@ class PurgeChangedFiles extends Maintenance {
 					$this->purgeFromArchiveTable( $repo, $file );
 				} elseif ( $logType === 'move' ) {
 					// Purge the target file as well
-
-					$params = unserialize( $row->log_params );
+					// (only handles hard-coded core logs, so no need to pass log type/action here)
+					$params = LogEntryBase::extractParams( $row->log_params, null );
 					if ( isset( $params['4::target'] ) ) {
 						$target = $params['4::target'];
 						$targetFile = $repo->newFile( Title::makeTitle( NS_FILE, $target ) );
@@ -211,12 +203,11 @@ class PurgeChangedFiles extends Maintenance {
 
 	protected function purgeFromArchiveTable( LocalRepo $repo, LocalFile $file ) {
 		$dbr = $repo->getReplicaDB();
-		$res = $dbr->select(
-			'filearchive',
-			[ 'fa_archive_name' ],
-			[ 'fa_name' => $file->getName() ],
-			__METHOD__
-		);
+		$res = $dbr->newSelectQueryBuilder()
+			->select( [ 'fa_archive_name' ] )
+			->from( 'filearchive' )
+			->where( [ 'fa_name' => $file->getName() ] )
+			->caller( __METHOD__ )->fetchResultSet();
 
 		foreach ( $res as $row ) {
 			if ( $row->fa_archive_name === null ) {
@@ -228,7 +219,7 @@ class PurgeChangedFiles extends Maintenance {
 			if ( !$file->exists() && $repo->fileExists( $ofile->getPath() ) ) {
 				$dpath = $this->getDeletedPath( $repo, $ofile );
 				if ( $repo->fileExists( $dpath ) ) {
-					// Sanity check to avoid data loss
+					// Check to avoid data loss
 					$repo->getBackend()->delete( [ 'src' => $ofile->getPath() ] );
 					$this->output( "Deleted orphan file: {$ofile->getPath()}.\n" );
 				} else {
@@ -239,7 +230,7 @@ class PurgeChangedFiles extends Maintenance {
 		}
 	}
 
-	protected function getDeletedPath( LocalRepo $repo, LocalFile $file ) {
+	protected function getDeletedPath( LocalRepo $repo, LocalFile $file ): string {
 		$hash = $repo->getFileSha1( $file->getPath() );
 		$key = "{$hash}.{$file->getExtension()}";
 
@@ -258,5 +249,7 @@ class PurgeChangedFiles extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = PurgeChangedFiles::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

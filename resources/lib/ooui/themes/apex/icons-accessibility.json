@@ -1,7 +1,10 @@
 {
 	"prefix": "oo-ui-icon",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"images": {
+		"appearance": {
+			"file": "../wikimediaui/images/icons/appearance.svg"
+		},
 		"bright": {
 			"file": "../wikimediaui/images/icons/bright.svg"
 		},
@@ -28,6 +31,9 @@
 		},
 		"smallerText": {
 			"file": "../wikimediaui/images/icons/smallerText.svg"
+		},
+		"universalDesign": {
+			"file": "../wikimediaui/images/icons/universalDesign.svg"
 		},
 		"visionSimulator": {
 			"file": "../wikimediaui/images/icons/visionSimulator.svg"

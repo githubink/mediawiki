@@ -1,68 +1,52 @@
 <?php
 /**
+ * @license GPL-2.0-or-later
+ * @file
+ */
+
+namespace Wikimedia;
+
+use DomainException;
+use InvalidArgumentException;
+
+/**
  * Utility functions for generating hashes
  *
  * This is based in part on Drupal code as well as what we used in our own code
  * prior to introduction of this class, by way of MWCryptRand.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
- * @file
  */
-
 class MWCryptHash {
 	/**
 	 * The hash algorithm being used
 	 */
-	protected static $algo = null;
+	protected static ?string $algo = null;
 
 	/**
 	 * The number of bytes outputted by the hash algorithm
 	 */
-	protected static $hashLength = [
-		true => null,
-		false => null,
-	];
+	protected static int $hashLength;
 
 	/**
 	 * Decide on the best acceptable hash algorithm we have available for hash()
 	 * @return string A hash algorithm
 	 */
 	public static function hashAlgo() {
-		if ( !is_null( self::$algo ) ) {
-			return self::$algo;
+		$algorithm = self::$algo;
+		if ( $algorithm !== null ) {
+			return $algorithm;
 		}
 
-		$algos = hash_algos();
-		$preference = [ 'whirlpool', 'sha256', 'sha1', 'md5' ];
+		$algos = hash_hmac_algos();
+		$preference = [ 'whirlpool', 'sha256' ];
 
 		foreach ( $preference as $algorithm ) {
-			if ( in_array( $algorithm, $algos ) ) {
+			if ( in_array( $algorithm, $algos, true ) ) {
 				self::$algo = $algorithm;
-
-				return self::$algo;
+				return $algorithm;
 			}
 		}
 
-		// We only reach here if no acceptable hash is found in the list, this should
-		// be a technical impossibility since most of php's hash list is fixed and
-		// some of the ones we list are available as their own native functions
-		// But since we already require at least 5.2 and hash() was default in
-		// 5.1.2 we don't bother falling back to methods like sha1 and md5.
-		throw new DomainException( "Could not find an acceptable hashing function in hash_algos()" );
+		throw new DomainException( 'Could not find an acceptable hashing function.' );
 	}
 
 	/**
@@ -74,16 +58,15 @@ class MWCryptHash {
 	 * @return int Number of bytes the hash outputs
 	 */
 	public static function hashLength( $raw = true ) {
-		$raw = (bool)$raw;
-		if ( is_null( self::$hashLength[$raw] ) ) {
-			self::$hashLength[$raw] = strlen( self::hash( '', $raw ) );
-		}
-
-		return self::$hashLength[$raw];
+		self::$hashLength ??= strlen( self::hash( '', true ) );
+		// Optimisation: Skip computing the length of non-raw hashes.
+		// The algos in hashAlgo() all produce a digest that is a multiple
+		// of 8 bits, where hex is always twice the length of binary byte length.
+		return $raw ? self::$hashLength : self::$hashLength * 2;
 	}
 
 	/**
-	 * Generate an acceptably unstable one-way-hash of some text
+	 * Generate a cryptographic hash value (message digest) for a string,
 	 * making use of the best hash algorithm that we have available.
 	 *
 	 * @param string $data
@@ -95,20 +78,23 @@ class MWCryptHash {
 	}
 
 	/**
-	 * Generate an acceptably unstable one-way-hmac of some text
+	 * Generate a keyed cryptographic hash value (HMAC) for a string,
 	 * making use of the best hash algorithm that we have available.
 	 *
 	 * @param string $data
 	 * @param string $key
 	 * @param bool $raw True to return binary data, false to return it hex-encoded
-	 * @return string An hmac hash of the data + key
+	 * @return string An HMAC hash of the data + key
 	 */
 	public static function hmac( $data, $key, $raw = true ) {
 		if ( !is_string( $key ) ) {
-			// a fatal error in HHVM; an exception will at least give us a stack trace
-			throw new InvalidArgumentException( 'Invalid key type: ' . gettype( $key ) );
+			// hash_hmac tolerates non-string (would return null with warning)
+			throw new InvalidArgumentException( 'Invalid key type: ' . get_debug_type( $key ) );
 		}
 		return hash_hmac( self::hashAlgo(), $data, $key, $raw );
 	}
 
 }
+
+/** @deprecated class alias since 1.47 */
+class_alias( MWCryptHash::class, 'MWCryptHash' );

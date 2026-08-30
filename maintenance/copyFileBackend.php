@@ -2,26 +2,17 @@
 /**
  * Copy all files in some containers of one backend to another.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
+use MediaWiki\Maintenance\Maintenance;
+use Wikimedia\FileBackend\FileBackend;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Copy all files in one container of one backend to another.
@@ -55,8 +46,9 @@ class CopyFileBackend extends Maintenance {
 	}
 
 	public function execute() {
-		$src = FileBackendGroup::singleton()->get( $this->getOption( 'src' ) );
-		$dst = FileBackendGroup::singleton()->get( $this->getOption( 'dst' ) );
+		$backendGroup = $this->getServiceContainer()->getFileBackendGroup();
+		$src = $backendGroup->get( $this->getOption( 'src' ) );
+		$dst = $backendGroup->get( $this->getOption( 'dst' ) );
 		$containers = explode( '|', $this->getOption( 'containers' ) );
 		$subDir = rtrim( $this->getOption( 'subdir', '' ), '/' );
 
@@ -258,26 +250,26 @@ class CopyFileBackend extends Maintenance {
 			}
 			$fsFiles[] = $fsFile; // keep TempFSFile objects alive as needed
 			// Note: prepare() is usually fast for key/value backends
-			$status = $dst->prepare( [ 'dir' => dirname( $dstPath ), 'bypassReadOnly' => 1 ] );
+			$status = $dst->prepare( [ 'dir' => dirname( $dstPath ), 'bypassReadOnly' => true ] );
 			if ( !$status->isOK() ) {
-				$this->error( print_r( Status::wrap( $status )->getWikiText(), true ) );
+				$this->error( $status );
 				$this->fatalError( "$domainId: Could not copy $srcPath to $dstPath." );
 			}
 			$ops[] = [ 'op' => 'store',
-				'src' => $fsFile->getPath(), 'dst' => $dstPath, 'overwrite' => 1 ];
+				'src' => $fsFile->getPath(), 'dst' => $dstPath, 'overwrite' => true ];
 			$copiedRel[] = $srcPathRel;
 		}
 
 		// Copy in the batch of source files...
 		$t_start = microtime( true );
-		$status = $dst->doQuickOperations( $ops, [ 'bypassReadOnly' => 1 ] );
+		$status = $dst->doQuickOperations( $ops, [ 'bypassReadOnly' => true ] );
 		if ( !$status->isOK() ) {
 			sleep( 10 ); // wait and retry copy again
-			$status = $dst->doQuickOperations( $ops, [ 'bypassReadOnly' => 1 ] );
+			$status = $dst->doQuickOperations( $ops, [ 'bypassReadOnly' => true ] );
 		}
 		$elapsed_ms = floor( ( microtime( true ) - $t_start ) * 1000 );
 		if ( !$status->isOK() ) {
-			$this->error( print_r( Status::wrap( $status )->getWikiText(), true ) );
+			$this->error( $status );
 			$this->fatalError( "$domainId: Could not copy file batch." );
 		} elseif ( count( $copiedRel ) ) {
 			$this->output( "\n\tCopied these file(s) [{$elapsed_ms}ms]:\n\t" .
@@ -307,14 +299,14 @@ class CopyFileBackend extends Maintenance {
 
 		// Delete the batch of source files...
 		$t_start = microtime( true );
-		$status = $dst->doQuickOperations( $ops, [ 'bypassReadOnly' => 1 ] );
+		$status = $dst->doQuickOperations( $ops, [ 'bypassReadOnly' => true ] );
 		if ( !$status->isOK() ) {
 			sleep( 10 ); // wait and retry copy again
-			$status = $dst->doQuickOperations( $ops, [ 'bypassReadOnly' => 1 ] );
+			$status = $dst->doQuickOperations( $ops, [ 'bypassReadOnly' => true ] );
 		}
 		$elapsed_ms = floor( ( microtime( true ) - $t_start ) * 1000 );
 		if ( !$status->isOK() ) {
-			$this->error( print_r( Status::wrap( $status )->getWikiText(), true ) );
+			$this->error( $status );
 			$this->fatalError( "$domainId: Could not delete file batch." );
 		} elseif ( count( $deletedRel ) ) {
 			$this->output( "\n\tDeleted these file(s) [{$elapsed_ms}ms]:\n\t" .
@@ -341,7 +333,7 @@ class CopyFileBackend extends Maintenance {
 		}
 		// Initial fast checks to see if files are obviously different
 		$sameFast = (
-			is_array( $srcStat ) // sanity check that source exists
+			is_array( $srcStat )
 			&& is_array( $dstStat ) // dest exists
 			&& $srcStat['size'] === $dstStat['size']
 		);
@@ -370,5 +362,7 @@ class CopyFileBackend extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = CopyFileBackend::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

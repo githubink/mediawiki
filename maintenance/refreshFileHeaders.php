@@ -4,26 +4,19 @@
  *
  * Usage: php refreshFileHeaders.php
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
+use MediaWiki\FileRepo\File\FileSelectQueryBuilder;
+use MediaWiki\FileRepo\LocalRepo;
+use MediaWiki\Maintenance\Maintenance;
+use Wikimedia\Rdbms\SelectQueryBuilder;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script to refresh file headers from metadata
@@ -31,7 +24,7 @@ require_once __DIR__ . '/Maintenance.php';
  * @ingroup Maintenance
  */
 class RefreshFileHeaders extends Maintenance {
-	function __construct() {
+	public function __construct() {
 		parent::__construct();
 		$this->addDescription( 'Script to update file HTTP headers' );
 		$this->addOption( 'verbose', 'Output information about each file.', false, false, 'v' );
@@ -50,50 +43,43 @@ class RefreshFileHeaders extends Maintenance {
 	}
 
 	public function execute() {
-		$repo = RepoGroup::singleton()->getLocalRepo();
+		$repo = $this->getServiceContainer()->getRepoGroup()->getLocalRepo();
 		$start = str_replace( ' ', '_', $this->getOption( 'start', '' ) ); // page on img_name
 		$end = str_replace( ' ', '_', $this->getOption( 'end', '' ) ); // page on img_name
-		 // filter by img_media_type
+		// filter by img_media_type
 		$media_type = str_replace( ' ', '_', $this->getOption( 'media_type', '' ) );
-		 // filter by img_major_mime
+		// filter by img_major_mime
 		$major_mime = str_replace( ' ', '_', $this->getOption( 'major_mime', '' ) );
-		 // filter by img_minor_mime
+		// filter by img_minor_mime
 		$minor_mime = str_replace( ' ', '_', $this->getOption( 'minor_mime', '' ) );
 
 		$count = 0;
-		$dbr = $this->getDB( DB_REPLICA );
-
-		$fileQuery = LocalFile::getQueryInfo();
+		$dbr = $this->getReplicaDB();
 
 		do {
-			$conds = [ "img_name > {$dbr->addQuotes( $start )}" ];
+			$queryBuilder = FileSelectQueryBuilder::newForFile( $dbr );
 
-			if ( strlen( $end ) ) {
-				$conds[] = "img_name <= {$dbr->addQuotes( $end )}";
+			$queryBuilder->where( $dbr->expr( 'img_name', '>', $start ) );
+			if ( $end !== '' ) {
+				$queryBuilder->andWhere( $dbr->expr( 'img_name', '<=', $end ) );
 			}
 
-			if ( strlen( $media_type ) ) {
-				$conds[] = "img_media_type = {$dbr->addQuotes( $media_type )}";
+			if ( $media_type !== '' ) {
+				$queryBuilder->andWhere( [ 'img_media_type' => $media_type ] );
 			}
 
-			if ( strlen( $major_mime ) ) {
-				$conds[] = "img_major_mime = {$dbr->addQuotes( $major_mime )}";
+			if ( $major_mime !== '' ) {
+				$queryBuilder->andWhere( [ 'img_major_mime' => $major_mime ] );
 			}
 
-			if ( strlen( $minor_mime ) ) {
-				$conds[] = "img_minor_mime = {$dbr->addQuotes( $minor_mime )}";
+			if ( $minor_mime !== '' ) {
+				$queryBuilder->andWhere( [ 'img_minor_mime' => $minor_mime ] );
 			}
 
-			$res = $dbr->select( $fileQuery['tables'],
-				$fileQuery['fields'],
-				$conds,
-				__METHOD__,
-				[
-					'LIMIT' => $this->getBatchSize(),
-					'ORDER BY' => 'img_name ASC'
-				],
-				$fileQuery['joins']
-			);
+			$res = $queryBuilder
+				->orderBy( 'img_name', SelectQueryBuilder::SORT_ASC )
+				->limit( $this->getBatchSize() )
+				->caller( __METHOD__ )->fetchResultSet();
 
 			if ( $res->numRows() > 0 ) {
 				$row1 = $res->current();
@@ -143,14 +129,20 @@ class RefreshFileHeaders extends Maintenance {
 		$this->output( "Done. Updated headers for $count file(s).\n" );
 	}
 
+	/**
+	 * @param LocalRepo $repo
+	 * @param array $backendOperations
+	 */
 	protected function updateFileHeaders( $repo, $backendOperations ) {
 		$status = $repo->getBackend()->doQuickOperations( $backendOperations );
 
 		if ( !$status->isGood() ) {
-			$this->error( "Encountered error: " . print_r( $status, true ) );
+			$this->error( $status );
 		}
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = RefreshFileHeaders::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

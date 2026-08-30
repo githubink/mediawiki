@@ -2,26 +2,16 @@
 /**
  * Test various language time and date functions
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup MaintenanceLanguage
  */
 
+use MediaWiki\Maintenance\Maintenance;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/../Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that tests various language time and date functions.
@@ -30,6 +20,7 @@ require_once __DIR__ . '/../Maintenance.php';
  */
 class DateFormats extends Maintenance {
 
+	/** @var string */
 	private $ts = '20010115123456';
 
 	public function __construct() {
@@ -38,8 +29,7 @@ class DateFormats extends Maintenance {
 	}
 
 	public function execute() {
-		global $IP;
-		foreach ( glob( "$IP/languages/messages/Messages*.php" ) as $filename ) {
+		foreach ( glob( MW_INSTALL_PATH . '/languages/messages/Messages*.php' ) as $filename ) {
 			$base = basename( $filename );
 			$m = [];
 			if ( !preg_match( '/Messages(.*)\.php$/', $base, $m ) ) {
@@ -47,7 +37,7 @@ class DateFormats extends Maintenance {
 			}
 			$code = str_replace( '_', '-', strtolower( $m[1] ) );
 			$this->output( "$code " );
-			$lang = Language::factory( $code );
+			$lang = $this->getServiceContainer()->getLanguageFactory()->getLanguage( $code );
 			$prefs = $lang->getDatePreferences();
 			if ( !$prefs ) {
 				$prefs = [ 'default' ];
@@ -78,5 +68,7 @@ class DateFormats extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = DateFormats::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

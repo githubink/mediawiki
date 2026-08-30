@@ -2,30 +2,20 @@
 /**
  * This file is part of MediaWiki.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  */
 
 namespace MediaWiki\Revision;
 
-use ContentHandler;
-use Hooks;
+use MediaWiki\Content\IContentHandlerFactory;
+use MediaWiki\Content\UnknownContentModelException;
+use MediaWiki\HookContainer\HookContainer;
+use MediaWiki\HookContainer\HookRunner;
 use MediaWiki\Linker\LinkTarget;
-use Title;
+use MediaWiki\Page\PageIdentity;
+use MediaWiki\Page\PageReference;
+use MediaWiki\Title\TitleFactory;
 
 /**
  * A SlotRoleHandler for the main slot. While most slot roles serve a specific purpose and
@@ -46,37 +36,60 @@ class MainSlotRoleHandler extends SlotRoleHandler {
 	 */
 	private $namespaceContentModels;
 
+	/** @var IContentHandlerFactory */
+	private $contentHandlerFactory;
+
+	/** @var HookRunner */
+	private $hookRunner;
+
+	/** @var TitleFactory */
+	private $titleFactory;
+
 	/**
 	 * @param string[] $namespaceContentModels A mapping of namespaces to content models,
 	 *        typically from $wgNamespaceContentModels.
+	 * @param IContentHandlerFactory $contentHandlerFactory
+	 * @param HookContainer $hookContainer
+	 * @param TitleFactory $titleFactory
 	 */
-	public function __construct( array $namespaceContentModels ) {
-		parent::__construct( 'main', CONTENT_MODEL_WIKITEXT );
+	public function __construct(
+		array $namespaceContentModels,
+		IContentHandlerFactory $contentHandlerFactory,
+		HookContainer $hookContainer,
+		TitleFactory $titleFactory
+	) {
+		parent::__construct( SlotRecord::MAIN, CONTENT_MODEL_WIKITEXT );
 		$this->namespaceContentModels = $namespaceContentModels;
+		$this->contentHandlerFactory = $contentHandlerFactory;
+		$this->hookRunner = new HookRunner( $hookContainer );
+		$this->titleFactory = $titleFactory;
 	}
 
+	/** @inheritDoc */
 	public function supportsArticleCount() {
 		return true;
 	}
 
 	/**
 	 * @param string $model
-	 * @param LinkTarget $page
+	 * @param PageIdentity $page
 	 *
 	 * @return bool
+	 * @throws UnknownContentModelException
 	 */
-	public function isAllowedModel( $model, LinkTarget $page ) {
-		$title = Title::newFromLinkTarget( $page );
-		$handler = ContentHandler::getForModelID( $model );
+	public function isAllowedModel( $model, PageIdentity $page ) {
+		$title = $this->titleFactory->newFromPageIdentity( $page );
+		$handler = $this->contentHandlerFactory->getContentHandler( $model );
+
 		return $handler->canBeUsedOn( $title );
 	}
 
 	/**
-	 * @param LinkTarget $page
+	 * @param LinkTarget|PageReference $page
 	 *
 	 * @return string
 	 */
-	public function getDefaultModel( LinkTarget $page ) {
+	public function getDefaultModel( $page ) {
 		// NOTE: this method must not rely on $title->getContentModel() directly or indirectly,
 		//       because it is used to initialize the mContentModel member.
 
@@ -85,13 +98,18 @@ class MainSlotRoleHandler extends SlotRoleHandler {
 		$model = $this->namespaceContentModels[$ns] ?? null;
 
 		// Hook can determine default model
-		$title = Title::newFromLinkTarget( $page );
-		if ( !Hooks::run( 'ContentHandlerDefaultModelFor', [ $title, &$model ] ) && !is_null( $model ) ) {
+		if ( $page instanceof PageReference ) {
+			$title = $this->titleFactory->newFromPageReference( $page );
+		} else {
+			$title = $this->titleFactory->newFromLinkTarget( $page );
+		}
+		// @phan-suppress-next-line PhanTypeMismatchArgument Type mismatch on pass-by-ref args
+		if ( !$this->hookRunner->onContentHandlerDefaultModelFor( $title, $model ) && $model !== null ) {
 			return $model;
 		}
 
 		// Could this page contain code based on the title?
-		$isCodePage = $ns === NS_MEDIAWIKI && preg_match( '!\.(css|js|json)$!u', $title->getText(), $m );
+		$isCodePage = $ns === NS_MEDIAWIKI && preg_match( '!\.(css|js|json|vue)$!u', $title->getText(), $m );
 		if ( $isCodePage ) {
 			$ext = $m[1];
 		}
@@ -99,14 +117,14 @@ class MainSlotRoleHandler extends SlotRoleHandler {
 		// Is this a user subpage containing code?
 		$isCodeSubpage = $ns === NS_USER
 			&& !$isCodePage
-			&& preg_match( "/\\/.*\\.(js|css|json)$/", $title->getText(), $m );
+			&& preg_match( "/\\/.*\\.(js|css|json|vue)$/", $title->getText(), $m );
 
 		if ( $isCodeSubpage ) {
 			$ext = $m[1];
 		}
 
 		// Is this wikitext, according to $wgNamespaceContentModels or the DefaultModelFor hook?
-		$isWikitext = is_null( $model ) || $model == CONTENT_MODEL_WIKITEXT;
+		$isWikitext = $model === null || $model == CONTENT_MODEL_WIKITEXT;
 		$isWikitext = $isWikitext && !$isCodePage && !$isCodeSubpage;
 
 		if ( !$isWikitext ) {
@@ -117,6 +135,8 @@ class MainSlotRoleHandler extends SlotRoleHandler {
 					return CONTENT_MODEL_CSS;
 				case 'json':
 					return CONTENT_MODEL_JSON;
+				case 'vue':
+					return CONTENT_MODEL_VUE;
 				default:
 					return $model ?? CONTENT_MODEL_TEXT;
 			}

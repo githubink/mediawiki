@@ -2,28 +2,22 @@
 /**
  * Make a page edit.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
+use MediaWiki\CommentStore\CommentStoreComment;
+use MediaWiki\Content\ContentHandler;
+use MediaWiki\Language\RawMessage;
+use MediaWiki\Maintenance\Maintenance;
 use MediaWiki\Revision\SlotRecord;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script to make a page edit.
@@ -44,12 +38,16 @@ class EditCLI extends Maintenance {
 		$this->addOption( 'nocreate', 'Don\'t create new pages', false, false );
 		$this->addOption( 'createonly', 'Only create new pages', false, false );
 		$this->addOption( 'slot', 'Slot role name', false, true );
+		$this->addOption(
+			'parse-title',
+			'Parse title input as a message, e.g. "{{int:mainpage}}" or "News_{{CURRENTYEAR}}',
+			false, false, 'p'
+		);
 		$this->addArg( 'title', 'Title of article to edit' );
 	}
 
+	/** @inheritDoc */
 	public function execute() {
-		global $wgUser;
-
 		$userName = $this->getOption( 'user', false );
 		$summary = $this->getOption( 'summary', '' );
 		$remove = $this->hasOption( 'remove' );
@@ -60,18 +58,24 @@ class EditCLI extends Maintenance {
 		$slot = $this->getOption( 'slot', SlotRecord::MAIN );
 
 		if ( $userName === false ) {
-			$wgUser = User::newSystemUser( 'Maintenance script', [ 'steal' => true ] );
+			$user = User::newSystemUser( User::MAINTENANCE_SCRIPT_USER, [ 'steal' => true ] );
 		} else {
-			$wgUser = User::newFromName( $userName );
+			$user = User::newFromName( $userName );
 		}
-		if ( !$wgUser ) {
+		if ( !$user ) {
 			$this->fatalError( "Invalid username" );
 		}
-		if ( $wgUser->isAnon() ) {
-			$wgUser->addToDatabase();
+		if ( $user->isAnon() ) {
+			$user->addToDatabase();
 		}
 
-		$title = Title::newFromText( $this->getArg( 0 ) );
+		$titleInput = $this->getArg( 0 );
+
+		if ( $this->hasOption( 'parse-title' ) ) {
+			$titleInput = ( new RawMessage( '$1' ) )->params( $titleInput )->text();
+		}
+
+		$title = Title::newFromText( $titleInput );
 		if ( !$title ) {
 			$this->fatalError( "Invalid title" );
 		}
@@ -82,7 +86,7 @@ class EditCLI extends Maintenance {
 			$this->fatalError( "Page already exists" );
 		}
 
-		$page = WikiPage::factory( $title );
+		$page = $this->getServiceContainer()->getWikiPageFactory()->newFromTitle( $title );
 
 		if ( $remove ) {
 			if ( $slot === SlotRecord::MAIN ) {
@@ -97,8 +101,8 @@ class EditCLI extends Maintenance {
 		}
 
 		# Do the edit
-		$this->output( "Saving... " );
-		$updater = $page->newPageUpdater( $wgUser );
+		$this->output( "Saving..." );
+		$updater = $page->newPageUpdater( $user );
 
 		$flags = ( $minor ? EDIT_MINOR : 0 ) |
 			( $bot ? EDIT_FORCE_BOT : 0 ) |
@@ -116,17 +120,17 @@ class EditCLI extends Maintenance {
 
 		if ( $status->isOK() ) {
 			$this->output( "done\n" );
-			$exit = 0;
 		} else {
 			$this->output( "failed\n" );
-			$exit = 1;
 		}
 		if ( !$status->isGood() ) {
-			$this->output( $status->getWikiText( false, false, 'en' ) . "\n" );
+			$this->error( $status );
 		}
-		exit( $exit );
+		return $status->isOK();
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = EditCLI::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

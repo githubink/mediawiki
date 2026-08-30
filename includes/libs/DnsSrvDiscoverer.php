@@ -2,23 +2,11 @@
 /**
  * Service discovery using DNS SRV records
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  */
+
+namespace Wikimedia;
 
 /**
  * @since 1.29
@@ -27,28 +15,76 @@ class DnsSrvDiscoverer {
 	/**
 	 * @var string
 	 */
+	private $service;
+
+	/**
+	 * @var string
+	 */
+	private $protocol;
+
+	/**
+	 * @var string|null
+	 */
 	private $domain;
 
 	/**
-	 * @param string $domain
+	 * @var callable
 	 */
-	public function __construct( $domain ) {
+	private $resolver;
+
+	/**
+	 * Construct a new discoverer for the given domain, service, and protocol.
+	 *
+	 * @param string $service Name of the service to discover.
+	 * @param string $protocol Service protocol. Defaults to 'tcp'
+	 * @param ?string $domain The hostname/domain on which to perform discovery
+	 *  of the given service and protocol. Defaults to null which effectively
+	 *  performs a query relative to the host's configured search domain.
+	 * @param ?callable $resolver Resolver function. Defaults to using
+	 *  dns_get_record. Primarily useful in testing.
+	 */
+	public function __construct(
+		string $service,
+		string $protocol = 'tcp',
+		?string $domain = null,
+		?callable $resolver = null
+	) {
+		$this->service = $service;
+		$this->protocol = $protocol;
 		$this->domain = $domain;
+
+		$this->resolver = $resolver ?? static function ( $srv ) {
+			return dns_get_record( $srv, DNS_SRV );
+		};
 	}
 
 	/**
-	 * Fetch the servers with a DNS SRV request
+	 * Queries the resolver for an SRV resource record matching the service,
+	 * protocol, and domain and returns all target/port/priority/weight
+	 * records.
 	 *
 	 * @return array
 	 */
-	public function getServers() {
+	public function getRecords() {
 		$result = [];
-		foreach ( $this->getDnsRecords() as $record ) {
+
+		$records = ( $this->resolver )( $this->getSrvName() );
+
+		// Respect RFC 2782 with regard to a single '.' entry denoting a valid
+		// empty response
+		if (
+			!$records
+			|| ( count( $records ) === 1 && $records[0]['target'] === '.' )
+		) {
+			return $result;
+		}
+
+		foreach ( $records as $record ) {
 			$result[] = [
 				'target' => $record['target'],
-				'port' => $record['port'],
-				'pri' => $record['pri'],
-				'weight' => $record['weight'],
+				'port' => (int)$record['port'],
+				'pri' => (int)$record['pri'],
+				'weight' => (int)$record['weight'],
 			];
 		}
 
@@ -56,53 +92,42 @@ class DnsSrvDiscoverer {
 	}
 
 	/**
-	 * Pick a server according to the priority fields.
-	 * Note that weight is currently ignored.
+	 * Performs discovery for the domain, service, and protocol, and returns a
+	 * list of resolved server name/ip and port number pairs sorted by each
+	 * record's priority, with servers of the same priority randomly shuffled.
 	 *
-	 * @param array $servers from getServers
-	 * @return array|bool
+	 * @return array[]
 	 */
-	public function pickServer( array $servers ) {
-		if ( !$servers ) {
-			return false;
+	public function getServers() {
+		$records = $this->getRecords();
+
+		usort( $records, static fn ( $a, $b ) =>
+			$a['pri'] <=> $b['pri'] ?:
+			( mt_rand( 0, 1 ) ? 1 : -1 )
+		);
+
+		$serversAndPorts = [];
+
+		foreach ( $records as $record ) {
+			$serversAndPorts[] = [ $record['target'], $record['port'] ];
 		}
 
-		$srvsByPrio = [];
-		foreach ( $servers as $server ) {
-			$srvsByPrio[$server['pri']][] = $server;
-		}
-
-		$min = min( array_keys( $srvsByPrio ) );
-		if ( count( $srvsByPrio[$min] ) == 1 ) {
-			return $srvsByPrio[$min][0];
-		} else {
-			// Choose randomly
-			$rand = mt_rand( 0, count( $srvsByPrio[$min] ) - 1 );
-
-			return $srvsByPrio[$min][$rand];
-		}
+		return $serversAndPorts;
 	}
 
 	/**
-	 * @param array $server
-	 * @param array $servers
-	 * @return array[]
+	 * Returns the SRV resource record name.
 	 */
-	public function removeServer( $server, array $servers ) {
-		foreach ( $servers as $i => $srv ) {
-			if ( $srv['target'] === $server['target'] && $srv['port'] === $server['port'] ) {
-				unset( $servers[$i] );
-				break;
-			}
+	public function getSrvName(): string {
+		$srv = "_{$this->service}._{$this->protocol}";
+
+		if ( $this->domain === null || $this->domain === '' ) {
+			return $srv;
 		}
 
-		return array_values( $servers );
-	}
-
-	/**
-	 * @return array[]
-	 */
-	protected function getDnsRecords() {
-		return dns_get_record( $this->domain, DNS_SRV );
+		return "$srv.{$this->domain}";
 	}
 }
+
+/** @deprecated class alias since 1.47 */
+class_alias( DnsSrvDiscoverer::class, 'DnsSrvDiscoverer' );

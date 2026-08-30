@@ -2,34 +2,19 @@
 /**
  * Run pending jobs.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
-if ( !defined( 'MEDIAWIKI' ) ) {
-	// So extensions (and other code) can check whether they're running in job mode.
-	// This is not defined if this script is included from installer/updater or phpunit.
-	define( 'MEDIAWIKI_JOB_RUNNER', true );
-}
-
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
-use MediaWiki\Logger\LoggerFactory;
+use MediaWiki\Json\FormatJson;
+use MediaWiki\Maintenance\ForkController;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Settings\SettingsBuilder;
 
 /**
  * Maintenance script that runs pending jobs.
@@ -49,13 +34,29 @@ class RunJobs extends Maintenance {
 		$this->addOption( 'wait', 'Wait for new jobs instead of exiting', false, false );
 	}
 
+	public function finalSetup( SettingsBuilder $settingsBuilder ) {
+		// So extensions (and other code) can check whether they're running in job mode.
+		// This is not defined if this script is included from installer/updater or phpunit.
+		define( 'MEDIAWIKI_JOB_RUNNER', true );
+		parent::finalSetup( $settingsBuilder );
+	}
+
+	/** @inheritDoc */
 	public function memoryLimit() {
 		if ( $this->hasOption( 'memory-limit' ) ) {
 			return parent::memoryLimit();
 		}
 
 		// Don't eat all memory on the machine if we get a bad job.
-		return "150M";
+		//
+		// The default memory_limit for PHP-CLI is -1 (unlimited).
+		// This is fine for most maintenance scripts, but runJobs.php is unusually likely
+		// to leak memory (e.g. some badly-managed in-process cache array in some class)
+		// because it can run for long periods doing different tasks.
+		// Let's use 3x the limit for a web request.
+		global $wgMemoryLimit;
+		$limit = wfShorthandToInteger( (string)$wgMemoryLimit );
+		return $limit === -1 ? $limit : ( $limit * 3 );
 	}
 
 	public function execute() {
@@ -64,9 +65,13 @@ class RunJobs extends Maintenance {
 			if ( $procs < 1 || $procs > 1000 ) {
 				$this->fatalError( "Invalid argument to --procs" );
 			} elseif ( $procs != 1 ) {
-				$fc = new ForkController( $procs );
+				try {
+					$fc = new ForkController( $procs );
+				} catch ( Throwable $e ) {
+					$this->fatalError( $e->getMessage() );
+				}
 				if ( $fc->start() != 'child' ) {
-					exit( 0 );
+					return;
 				}
 			}
 		}
@@ -74,9 +79,9 @@ class RunJobs extends Maintenance {
 		$outputJSON = ( $this->getOption( 'result' ) === 'json' );
 		$wait = $this->hasOption( 'wait' );
 
-		$runner = new JobRunner( LoggerFactory::getInstance( 'runJobs' ) );
+		$runner = $this->getServiceContainer()->getJobRunner();
 		if ( !$outputJSON ) {
-			$runner->setDebugHandler( [ $this, 'debugInternal' ] );
+			$runner->setDebugHandler( $this->debugInternal( ... ) );
 		}
 
 		$type = $this->getOption( 'type', false );
@@ -100,7 +105,8 @@ class RunJobs extends Maintenance {
 				!$wait ||
 				$response['reached'] === 'time-limit' ||
 				$response['reached'] === 'job-limit' ||
-				$response['reached'] === 'memory-limit'
+				$response['reached'] === 'memory-limit' ||
+				$response['reached'] === 'exception'
 			) {
 				// If job queue is empty, output it
 				if ( !$outputJSON && $response['jobs'] === [] ) {
@@ -120,10 +126,12 @@ class RunJobs extends Maintenance {
 	/**
 	 * @param string $s
 	 */
-	public function debugInternal( $s ) {
+	private function debugInternal( $s ) {
 		$this->output( $s );
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = RunJobs::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

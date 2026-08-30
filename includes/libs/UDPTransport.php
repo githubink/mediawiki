@@ -1,22 +1,12 @@
 <?php
 /**
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  */
+
+namespace Wikimedia;
+
+use InvalidArgumentException;
 
 /**
  * A generic class to send a message over UDP
@@ -29,7 +19,13 @@
  * @since 1.25
  */
 class UDPTransport {
-	private $host, $port, $prefix, $domain;
+	// Limit to 64 KiB
+	public const MAX_PAYLOAD_SIZE = 65507;
+	private string $host;
+	private int $port;
+	/** @var bool|string */
+	private $prefix;
+	private int $domain;
 
 	/**
 	 * @param string $host IP address to send to
@@ -47,7 +43,6 @@ class UDPTransport {
 	/**
 	 * @param string $info In the format of "udp://host:port/prefix"
 	 * @return UDPTransport
-	 * @throws InvalidArgumentException
 	 */
 	public static function newFromString( $info ) {
 		if ( preg_match( '!^udp:(?://)?\[([0-9a-fA-F:]+)\]:(\d+)(?:/(.*))?$!', $info, $m ) ) {
@@ -58,7 +53,7 @@ class UDPTransport {
 			$domain = AF_INET6;
 		} elseif ( preg_match( '!^udp:(?://)?([a-zA-Z0-9.-]+):(\d+)(?:/(.*))?$!', $info, $m ) ) {
 			$host = $m[1];
-			if ( !IP::isIPv4( $host ) ) {
+			if ( !IPUtils::isIPv4( $host ) ) {
 				$host = gethostbyname( $host );
 			}
 			$port = intval( $m[2] );
@@ -74,21 +69,20 @@ class UDPTransport {
 	/**
 	 * @param string $text
 	 */
-	public function emit( $text ) {
+	public function emit( $text ): void {
 		// Clean it up for the multiplexer
 		if ( $this->prefix !== false ) {
 			$text = preg_replace( '/^/m', $this->prefix . ' ', $text );
 
-			// Limit to 64KB
-			if ( strlen( $text ) > 65506 ) {
-				$text = substr( $text, 0, 65506 );
+			if ( strlen( $text ) > self::MAX_PAYLOAD_SIZE - 1 ) {
+				$text = substr( $text, 0, self::MAX_PAYLOAD_SIZE - 1 );
 			}
 
-			if ( substr( $text, -1 ) != "\n" ) {
+			if ( !str_ends_with( $text, "\n" ) ) {
 				$text .= "\n";
 			}
-		} elseif ( strlen( $text ) > 65507 ) {
-			$text = substr( $text, 0, 65507 );
+		} elseif ( strlen( $text ) > self::MAX_PAYLOAD_SIZE ) {
+			$text = substr( $text, 0, self::MAX_PAYLOAD_SIZE );
 		}
 
 		$sock = socket_create( $this->domain, SOCK_DGRAM, SOL_UDP );
@@ -100,3 +94,6 @@ class UDPTransport {
 		socket_close( $sock );
 	}
 }
+
+/** @deprecated class alias since 1.47 */
+class_alias( UDPTransport::class, 'UDPTransport' );

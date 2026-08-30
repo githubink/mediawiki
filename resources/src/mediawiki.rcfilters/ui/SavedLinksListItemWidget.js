@@ -1,69 +1,56 @@
 /**
- * Quick links menu option widget
+ * Quick links menu option widget.
  *
  * @class mw.rcfilters.ui.SavedLinksListItemWidget
+ * @ignore
  * @extends OO.ui.Widget
- * @mixins OO.ui.mixin.LabelElement
- * @mixins OO.ui.mixin.IconElement
- * @mixins OO.ui.mixin.TitledElement
  *
- * @constructor
  * @param {mw.rcfilters.dm.SavedQueryItemModel} model View model
  * @param {Object} [config] Configuration object
- * @cfg {jQuery} [$overlay] A jQuery object serving as overlay for popups
+ * @param {jQuery} [config.$overlay] A jQuery object serving as overlay for popups
  */
-var SavedLinksListItemWidget = function MwRcfiltersUiSavedLinksListWidget( model, config ) {
+const SavedLinksListItemWidget = function MwRcfiltersUiSavedLinksListWidget( model, config ) {
 	config = config || {};
 
 	this.model = model;
 
 	// Parent
-	SavedLinksListItemWidget.parent.call( this, $.extend( {
-		data: this.model.getID()
-	}, config ) );
-
-	// Mixin constructors
-	OO.ui.mixin.LabelElement.call( this, $.extend( {
-		label: this.model.getLabel()
-	}, config ) );
-	OO.ui.mixin.IconElement.call( this, $.extend( {
-		icon: ''
-	}, config ) );
-	OO.ui.mixin.TitledElement.call( this, $.extend( {
+	SavedLinksListItemWidget.super.call( this, Object.assign( {
+		data: this.model.getID(),
+		label: this.model.getLabel(),
 		title: this.model.getLabel()
 	}, config ) );
 
 	this.edit = false;
 	this.$overlay = config.$overlay || this.$element;
 
-	this.popupButton = new OO.ui.ButtonWidget( {
+	this.buttonMenu = new OO.ui.ButtonMenuSelectWidget( {
 		classes: [ 'mw-rcfilters-ui-savedLinksListItemWidget-button' ],
 		icon: 'ellipsis',
-		framed: false
-	} );
-	this.menu = new OO.ui.MenuSelectWidget( {
-		classes: [ 'mw-rcfilters-ui-savedLinksListItemWidget-menu' ],
-		widget: this.popupButton,
-		width: 200,
-		horizontalPosition: 'end',
-		$floatableContainer: this.popupButton.$element,
-		items: [
-			new OO.ui.MenuOptionWidget( {
-				data: 'edit',
-				icon: 'edit',
-				label: mw.msg( 'rcfilters-savedqueries-rename' )
-			} ),
-			new OO.ui.MenuOptionWidget( {
-				data: 'delete',
-				icon: 'trash',
-				label: mw.msg( 'rcfilters-savedqueries-remove' )
-			} ),
-			new OO.ui.MenuOptionWidget( {
-				data: 'default',
-				icon: 'pushPin',
-				label: mw.msg( 'rcfilters-savedqueries-setdefault' )
-			} )
-		]
+		framed: false,
+		menu: {
+			classes: [ 'mw-rcfilters-ui-savedLinksListItemWidget-menu' ],
+			width: 200,
+			horizontalPosition: 'end',
+			$overlay: this.$overlay,
+			items: [
+				new OO.ui.MenuOptionWidget( {
+					data: 'edit',
+					icon: 'edit',
+					label: mw.msg( 'rcfilters-savedqueries-rename' )
+				} ),
+				new OO.ui.MenuOptionWidget( {
+					data: 'delete',
+					icon: 'trash',
+					label: mw.msg( 'rcfilters-savedqueries-remove' )
+				} ),
+				new OO.ui.MenuOptionWidget( {
+					data: 'default',
+					icon: 'pushPin',
+					label: mw.msg( 'rcfilters-savedqueries-setdefault' )
+				} )
+			]
+		}
 	} );
 
 	this.editInput = new OO.ui.TextInputWidget( {
@@ -77,8 +64,7 @@ var SavedLinksListItemWidget = function MwRcfiltersUiSavedLinksListWidget( model
 
 	// Events
 	this.model.connect( this, { update: 'onModelUpdate' } );
-	this.popupButton.connect( this, { click: 'onPopupButtonClick' } );
-	this.menu.connect( this, {
+	this.buttonMenu.menu.connect( this, {
 		choose: 'onMenuChoose'
 	} );
 	this.saveButton.connect( this, { click: 'save' } );
@@ -90,18 +76,17 @@ var SavedLinksListItemWidget = function MwRcfiltersUiSavedLinksListWidget( model
 		blur: this.onInputBlur.bind( this ),
 		keyup: this.onInputKeyup.bind( this )
 	} );
-	this.$element.on( { click: this.onClick.bind( this ) } );
-	this.$label.on( { click: this.onClick.bind( this ) } );
+	this.$element.on( { mousedown: this.onMouseDown.bind( this ) } );
 	this.$icon.on( { click: this.onDefaultIconClick.bind( this ) } );
-	// Prevent propagation on mousedown for the save button
-	// so the menu doesn't close
-	this.saveButton.$element.on( { mousedown: function () {
-		return false;
-	} } );
+
+	// Prevent clicks on interactive elements from closing the parent menu
+	this.buttonMenu.$element.add( this.$icon ).on( 'mousedown', ( e ) => {
+		e.stopPropagation();
+	} );
 
 	// Initialize
 	this.toggleDefault( !!this.model.isDefault() );
-	this.$overlay.append( this.menu.$element );
+	// eslint-disable-next-line mediawiki/class-doc
 	this.$element
 		.addClass( 'mw-rcfilters-ui-savedLinksListItemWidget' )
 		.addClass( 'mw-rcfilters-ui-savedLinksListItemWidget-query-' + this.model.getID() )
@@ -125,7 +110,7 @@ var SavedLinksListItemWidget = function MwRcfiltersUiSavedLinksListWidget( model
 								.addClass( 'mw-rcfilters-ui-cell' )
 								.addClass( 'mw-rcfilters-ui-savedLinksListItemWidget-icon' )
 								.append( this.$icon ),
-							this.popupButton.$element
+							this.buttonMenu.$element
 								.addClass( 'mw-rcfilters-ui-cell' )
 						)
 				)
@@ -133,31 +118,31 @@ var SavedLinksListItemWidget = function MwRcfiltersUiSavedLinksListWidget( model
 };
 
 /* Initialization */
-OO.inheritClass( SavedLinksListItemWidget, OO.ui.Widget );
-OO.mixinClass( SavedLinksListItemWidget, OO.ui.mixin.LabelElement );
-OO.mixinClass( SavedLinksListItemWidget, OO.ui.mixin.IconElement );
-OO.mixinClass( SavedLinksListItemWidget, OO.ui.mixin.TitledElement );
+OO.inheritClass( SavedLinksListItemWidget, OO.ui.MenuOptionWidget );
 
 /* Events */
 
 /**
- * @event delete
+ * The delete option was selected for this item.
  *
- * The delete option was selected for this item
+ * @event delete
+ * @ignore
  */
 
 /**
+ * The 'make default' option was selected for this item.
+ *
  * @event default
  * @param {boolean} default Item is default
- *
- * The 'make default' option was selected for this item
+ * @ignore
  */
 
 /**
+ * The label has been edited.
+ *
  * @event edit
  * @param {string} newLabel New label for the query
- *
- * The label has been edited
+ * @ignore
  */
 
 /* Methods */
@@ -171,13 +156,13 @@ SavedLinksListItemWidget.prototype.onModelUpdate = function () {
 };
 
 /**
- * Respond to click on the element or label
+ * Handle mousedown events
  *
- * @fires click
+ * @param {jQuery.Event} e
  */
-SavedLinksListItemWidget.prototype.onClick = function () {
-	if ( !this.editing ) {
-		this.emit( 'click' );
+SavedLinksListItemWidget.prototype.onMouseDown = function ( e ) {
+	if ( this.editing ) {
+		e.stopPropagation();
 	}
 };
 
@@ -188,15 +173,8 @@ SavedLinksListItemWidget.prototype.onClick = function () {
  * @return {boolean} false
  */
 SavedLinksListItemWidget.prototype.onDefaultIconClick = function () {
-	this.menu.toggle();
+	this.buttonMenu.menu.toggle();
 	return false;
-};
-
-/**
- * Respond to popup button click event
- */
-SavedLinksListItemWidget.prototype.onPopupButtonClick = function () {
-	this.menu.toggle();
 };
 
 /**
@@ -207,7 +185,7 @@ SavedLinksListItemWidget.prototype.onPopupButtonClick = function () {
  * @fires default
  */
 SavedLinksListItemWidget.prototype.onMenuChoose = function ( item ) {
-	var action = item.getData();
+	const action = item.getData();
 
 	if ( action === 'edit' ) {
 		this.toggleEdit( true );
@@ -216,17 +194,13 @@ SavedLinksListItemWidget.prototype.onMenuChoose = function ( item ) {
 	} else if ( action === 'default' ) {
 		this.emit( 'default', !this.default );
 	}
-	// Reset selected
-	this.menu.selectItem( null );
-	// Close the menu
-	this.menu.toggle( false );
 };
 
 /**
  * Respond to input keyup event, this is the way to intercept 'escape' key
  *
  * @param {jQuery.Event} e Event data
- * @return {boolean} false
+ * @return {boolean|undefined} false
  */
 SavedLinksListItemWidget.prototype.onInputKeyup = function ( e ) {
 	if ( e.which === OO.ui.Keys.ESCAPE ) {
@@ -265,7 +239,7 @@ SavedLinksListItemWidget.prototype.onInputChange = function ( value ) {
  * @fires edit
  */
 SavedLinksListItemWidget.prototype.save = function () {
-	var value = this.editInput.getValue().trim();
+	const value = this.editInput.getValue().trim();
 
 	if ( value ) {
 		this.emit( 'edit', value );
@@ -288,11 +262,11 @@ SavedLinksListItemWidget.prototype.toggleEdit = function ( isEdit ) {
 		this.editInput.toggle( isEdit );
 		this.$label.toggleClass( 'oo-ui-element-hidden', isEdit );
 		this.$icon.toggleClass( 'oo-ui-element-hidden', isEdit );
-		this.popupButton.toggle( !isEdit );
+		this.buttonMenu.toggle( !isEdit );
 		this.saveButton.toggle( isEdit );
 
 		if ( isEdit ) {
-			this.editInput.$input.trigger( 'focus' );
+			this.editInput.focus();
 		}
 		this.editing = isEdit;
 	}
@@ -309,7 +283,7 @@ SavedLinksListItemWidget.prototype.toggleDefault = function ( isDefault ) {
 	if ( this.default !== isDefault ) {
 		this.default = isDefault;
 		this.setIcon( this.default ? 'pushPin' : '' );
-		this.menu.findItemFromData( 'default' ).setLabel(
+		this.buttonMenu.menu.findItemFromData( 'default' ).setLabel(
 			this.default ?
 				mw.msg( 'rcfilters-savedqueries-unsetdefault' ) :
 				mw.msg( 'rcfilters-savedqueries-setdefault' )

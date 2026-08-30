@@ -7,33 +7,28 @@
  *   --missing  Crawl the uploads dir for images without records, and
  *              add them only.
  *
- * Copyright © 2005 Brion Vibber <brion@pobox.com>
+ * Copyright © 2005 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
- * @author Brion Vibber <brion at pobox.com>
+ * @author Brooke Vibber <bvibber@wikimedia.org>
  * @ingroup Maintenance
  */
 
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
-use MediaWiki\MediaWikiServices;
-use Wikimedia\Rdbms\IMaintainableDatabase;
+use MediaWiki\FileRepo\File\FileSelectQueryBuilder;
+use MediaWiki\FileRepo\LocalRepo;
+use MediaWiki\MainConfigNames;
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Specials\SpecialUpload;
+use MediaWiki\User\User;
+use Wikimedia\Rdbms\IDatabase;
+use Wikimedia\Rdbms\SelectQueryBuilder;
+use Wikimedia\Timestamp\TimestampFormat as TS;
 
 /**
  * Maintenance script to update image metadata records.
@@ -41,19 +36,34 @@ use Wikimedia\Rdbms\IMaintainableDatabase;
  * @ingroup Maintenance
  */
 class ImageBuilder extends Maintenance {
-
 	/**
-	 * @var IMaintainableDatabase
+	 * @var IDatabase
 	 */
 	protected $dbw;
 
-	function __construct() {
+	/** @var bool */
+	private $dryrun;
+
+	/** @var LocalRepo|null */
+	private $repo;
+
+	/** @var int */
+	private $updated;
+
+	/** @var int */
+	private $processed;
+
+	/** @var int */
+	private $count;
+
+	/** @var float */
+	private $startTime;
+
+	/** @var string */
+	private $table;
+
+	public function __construct() {
 		parent::__construct();
-
-		global $wgUpdateCompatibleMetadata;
-		// make sure to update old, but compatible img_metadata fields.
-		$wgUpdateCompatibleMetadata = true;
-
 		$this->addDescription( 'Script to update image metadata records' );
 
 		$this->addOption( 'missing', 'Check for files without associated database record' );
@@ -61,10 +71,10 @@ class ImageBuilder extends Maintenance {
 	}
 
 	public function execute() {
-		$this->dbw = $this->getDB( DB_MASTER );
+		$this->dbw = $this->getPrimaryDB();
 		$this->dryrun = $this->hasOption( 'dry-run' );
 		if ( $this->dryrun ) {
-			MediaWiki\MediaWikiServices::getInstance()->getReadOnlyMode()
+			$this->getServiceContainer()->getReadOnlyMode()
 				->setReason( 'Dry run mode, image upgrades are suppressed' );
 		}
 
@@ -76,22 +86,38 @@ class ImageBuilder extends Maintenance {
 	}
 
 	/**
-	 * @return FileRepo
+	 * @return LocalRepo
 	 */
-	function getRepo() {
-		if ( !isset( $this->repo ) ) {
-			$this->repo = RepoGroup::singleton()->getLocalRepo();
+	private function getRepo() {
+		if ( $this->repo === null ) {
+			$this->repo = $this->getServiceContainer()->getRepoGroup()
+				->newCustomLocalRepo( [
+					// make sure to update old, but compatible img_metadata fields.
+					'updateCompatibleMetadata' => true
+				] );
 		}
 
 		return $this->repo;
 	}
 
-	function build() {
-		$this->buildImage();
-		$this->buildOldImage();
+	private function build() {
+		$migrationStage = $this->getServiceContainer()->getMainConfig()->get(
+			MainConfigNames::FileSchemaMigrationStage
+		);
+
+		if ( $migrationStage & SCHEMA_COMPAT_READ_OLD ) {
+			$this->buildImage();
+			$this->buildOldImage();
+		} else {
+			$this->buildFile();
+		}
 	}
 
-	function init( $count, $table ) {
+	/**
+	 * @param int $count
+	 * @param string $table
+	 */
+	private function init( $count, $table ) {
 		$this->processed = 0;
 		$this->updated = 0;
 		$this->count = $count;
@@ -99,7 +125,7 @@ class ImageBuilder extends Maintenance {
 		$this->table = $table;
 	}
 
-	function progress( $updated ) {
+	private function progress( int $updated ) {
 		$this->updated += $updated;
 		$this->processed++;
 		if ( $this->processed % 100 != 0 ) {
@@ -115,10 +141,10 @@ class ImageBuilder extends Maintenance {
 		$rate = $this->processed / $delta;
 
 		$this->output( sprintf( "%s: %6.2f%% done on %s; ETA %s [%d/%d] %.2f/sec <%.2f%% updated>\n",
-			wfTimestamp( TS_DB, intval( $now ) ),
+			wfTimestamp( TS::DB, intval( $now ) ),
 			$portion * 100.0,
 			$this->table,
-			wfTimestamp( TS_DB, intval( $eta ) ),
+			wfTimestamp( TS::DB, intval( $eta ) ),
 			$this->processed,
 			$this->count,
 			$rate,
@@ -126,17 +152,18 @@ class ImageBuilder extends Maintenance {
 		flush();
 	}
 
-	function buildTable( $table, $key, $queryInfo, $callback ) {
-		$count = $this->dbw->selectField( $table, 'count(*)', '', __METHOD__ );
+	private function buildTable( string $table, SelectQueryBuilder $queryBuilder, callable $callback ) {
+		$count = $this->dbw->newSelectQueryBuilder()
+			->select( 'count(*)' )
+			->from( $table )
+			->caller( __METHOD__ )->fetchField();
 		$this->init( $count, $table );
 		$this->output( "Processing $table...\n" );
 
-		$result = $this->getDB( DB_REPLICA )->select(
-			$queryInfo['tables'], $queryInfo['fields'], [], __METHOD__, [], $queryInfo['joins']
-		);
+		$result = $queryBuilder->caller( __METHOD__ )->fetchResultSet();
 
 		foreach ( $result as $row ) {
-			$update = call_user_func( $callback, $row, null );
+			$update = $callback( $row );
 			if ( $update ) {
 				$this->progress( 1 );
 			} else {
@@ -146,12 +173,15 @@ class ImageBuilder extends Maintenance {
 		$this->output( "Finished $table... $this->updated of $this->processed rows updated\n" );
 	}
 
-	function buildImage() {
-		$callback = [ $this, 'imageCallback' ];
-		$this->buildTable( 'image', 'img_name', LocalFile::getQueryInfo(), $callback );
+	private function buildImage() {
+		$this->buildTable(
+			'image',
+			FileSelectQueryBuilder::newForFile( $this->getReplicaDB() ),
+			$this->imageCallback( ... )
+		);
 	}
 
-	function imageCallback( $row, $copy ) {
+	private function imageCallback( \stdClass $row ): bool {
 		// Create a File object from the row
 		// This will also upgrade it
 		$file = $this->getRepo()->newFileFromRow( $row );
@@ -159,12 +189,15 @@ class ImageBuilder extends Maintenance {
 		return $file->getUpgraded();
 	}
 
-	function buildOldImage() {
-		$this->buildTable( 'oldimage', 'oi_archive_name', OldLocalFile::getQueryInfo(),
-			[ $this, 'oldimageCallback' ] );
+	private function buildOldImage() {
+		$this->buildTable(
+			'oldimage',
+			FileSelectQueryBuilder::newForOldFile( $this->getReplicaDB() ),
+			$this->oldimageCallback( ... )
+		);
 	}
 
-	function oldimageCallback( $row, $copy ) {
+	private function oldimageCallback( \stdClass $row ): bool {
 		// Create a File object from the row
 		// This will also upgrade it
 		if ( $row->oi_archive_name == '' ) {
@@ -177,25 +210,42 @@ class ImageBuilder extends Maintenance {
 		return $file->getUpgraded();
 	}
 
-	function crawlMissing() {
-		$this->getRepo()->enumFiles( [ $this, 'checkMissingImage' ] );
+	private function buildFile() {
+		$this->buildTable(
+			'file',
+			FileSelectQueryBuilder::newForFile( $this->getReplicaDB() ),
+			$this->fileCallback( ... )
+		);
 	}
 
-	function checkMissingImage( $fullpath ) {
-		$filename = wfBaseName( $fullpath );
-		$row = $this->dbw->selectRow( 'image',
-			[ 'img_name' ],
-			[ 'img_name' => $filename ],
-			__METHOD__ );
+	private function fileCallback( \stdClass $row ): bool {
+		// Create a File object from the row
+		// This will also upgrade it
+		$file = $this->getRepo()->newFile( $row->file_name );
 
-		if ( !$row ) { // file not registered
+		return $file->getUpgraded();
+	}
+
+	private function crawlMissing() {
+		$this->getRepo()->enumFiles( $this->checkMissingImage( ... ) );
+	}
+
+	private function checkMissingImage( string $fullpath ) {
+		$filename = wfBaseName( $fullpath );
+
+		$row = FileSelectQueryBuilder::newForFile( $this->getReplicaDB() )
+			->where( [ 'img_name' => $filename ] )
+			->caller( __METHOD__ )->fetchRow();
+
+		if ( !$row ) {
+			// file not registered
 			$this->addMissingImage( $filename, $fullpath );
 		}
 	}
 
-	function addMissingImage( $filename, $fullpath ) {
+	private function addMissingImage( string $filename, string $fullpath ) {
 		$timestamp = $this->dbw->timestamp( $this->getRepo()->getFileTimestamp( $fullpath ) );
-		$services = MediaWikiServices::getInstance();
+		$services = $this->getServiceContainer();
 
 		$altname = $services->getContentLanguage()->checkTitleEncoding( $filename );
 		if ( $altname != $filename ) {
@@ -203,7 +253,8 @@ class ImageBuilder extends Maintenance {
 				$filename = $altname;
 				$this->output( "Estimating transcoding... $altname\n" );
 			} else {
-				# @todo FIXME: create renameFile()
+				// @fixme create renameFile()
+				// @phan-suppress-next-line PhanUndeclaredMethod See comment above...
 				$filename = $this->renameFile( $filename );
 			}
 		}
@@ -215,15 +266,19 @@ class ImageBuilder extends Maintenance {
 		}
 		if ( !$this->dryrun ) {
 			$file = $services->getRepoGroup()->getLocalRepo()->newFile( $filename );
-			if ( !$file->recordUpload(
+			$pageText = SpecialUpload::getInitialPageText(
+				'(recovered file, missing upload log entry)'
+			);
+			$user = User::newSystemUser( User::MAINTENANCE_SCRIPT_USER, [ 'steal' => true ] );
+			$status = $file->recordUpload3(
 				'',
 				'(recovered file, missing upload log entry)',
-				'',
-				'',
-				'',
+				$pageText,
+				$user,
 				false,
 				$timestamp
-			) ) {
+			);
+			if ( !$status->isOK() ) {
 				$this->output( "Error uploading file $fullpath\n" );
 
 				return;
@@ -233,5 +288,7 @@ class ImageBuilder extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = ImageBuilder::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

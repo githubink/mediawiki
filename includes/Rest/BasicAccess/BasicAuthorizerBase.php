@@ -12,6 +12,7 @@ use MediaWiki\Rest\RequestInterface;
  * @internal
  */
 abstract class BasicAuthorizerBase implements BasicAuthorizerInterface {
+	/** @inheritDoc */
 	public function authorize( RequestInterface $request, Handler $handler ) {
 		return $this->createRequestAuthorizer( $request, $handler )->authorize();
 	}
@@ -24,5 +25,5 @@ abstract class BasicAuthorizerBase implements BasicAuthorizerInterface {
 	 * @return BasicRequestAuthorizer
 	 */
 	abstract protected function createRequestAuthorizer( RequestInterface $request,
-		Handler $handler ) : BasicRequestAuthorizer;
+		Handler $handler ): BasicRequestAuthorizer;
 }

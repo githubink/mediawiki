@@ -2,28 +2,17 @@
 /**
  * Show some statistics on the blob_orphans table, created with trackBlobs.php.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance ExternalStorage
  */
 
-require_once __DIR__ . '/../Maintenance.php';
+use MediaWiki\Maintenance\Maintenance;
+use Wikimedia\Rdbms\IDatabase;
 
-use MediaWiki\MediaWikiServices;
+// @codeCoverageIgnoreStart
+require_once __DIR__ . '/../Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that shows some statistics on the blob_orphans table,
@@ -38,19 +27,22 @@ class OrphanStats extends Maintenance {
 			"Show some statistics on the blob_orphans table, created with trackBlobs.php" );
 	}
 
-	protected function &getDB( $cluster, $groups = [], $wiki = false ) {
-		$lbFactory = MediaWikiServices::getInstance()->getDBLoadBalancerFactory();
+	protected function getExternalDB( int $db, string $cluster ): IDatabase {
+		$lbFactory = $this->getServiceContainer()->getDBLoadBalancerFactory();
 		$lb = $lbFactory->getExternalLB( $cluster );
 
-		return $lb->getConnection( DB_REPLICA );
+		return $lb->getMaintenanceConnectionRef( $db );
 	}
 
 	public function execute() {
-		$dbr = $this->getDB( DB_REPLICA );
-		if ( !$dbr->tableExists( 'blob_orphans' ) ) {
+		if ( !$this->getDB( DB_PRIMARY )->tableExists( 'blob_orphans', __METHOD__ ) ) {
 			$this->fatalError( "blob_orphans doesn't seem to exist, need to run trackBlobs.php first" );
 		}
-		$res = $dbr->select( 'blob_orphans', '*', '', __METHOD__ );
+		$dbr = $this->getReplicaDB();
+		$res = $dbr->newSelectQueryBuilder()
+			->select( '*' )
+			->from( 'blob_orphans' )
+			->caller( __METHOD__ )->fetchResultSet();
 
 		$num = 0;
 		$totalSize = 0;
@@ -58,13 +50,12 @@ class OrphanStats extends Maintenance {
 		$maxSize = 0;
 
 		foreach ( $res as $row ) {
-			$extDB = $this->getDB( $row->bo_cluster );
-			$blobRow = $extDB->selectRow(
-				'blobs',
-				'*',
-				[ 'blob_id' => $row->bo_blob_id ],
-				__METHOD__
-			);
+			$extDB = $this->getExternalDB( DB_REPLICA, $row->bo_cluster );
+			$blobRow = $extDB->newSelectQueryBuilder()
+				->select( '*' )
+				->from( 'blobs' )
+				->where( [ 'blob_id' => $row->bo_blob_id ] )
+				->caller( __METHOD__ )->fetchRow();
 
 			$num++;
 			$size = strlen( $blobRow->blob_text );
@@ -83,5 +74,7 @@ class OrphanStats extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = OrphanStats::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

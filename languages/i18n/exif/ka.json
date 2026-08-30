@@ -8,7 +8,8 @@
 			"ITshnik",
 			"MIKHEIL",
 			"Malafaya",
-			"გიორგიმელა"
+			"გიორგიმელა",
+			"Გიო ოქრო"
 		]
 	},
 	"exif-imagewidth": "სიგანე",
@@ -191,7 +192,6 @@
 	"exif-originalimageheight": "სურათის სიმაღლე კადრირებამდე",
 	"exif-originalimagewidth": "სურათის სიგანე კადრირებამდე",
 	"exif-contact-value": "$1\n\n$2\n<div class=\"adr\">\n$3\n\n$4, $5, $6 $7\n</div>\n$8",
-	"exif-subjectnewscode-value": "$2 ($1)",
 	"exif-compression-1": "შეუკუმშავი",
 	"exif-compression-2": "CCITT Group 3, ჰაფმანის სერიის სიგრძის კოდირების 1-განზომილებიანი მოდიფიკაცია",
 	"exif-compression-3": "CCITT Group 3 ფაქსის კოდირება",
@@ -205,8 +205,10 @@
 	"exif-compression-34712": "JPEG2000",
 	"exif-copyrighted-true": "საავტორო უფლებებით დაცული",
 	"exif-copyrighted-false": "საავტორო უფლებები არ არის არჩეული",
+	"exif-photometricinterpretation-0": "შავი და თეთრი (თეთრი არის 0)",
 	"exif-photometricinterpretation-1": "შავი და თეთრი (შავი არის 0)",
 	"exif-photometricinterpretation-2": "RGB",
+	"exif-photometricinterpretation-3": "ფერთა პალიტრა",
 	"exif-photometricinterpretation-6": "YCbCr",
 	"exif-unknowndate": "უცნობი თარიღი",
 	"exif-orientation-1": "ნორმალური",

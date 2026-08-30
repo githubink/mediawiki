@@ -1,10 +1,8 @@
 <?php
 /** Lao (ລາວ)
  *
- * To improve a translation please visit https://translatewiki.net
- *
- * @ingroup Language
  * @file
+ * @ingroup Languages
  *
  * @author Passawuth
  * @author Tuinui
@@ -33,6 +31,7 @@ $namespaceAliases = [
 	'ສື່ອ' => NS_MEDIA,
 ];
 
+/** @phpcs-require-sorted-array */
 $specialPageAliases = [
 	'Allpages'                  => [ 'ໜ້າທັງໝົດ' ],
 	'BrokenRedirects'           => [ 'ໂອນເສຍ' ],
@@ -91,3 +90,5 @@ $digitTransformTable = [
 	'8' => '໘', # U+0ED8
 	'9' => '໙', # U+0ED9
 ];
+
+$numberingSystem = 'laoo';

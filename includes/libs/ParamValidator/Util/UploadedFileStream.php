@@ -2,11 +2,10 @@
 
 namespace Wikimedia\ParamValidator\Util;
 
-use Exception;
 use Psr\Http\Message\StreamInterface;
 use RuntimeException;
+use Stringable;
 use Throwable;
-use Wikimedia\AtEase\AtEase;
 
 /**
  * Implementation of StreamInterface for a file in $_FILES
@@ -18,9 +17,9 @@ use Wikimedia\AtEase\AtEase;
  * @internal
  * @since 1.34
  */
-class UploadedFileStream implements StreamInterface {
+class UploadedFileStream implements Stringable, StreamInterface {
 
-	/** @var resource File handle */
+	/** @var resource|null File handle */
 	private $fp;
 
 	/** @var int|false|null File size. False if not set yet. */
@@ -36,11 +35,9 @@ class UploadedFileStream implements StreamInterface {
 	 * @throws RuntimeException if $func returns $fail
 	 */
 	private static function quietCall( callable $func, array $args, $fail, $msg ) {
-		// TODO remove the function_exists check once we drop HHVM support
-		if ( function_exists( 'error_clear_last' ) ) {
-			error_clear_last();
-		}
-		$ret = AtEase::quietCall( $func, ...$args );
+		error_clear_last();
+		// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
+		$ret = @$func( ...$args );
 		if ( $ret === $fail ) {
 			$err = error_get_last();
 			throw new RuntimeException( "$msg: " . ( $err['message'] ?? 'Unknown error' ) );
@@ -69,40 +66,46 @@ class UploadedFileStream implements StreamInterface {
 		$this->close();
 	}
 
-	public function __toString() {
+	public function __toString(): string {
 		try {
 			$this->seek( 0 );
 			return $this->getContents();
-		} catch ( Exception $ex ) {
-			// Not allowed to throw
-			return '';
-		} catch ( Throwable $ex ) {
+		} catch ( Throwable ) {
 			// Not allowed to throw
 			return '';
 		}
 	}
 
-	public function close() {
+	public function close(): void {
 		if ( $this->fp ) {
 			// Spec doesn't care about close errors.
-			AtEase::quietCall( 'fclose', $this->fp );
+			try {
+				fclose( $this->fp );
+			} catch ( \TypeError ) {
+			}
 			$this->fp = null;
 		}
 	}
 
+	/** @inheritDoc */
 	public function detach() {
 		$ret = $this->fp;
 		$this->fp = null;
 		return $ret;
 	}
 
-	public function getSize() {
+	/** @inheritDoc */
+	public function getSize(): ?int {
 		if ( $this->size === false ) {
 			$this->size = null;
 
 			if ( $this->fp ) {
 				// Spec doesn't care about errors here.
-				$stat = AtEase::quietCall( 'fstat', $this->fp );
+				try {
+					// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
+					$stat = @fstat( $this->fp );
+				} catch ( \TypeError ) {
+				}
 				$this->size = $stat['size'] ?? null;
 			}
 		}
@@ -110,53 +113,70 @@ class UploadedFileStream implements StreamInterface {
 		return $this->size;
 	}
 
-	public function tell() {
+	/** @inheritDoc */
+	public function tell(): int {
 		$this->checkOpen();
 		return self::quietCall( 'ftell', [ $this->fp ], -1, 'Cannot determine stream position' );
 	}
 
-	public function eof() {
+	/** @inheritDoc */
+	public function eof(): bool {
 		// Spec doesn't care about errors here.
-		return !$this->fp || AtEase::quietCall( 'feof', $this->fp );
+		try {
+			// phpcs:ignore Generic.PHP.NoSilencedErrors.Discouraged
+			return !$this->fp || @feof( $this->fp );
+		} catch ( \TypeError ) {
+			return true;
+		}
 	}
 
-	public function isSeekable() {
+	/** @inheritDoc */
+	public function isSeekable(): bool {
 		return (bool)$this->fp;
 	}
 
-	public function seek( $offset, $whence = SEEK_SET ) {
+	/** @inheritDoc */
+	public function seek( int $offset, int $whence = SEEK_SET ): void {
 		$this->checkOpen();
 		self::quietCall( 'fseek', [ $this->fp, $offset, $whence ], -1, 'Seek failed' );
 	}
 
-	public function rewind() {
+	/** @inheritDoc */
+	public function rewind(): void {
 		$this->seek( 0 );
 	}
 
-	public function isWritable() {
+	/** @inheritDoc */
+	public function isWritable(): bool {
 		return false;
 	}
 
-	public function write( $string ) {
+	/** @inheritDoc */
+	public function write( string $string ): int {
+		// @phan-suppress-previous-line PhanPluginNeverReturnMethod
 		$this->checkOpen();
 		throw new RuntimeException( 'Stream is read-only' );
 	}
 
-	public function isReadable() {
+	/** @inheritDoc */
+	public function isReadable(): bool {
 		return (bool)$this->fp;
 	}
 
-	public function read( $length ) {
+	/** @inheritDoc */
+	public function read( int $length ): string {
 		$this->checkOpen();
 		return self::quietCall( 'fread', [ $this->fp, $length ], false, 'Read failed' );
 	}
 
-	public function getContents() {
+	/** @inheritDoc */
+	public function getContents(): string {
 		$this->checkOpen();
 		return self::quietCall( 'stream_get_contents', [ $this->fp ], false, 'Read failed' );
 	}
 
-	public function getMetadata( $key = null ) {
+	/** @inheritDoc */
+	public function getMetadata( ?string $key = null ) {
 		$this->checkOpen();
 		$ret = self::quietCall( 'stream_get_meta_data', [ $this->fp ], false, 'Metadata fetch failed' );
 		if ( $key !== null ) {

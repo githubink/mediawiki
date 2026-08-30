@@ -1,10 +1,8 @@
 <?php
 /** Sicilian (sicilianu)
  *
- * To improve a translation please visit https://translatewiki.net
- *
- * @ingroup Language
  * @file
+ * @ingroup Languages
  *
  * @author Aushulz
  * @author Gmelfi
@@ -46,9 +44,12 @@ $namespaceAliases = [
 	'Discussioni_mmàggini' => NS_FILE_TALK,
 	'Discussioni_Template' => NS_TEMPLATE_TALK,
 	'Discussioni_Aiutu' => NS_HELP_TALK,
+	'Categoria' => NS_CATEGORY,
 	'Discussioni_Catigurìa' => NS_CATEGORY_TALK,
+	'Speciale' => NS_SPECIAL,
 ];
 
+/** @phpcs-require-sorted-array */
 $specialPageAliases = [
 	'Activeusers'               => [ 'UtentiAttivi' ],
 	'Allmessages'               => [ 'Messaggi' ],
@@ -57,6 +58,7 @@ $specialPageAliases = [
 	'Badtitle'                  => [ 'TitoloErrato' ],
 	'Blankpage'                 => [ 'PaginaVuota' ],
 	'Block'                     => [ 'Blocca' ],
+	'BlockList'                 => [ 'IPBloccati', 'ElencoBlocchi', 'Blocchi' ],
 	'Booksources'               => [ 'RicercaISBN' ],
 	'BrokenRedirects'           => [ 'RedirectErrati' ],
 	'Categories'                => [ 'Categorie' ],
@@ -79,7 +81,6 @@ $specialPageAliases = [
 	'Import'                    => [ 'Importa' ],
 	'Invalidateemail'           => [ 'InvalidaEMail' ],
 	'JavaScriptTest'            => [ 'TestJavaScript' ],
-	'BlockList'                 => [ 'IPBloccati', 'ElencoBlocchi', 'Blocchi' ],
 	'LinkSearch'                => [ 'CercaCollegamenti', 'CercaLink' ],
 	'Listadmins'                => [ 'Amministratori', 'ElencoAmministratori', 'Admin', 'Sysop', 'Cricca' ],
 	'Listbots'                  => [ 'Bot', 'ElencoBot' ],
@@ -114,11 +115,12 @@ $specialPageAliases = [
 	'Prefixindex'               => [ 'Prefissi' ],
 	'Protectedpages'            => [ 'PagineProtette' ],
 	'Protectedtitles'           => [ 'TitoliProtetti' ],
-	'Randompage'                => [ 'PaginaCasuale' ],
 	'RandomInCategory'          => [ 'CasualeInCategoria' ],
+	'Randompage'                => [ 'PaginaCasuale' ],
 	'Randomredirect'            => [ 'RedirectCasuale' ],
-	'Recentchanges'             => [ 'UltimeModifiche' ],
-	'Recentchangeslinked'       => [ 'ModificheCorrelate' ],
+	'Recentchanges'             => [ 'CanciatiAntura', 'UltimeModifiche' ],
+	'Recentchangeslinked'       => [ 'CanciLijati', 'ModificheCorrelate' ],
+	'Renameuser'                => [ 'RinominaUtente' ],
 	'Revisiondelete'            => [ 'CancellaRevisione' ],
 	'Search'                    => [ 'Arriscedi', 'Cerca', 'Trova' ],
 	'Shortpages'                => [ 'PaginePiùCorte' ],

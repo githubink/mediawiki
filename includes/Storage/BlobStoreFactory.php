@@ -1,30 +1,16 @@
 <?php
 /**
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  */
 
 namespace MediaWiki\Storage;
 
-use Language;
 use MediaWiki\Config\ServiceOptions;
-use WANObjectCache;
+use MediaWiki\ExternalStore\ExternalStoreAccess;
+use MediaWiki\MainConfigNames;
+use Wikimedia\ObjectCache\WANObjectCache;
 use Wikimedia\Rdbms\ILBFactory;
-use ExternalStoreAccess;
 
 /**
  * Service for instantiating BlobStores
@@ -36,57 +22,22 @@ use ExternalStoreAccess;
 class BlobStoreFactory {
 
 	/**
-	 * @var ILBFactory
+	 * @internal For use by ServiceWiring
 	 */
-	private $lbFactory;
-
-	/**
-	 * @var ExternalStoreAccess
-	 */
-	private $extStoreAccess;
-
-	/**
-	 * @var WANObjectCache
-	 */
-	private $cache;
-
-	/**
-	 * @var ServiceOptions
-	 */
-	private $options;
-
-	/**
-	 * @var Language
-	 */
-	private $contLang;
-
-	/**
-	 * TODO Make this a const when HHVM support is dropped (T192166)
-	 *
-	 * @var array
-	 * @since 1.34
-	 */
-	public static $constructorOptions = [
-		'CompressRevisions',
-		'DefaultExternalStore',
-		'LegacyEncoding',
-		'RevisionCacheExpiry',
+	public const CONSTRUCTOR_OPTIONS = [
+		MainConfigNames::CompressRevisions,
+		MainConfigNames::DefaultExternalStore,
+		MainConfigNames::LegacyEncoding,
+		MainConfigNames::RevisionCacheExpiry,
 	];
 
 	public function __construct(
-		ILBFactory $lbFactory,
-		ExternalStoreAccess $extStoreAccess,
-		WANObjectCache $cache,
-		ServiceOptions $options,
-		Language $contLang
+		private readonly ILBFactory $lbFactory,
+		private readonly ExternalStoreAccess $extStoreAccess,
+		private readonly WANObjectCache $cache,
+		private readonly ServiceOptions $options,
 	) {
-		$options->assertRequiredOptions( self::$constructorOptions );
-
-		$this->lbFactory = $lbFactory;
-		$this->extStoreAccess = $extStoreAccess;
-		$this->cache = $cache;
-		$this->options = $options;
-		$this->contLang = $contLang;
+		$options->assertRequiredOptions( self::CONSTRUCTOR_OPTIONS );
 	}
 
 	/**
@@ -116,12 +67,13 @@ class BlobStoreFactory {
 			$dbDomain
 		);
 
-		$store->setCompressBlobs( $this->options->get( 'CompressRevisions' ) );
-		$store->setCacheExpiry( $this->options->get( 'RevisionCacheExpiry' ) );
-		$store->setUseExternalStore( $this->options->get( 'DefaultExternalStore' ) !== false );
+		$store->setCompressBlobs( $this->options->get( MainConfigNames::CompressRevisions ) );
+		$store->setCacheExpiry( $this->options->get( MainConfigNames::RevisionCacheExpiry ) );
+		$store->setUseExternalStore(
+			$this->options->get( MainConfigNames::DefaultExternalStore ) !== false );
 
-		if ( $this->options->get( 'LegacyEncoding' ) ) {
-			$store->setLegacyEncoding( $this->options->get( 'LegacyEncoding' ), $this->contLang );
+		if ( $this->options->get( MainConfigNames::LegacyEncoding ) ) {
+			$store->setLegacyEncoding( $this->options->get( MainConfigNames::LegacyEncoding ) );
 		}
 
 		return $store;

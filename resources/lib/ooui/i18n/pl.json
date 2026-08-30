@@ -1,26 +1,28 @@
 {
 	"@metadata": {
 		"authors": [
+			"Andrzej aa",
 			"Babanwalia",
 			"Chrumps",
+			"Gloria sah",
+			"Jacenty359",
+			"Matik7",
 			"Matma Rex",
 			"Mikołka",
 			"Nasir8891",
 			"Odie2",
+			"Rail",
+			"Railfail536",
 			"Rzuwig",
 			"Tar Lócesilion",
+			"The Polish",
 			"Ty221",
 			"WTM",
 			"Woytecr",
-			"Wpedzich",
-			"Jacenty359",
-			"Matik7",
-			"Gloria sah",
-			"Andrzej aa",
-			"The Polish",
-			"Railfail536"
+			"Wpedzich"
 		]
 	},
+	"ooui-copytextlayout-copy": "Skopiuj",
 	"ooui-outline-control-move-down": "Przesuń w dół",
 	"ooui-outline-control-move-up": "Przesuń w górę",
 	"ooui-outline-control-remove": "Usuń element",
@@ -34,9 +36,12 @@
 	"ooui-dialog-process-dismiss": "Powrót",
 	"ooui-dialog-process-retry": "Spróbuj ponownie",
 	"ooui-dialog-process-continue": "Kontynuuj",
+	"ooui-combobox-button-label": "Pokaż opcje",
 	"ooui-selectfile-button-select": "Wybierz plik",
-	"ooui-selectfile-not-supported": "Wybór pliku nie jest obsługiwany",
+	"ooui-selectfile-button-select-multiple": "Wybierz pliki",
 	"ooui-selectfile-placeholder": "Nie wybrano pliku",
 	"ooui-selectfile-dragdrop-placeholder": "Upuść plik tutaj",
+	"ooui-selectfile-dragdrop-placeholder-multiple": "Przeciągnij pliki tutaj",
+	"ooui-popup-widget-close-button-aria-label": "Zamknij",
 	"ooui-field-help": "Pomoc"
 }

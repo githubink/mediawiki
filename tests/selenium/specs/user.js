@@ -1,64 +1,69 @@
-const assert = require( 'assert' ),
-	BlankPage = require( 'wdio-mediawiki/BlankPage' ),
-	CreateAccountPage = require( '../pageobjects/createaccount.page' ),
-	PreferencesPage = require( '../pageobjects/preferences.page' ),
-	UserLoginPage = require( 'wdio-mediawiki/LoginPage' ),
-	Api = require( 'wdio-mediawiki/Api' ),
-	Util = require( 'wdio-mediawiki/Util' );
+// This file is used at Selenium/Explanation/Page object pattern
+// https://www.mediawiki.org/wiki/Selenium/Explanation/Page_object_pattern
 
-describe( 'User', function () {
-	var password,
-		username;
+import CreateAccountPage from 'wdio-mediawiki/CreateAccountPage.js';
+import LoginPage from 'wdio-mediawiki/LoginPage.js';
+import BlockPage from '../pageobjects/block.page.js';
+import { createApiClient } from 'wdio-mediawiki/Api.js';
+import { getTestString } from 'wdio-mediawiki/Util.js';
 
-	before( function () {
-		// disable VisualEditor welcome dialog
-		BlankPage.open();
-		browser.localStorage( 'POST', { key: 've-beta-welcome-dialog', value: '1' } );
+describe( 'User', () => {
+	let password, username, apiClient;
+
+	before( async () => {
+		apiClient = await createApiClient();
 	} );
 
-	beforeEach( function () {
-		browser.deleteCookie();
-		username = Util.getTestString( 'User-' );
-		password = Util.getTestString();
+	beforeEach( async () => {
+		await browser.deleteAllCookies();
+		username = getTestString( 'User-' );
+		password = getTestString();
 	} );
 
-	it( 'should be able to create account', function () {
+	it( 'should be able to create account', async () => {
 		// create
-		CreateAccountPage.createAccount( username, password );
+		await CreateAccountPage.createAccount( username, password );
 
 		// check
-		assert.strictEqual( CreateAccountPage.heading.getText(), `Welcome, ${username}!` );
+		await expect( CreateAccountPage.heading ).toHaveText( `Welcome, ${ username }!` );
 	} );
 
-	it( 'should be able to log in @daily', function () {
+	it( 'should be able to log in', async () => {
 		// create
-		browser.call( function () {
-			return Api.createAccount( username, password );
-		} );
+		await apiClient.createAccount( username, password );
 
 		// log in
-		UserLoginPage.login( username, password );
+		await LoginPage.login( username, password );
 
 		// check
-		assert.strictEqual( UserLoginPage.userPage.getText(), username );
+		await expect( await LoginPage.getActualUsername() ).toBe( username );
 	} );
 
-	// Disabled due to flakiness (T199446)
-	it.skip( 'should be able to change preferences', function () {
-		var realName = Util.getTestString();
+	it( 'named user should see extra signup form fields when creating an account', async () => {
+		await apiClient.createAccount( username, password );
+		await LoginPage.login( username, password );
 
-		// create
-		browser.call( function () {
-			return Api.createAccount( username, password );
-		} );
+		await CreateAccountPage.open();
 
-		// log in
-		UserLoginPage.login( username, password );
+		await expect( CreateAccountPage.username ).toExist();
+		await expect( CreateAccountPage.password ).toExist();
+		await expect( CreateAccountPage.tempPasswordInput ).toExist(
+			{ message: 'Named users should have the option to have a temporary password sent on signup (T328718)' }
+		);
+		await expect( CreateAccountPage.reasonInput ).toExist(
+			{ message: 'Named users should have to provide a reason for their account creation (T328718)' }
+		);
+	} );
 
-		// change
-		PreferencesPage.changeRealName( realName );
+	it( 'should be able to block a user', async () => {
+		await apiClient.createAccount( username, password );
 
-		// check
-		assert.strictEqual( PreferencesPage.realName.getValue(), realName );
+		await LoginPage.loginAdmin();
+
+		const expiry = '31 hours';
+		const reason = getTestString();
+		await BlockPage.block( username, expiry, reason );
+
+		await expect( BlockPage.messages ).toHaveText( expect.stringContaining( 'Block added' ) );
 	} );
 } );

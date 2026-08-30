@@ -2,26 +2,22 @@
 /**
  * Copy all files in FileRepo to an originals container using SHA1 paths.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
+use MediaWiki\FileRepo\File\File;
+use MediaWiki\FileRepo\File\FileSelectQueryBuilder;
+use MediaWiki\FileRepo\File\LocalFile;
+use MediaWiki\FileRepo\FileBackendDBRepoWrapper;
+use MediaWiki\FileRepo\LocalRepo;
+use MediaWiki\Maintenance\Maintenance;
+use Wikimedia\FileBackend\FileBackend;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Copy all files in FileRepo to an originals container using SHA1 paths.
@@ -55,10 +51,11 @@ class MigrateFileRepoLayout extends Maintenance {
 
 		$be = $repo->getBackend();
 		if ( $be instanceof FileBackendDBRepoWrapper ) {
-			$be = $be->getInternalBackend(); // avoid path translations for this script
+			// avoid path translations for this script
+			$be = $be->getInternalBackend();
 		}
 
-		$dbw = $repo->getMasterDB();
+		$dbw = $repo->getPrimaryDB();
 
 		$origBase = $be->getContainerStoragePath( "{$repo->getName()}-original" );
 		$startTime = wfTimestampNow();
@@ -66,28 +63,28 @@ class MigrateFileRepoLayout extends Maintenance {
 		// Do current and archived versions...
 		$conds = [];
 		if ( $since ) {
-			$conds[] = 'img_timestamp >= ' . $dbw->addQuotes( $dbw->timestamp( $since ) );
+			$conds[] = $dbw->expr( 'img_timestamp', '>=', $dbw->timestamp( $since ) );
 		}
 
 		$batchSize = $this->getBatchSize();
 		$batch = [];
 		$lastName = '';
 		do {
-			$res = $dbw->select( 'image',
-				[ 'img_name', 'img_sha1' ],
-				array_merge( [ 'img_name > ' . $dbw->addQuotes( $lastName ) ], $conds ),
-				__METHOD__,
-				[ 'LIMIT' => $batchSize, 'ORDER BY' => 'img_name' ]
-			);
+			$res = FileSelectQueryBuilder::newForFile( $dbw )
+				->where( $dbw->expr( 'img_name', '>', $lastName ) )
+				->andWhere( $conds )
+				->orderBy( 'img_name' )
+				->limit( $batchSize )
+				->caller( __METHOD__ )->fetchResultSet();
 
 			foreach ( $res as $row ) {
 				$lastName = $row->img_name;
 				/** @var LocalFile $file */
 				$file = $repo->newFile( $row->img_name );
 				// Check in case SHA1 rows are not populated for some files
-				$sha1 = strlen( $row->img_sha1 ) ? $row->img_sha1 : $file->getSha1();
+				$sha1 = $row->img_sha1 !== '' ? $row->img_sha1 : $file->getSha1();
 
-				if ( !strlen( $sha1 ) ) {
+				if ( $sha1 === '' ) {
 					$this->error( "Image SHA-1 not known for {$row->img_name}." );
 				} else {
 					if ( $oldLayout === 'sha1' ) {
@@ -103,9 +100,9 @@ class MigrateFileRepoLayout extends Maintenance {
 					}
 
 					$status = $be->prepare( [
-						'dir' => dirname( $dpath ), 'bypassReadOnly' => 1 ] );
+						'dir' => dirname( $dpath ), 'bypassReadOnly' => true ] );
 					if ( !$status->isOK() ) {
-						$this->error( print_r( $status->getErrors(), true ) );
+						$this->error( $status );
 					}
 
 					$batch[] = [ 'op' => 'copy', 'overwrite' => true,
@@ -114,7 +111,7 @@ class MigrateFileRepoLayout extends Maintenance {
 
 				foreach ( $file->getHistory() as $ofile ) {
 					$sha1 = $ofile->getSha1();
-					if ( !strlen( $sha1 ) ) {
+					if ( $sha1 === '' ) {
 						$this->error( "Image SHA-1 not set for {$ofile->getArchiveName()}." );
 						continue;
 					}
@@ -136,9 +133,9 @@ class MigrateFileRepoLayout extends Maintenance {
 					}
 
 					$status = $be->prepare( [
-						'dir' => dirname( $dpath ), 'bypassReadOnly' => 1 ] );
+						'dir' => dirname( $dpath ), 'bypassReadOnly' => true ] );
 					if ( !$status->isOK() ) {
-						$this->error( print_r( $status->getErrors(), true ) );
+						$this->error( $status );
 					}
 					$batch[] = [ 'op' => 'copy', 'overwrite' => true,
 						'src' => $spath, 'dst' => $dpath, 'img' => $ofile->getArchiveName() ];
@@ -158,22 +155,25 @@ class MigrateFileRepoLayout extends Maintenance {
 		// Do deleted versions...
 		$conds = [];
 		if ( $since ) {
-			$conds[] = 'fa_deleted_timestamp >= ' . $dbw->addQuotes( $dbw->timestamp( $since ) );
+			$conds[] = $dbw->expr( 'fa_deleted_timestamp', '>=', $dbw->timestamp( $since ) );
 		}
 
 		$batch = [];
 		$lastId = 0;
 		do {
-			$res = $dbw->select( 'filearchive', [ 'fa_storage_key', 'fa_id', 'fa_name' ],
-				array_merge( [ 'fa_id > ' . $dbw->addQuotes( $lastId ) ], $conds ),
-				__METHOD__,
-				[ 'LIMIT' => $batchSize, 'ORDER BY' => 'fa_id' ]
-			);
+			$res = $dbw->newSelectQueryBuilder()
+				->select( [ 'fa_storage_key', 'fa_id', 'fa_name' ] )
+				->from( 'filearchive' )
+				->where( $dbw->expr( 'fa_id', '>', $lastId ) )
+				->andWhere( $conds )
+				->orderBy( 'fa_id' )
+				->limit( $batchSize )
+				->caller( __METHOD__ )->fetchResultSet();
 
 			foreach ( $res as $row ) {
 				$lastId = $row->fa_id;
 				$sha1Key = $row->fa_storage_key;
-				if ( !strlen( $sha1Key ) ) {
+				if ( $sha1Key === '' ) {
 					$this->error( "Image SHA-1 not set for file #{$row->fa_id} (deleted)." );
 					continue;
 				}
@@ -194,9 +194,9 @@ class MigrateFileRepoLayout extends Maintenance {
 				}
 
 				$status = $be->prepare( [
-					'dir' => dirname( $dpath ), 'bypassReadOnly' => 1 ] );
+					'dir' => dirname( $dpath ), 'bypassReadOnly' => true ] );
 				if ( !$status->isOK() ) {
-					$this->error( print_r( $status->getErrors(), true ) );
+					$this->error( $status );
 				}
 
 				$batch[] = [ 'op' => 'copy', 'src' => $spath, 'dst' => $dpath,
@@ -216,24 +216,30 @@ class MigrateFileRepoLayout extends Maintenance {
 		$this->output( "Done (started $startTime)\n" );
 	}
 
-	protected function getRepo() {
-		return RepoGroup::singleton()->getLocalRepo();
+	protected function getRepo(): LocalRepo {
+		return $this->getServiceContainer()->getRepoGroup()->getLocalRepo();
 	}
 
+	/**
+	 * @param array[] $ops
+	 * @param FileBackend $be
+	 */
 	protected function runBatch( array $ops, FileBackend $be ) {
 		$this->output( "Migrating file batch:\n" );
 		foreach ( $ops as $op ) {
 			$this->output( "\"{$op['img']}\" (dest: {$op['dst']})\n" );
 		}
 
-		$status = $be->doOperations( $ops, [ 'bypassReadOnly' => 1 ] );
+		$status = $be->doOperations( $ops, [ 'bypassReadOnly' => true ] );
 		if ( !$status->isOK() ) {
-			$this->output( print_r( $status->getErrors(), true ) );
+			$this->error( $status );
 		}
 
 		$this->output( "Batch done\n\n" );
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = MigrateFileRepoLayout::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

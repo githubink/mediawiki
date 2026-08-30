@@ -1,14 +1,11 @@
 <?php
-/** Crimean Tatar (Cyrillic script) (къырымтатарджа (Кирилл)‎)
+/** Crimean Tatar (Cyrillic script) (къырымтатарджа (Кирилл))
  *
- * To improve a translation please visit https://translatewiki.net
- *
- * @ingroup Language
  * @file
- *
+ * @ingroup Languages
  */
 
-$fallback = 'ru';
+$fallback = 'tr';
 
 $fallback8bitEncoding = 'windows-1251';
 

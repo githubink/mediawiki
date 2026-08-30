@@ -22,28 +22,20 @@
  *  -n <endid>          the page_id to stop at (only when using concat compression type)
  *  --extdb <cluster>   store specified revisions in an external cluster (untested)
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance ExternalStorage
  */
-use MediaWiki\MediaWikiServices;
-use MediaWiki\Revision\SlotRecord;
 
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Revision\SlotRecord;
+use MediaWiki\Title\Title;
+use Wikimedia\Rdbms\IExpression;
+use Wikimedia\Rdbms\LikeValue;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/../Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that compress the text of a wiki.
@@ -141,15 +133,16 @@ class CompressOld extends Maintenance {
 	private function compressOldPages( $start = 0, $extdb = '' ) {
 		$chunksize = 50;
 		$this->output( "Starting from old_id $start...\n" );
-		$dbw = $this->getDB( DB_MASTER );
+		$dbw = $this->getPrimaryDB();
 		do {
-			$res = $dbw->select(
-				'text',
-				[ 'old_id', 'old_flags', 'old_text' ],
-				"old_id>=$start",
-				__METHOD__,
-				[ 'ORDER BY' => 'old_id', 'LIMIT' => $chunksize, 'FOR UPDATE' ]
-			);
+			$res = $dbw->newSelectQueryBuilder()
+				->select( [ 'old_id', 'old_flags', 'old_text' ] )
+				->forUpdate()
+				->from( 'text' )
+				->where( "old_id>=$start" )
+				->orderBy( 'old_id' )
+				->limit( $chunksize )
+				->caller( __METHOD__ )->fetchResultSet();
 
 			if ( $res->numRows() == 0 ) {
 				break;
@@ -176,21 +169,20 @@ class CompressOld extends Maintenance {
 	 * @return bool
 	 */
 	private function compressPage( $row, $extdb ) {
-		if ( strpos( $row->old_flags, 'gzip' ) !== false
-			|| strpos( $row->old_flags, 'object' ) !== false
+		if ( str_contains( $row->old_flags, 'gzip' )
+			|| str_contains( $row->old_flags, 'object' )
 		) {
 			# print "Already compressed row {$row->old_id}\n";
 			return false;
 		}
-		$dbw = $this->getDB( DB_MASTER );
+		$dbw = $this->getPrimaryDB();
 		$flags = $row->old_flags ? "{$row->old_flags},gzip" : "gzip";
 		$compress = gzdeflate( $row->old_text );
 
 		# Store in external storage if required
 		if ( $extdb !== '' ) {
-			$esFactory = MediaWikiServices::getInstance()->getExternalStoreFactory();
-			/** @var ExternalStoreDB $storeObj */
-			$storeObj = $esFactory->getStore( 'DB' );
+			$esFactory = $this->getServiceContainer()->getExternalStoreFactory();
+			$storeObj = $esFactory->getDatabaseStore();
 			$compress = $storeObj->store( $extdb, $compress );
 			if ( $compress === false ) {
 				$this->error( "Unable to store object" );
@@ -200,15 +192,17 @@ class CompressOld extends Maintenance {
 		}
 
 		# Update text row
-		$dbw->update( 'text',
-			[ /* SET */
+		$dbw->newUpdateQueryBuilder()
+			->update( 'text' )
+			->set( [
 				'old_flags' => $flags,
 				'old_text' => $compress
-			], [ /* WHERE */
+			] )
+			->where( [
 				'old_id' => $row->old_id
-			], __METHOD__,
-			[ 'LIMIT' => 1 ]
-		);
+			] )
+			->caller( __METHOD__ )
+			->execute();
 
 		return true;
 	}
@@ -227,21 +221,25 @@ class CompressOld extends Maintenance {
 	private function compressWithConcat( $startId, $maxChunkSize, $beginDate,
 		$endDate, $extdb = "", $maxPageId = false
 	) {
-		global $wgMultiContentRevisionSchemaMigrationStage;
-
-		$dbr = $this->getDB( DB_REPLICA );
-		$dbw = $this->getDB( DB_MASTER );
+		$dbr = $this->getReplicaDB();
+		$dbw = $this->getPrimaryDB();
 
 		# Set up external storage
 		if ( $extdb != '' ) {
-			$esFactory = MediaWikiServices::getInstance()->getExternalStoreFactory();
-			/** @var ExternalStoreDB $storeObj */
-			$storeObj = $esFactory->getStore( 'DB' );
+			$esFactory = $this->getServiceContainer()->getExternalStoreFactory();
+			$storeObj = $esFactory->getDatabaseStore();
 		}
+
+		$blobStore = $this->getServiceContainer()
+			->getBlobStoreFactory()
+			->newSqlBlobStore();
 
 		# Get all articles by page_id
 		if ( !$maxPageId ) {
-			$maxPageId = $dbr->selectField( 'page', 'max(page_id)', '', __METHOD__ );
+			$maxPageId = $dbr->newSelectQueryBuilder()
+				->select( 'max(page_id)' )
+				->from( 'page' )
+				->caller( __METHOD__ )->fetchField();
 		}
 		$this->output( "Starting from $startId of $maxPageId\n" );
 		$pageConds = [];
@@ -252,7 +250,7 @@ class CompressOld extends Maintenance {
 			$pageConds[] = 'page_namespace<>0';
 		}
 		if ( $queryExtra ) {
-					$pageConds[] = $queryExtra;
+			$pageConds[] = $queryExtra;
 		}
 		 */
 
@@ -262,11 +260,29 @@ class CompressOld extends Maintenance {
 		# Don't compress object type entities, because that might produce data loss when
 		# overwriting bulk storage concat rows. Don't compress external references, because
 		# the script doesn't yet delete rows from external storage.
-		$conds = [
-			'old_flags NOT ' . $dbr->buildLike( $dbr->anyString(), 'object', $dbr->anyString() )
-			. ' AND old_flags NOT '
-			. $dbr->buildLike( $dbr->anyString(), 'external', $dbr->anyString() )
-		];
+		$slotRoleStore = $this->getServiceContainer()->getSlotRoleStore();
+		$queryBuilderTemplate = $dbw->newSelectQueryBuilder()
+			->select( [ 'rev_id', 'old_id', 'old_flags', 'old_text' ] )
+			->forUpdate()
+			->from( 'revision' )
+			->join( 'slots', null, 'rev_id=slot_revision_id' )
+			->join( 'content', null, 'content_id=slot_content_id' )
+			->join( 'text', null, 'SUBSTRING(content_address, 4)=old_id' )
+			->where(
+				$dbr->expr(
+					'old_flags',
+					IExpression::NOT_LIKE,
+					new LikeValue( $dbr->anyString(), 'object', $dbr->anyString() )
+				)->and(
+					'old_flags',
+					IExpression::NOT_LIKE,
+					new LikeValue( $dbr->anyString(), 'external', $dbr->anyString() )
+				)
+			)
+			->andWhere( [
+				'slot_role_id' => $slotRoleStore->getId( SlotRecord::MAIN ),
+				'SUBSTRING(content_address, 1, 3)=' . $dbr->addQuotes( 'tt:' ),
+			] );
 
 		if ( $beginDate ) {
 			if ( !preg_match( '/^\d{14}$/', $beginDate ) ) {
@@ -274,7 +290,7 @@ class CompressOld extends Maintenance {
 
 				return false;
 			}
-			$conds[] = "rev_timestamp>'" . $beginDate . "'";
+			$queryBuilderTemplate->andWhere( $dbr->expr( 'rev_timestamp', '>', $beginDate ) );
 		}
 		if ( $endDate ) {
 			if ( !preg_match( '/^\d{14}$/', $endDate ) ) {
@@ -282,63 +298,43 @@ class CompressOld extends Maintenance {
 
 				return false;
 			}
-			$conds[] = "rev_timestamp<'" . $endDate . "'";
+			$queryBuilderTemplate->andWhere( $dbr->expr( 'rev_timestamp', '<', $endDate ) );
 		}
-
-		if ( $wgMultiContentRevisionSchemaMigrationStage & SCHEMA_COMPAT_READ_OLD ) {
-			$tables = [ 'revision', 'text' ];
-			$conds[] = 'rev_text_id=old_id';
-		} else {
-			$slotRoleStore = MediaWikiServices::getInstance()->getSlotRoleStore();
-			$tables = [ 'revision', 'slots', 'content', 'text' ];
-			$conds = array_merge( [
-				'rev_id=slot_revision_id',
-				'slot_role_id=' . $slotRoleStore->getId( SlotRecord::MAIN ),
-				'content_id=slot_content_id',
-				'SUBSTRING(content_address, 1, 3)=' . $dbr->addQuotes( 'tt:' ),
-				'SUBSTRING(content_address, 4)=old_id',
-			], $conds );
-		}
-
-		$fields = [ 'rev_id', 'old_id', 'old_flags', 'old_text' ];
-		$revLoadOptions = 'FOR UPDATE';
-
-		# Don't work with current revisions
-		# Don't lock the page table for update either -- TS 2006-04-04
-		# $tables[] = 'page';
-		# $conds[] = 'page_id=rev_page AND rev_id != page_latest';
 
 		for ( $pageId = $startId; $pageId <= $maxPageId; $pageId++ ) {
-			wfWaitForSlaves();
+			$this->waitForReplication();
 
 			# Wake up
 			$dbr->ping();
 
 			# Get the page row
-			$pageRes = $dbr->select( 'page',
-				[ 'page_id', 'page_namespace', 'page_title', 'page_latest' ],
-				$pageConds + [ 'page_id' => $pageId ], __METHOD__ );
-			if ( $pageRes->numRows() == 0 ) {
+			$pageRow = $dbr->newSelectQueryBuilder()
+				->select( [ 'page_id', 'page_namespace', 'page_title', 'rev_timestamp' ] )
+				->from( 'page' )
+				->straightJoin( 'revision', null, 'page_latest = rev_id' )
+				->where( $pageConds )
+				->andWhere( [ 'page_id' => $pageId ] )
+				->caller( __METHOD__ )->fetchRow();
+			if ( $pageRow === false ) {
 				continue;
 			}
-			$pageRow = $dbr->fetchObject( $pageRes );
 
 			# Display progress
 			$titleObj = Title::makeTitle( $pageRow->page_namespace, $pageRow->page_title );
 			$this->output( "$pageId\t" . $titleObj->getPrefixedDBkey() . " " );
 
 			# Load revisions
-			$revRes = $dbw->select( $tables, $fields,
-				array_merge( [
+			$queryBuilder = clone $queryBuilderTemplate;
+			$revRes = $queryBuilder->where(
+				[
 					'rev_page' => $pageRow->page_id,
-					# Don't operate on the current revision
-					# Use < instead of <> in case the current revision has changed
-					# since the page select, which wasn't locking
-					'rev_id < ' . $pageRow->page_latest
-				], $conds ),
-				__METHOD__,
-				$revLoadOptions
-			);
+					// Don't operate on the current revision
+					// Use < instead of <> in case the current revision has changed
+					// since the page select, which wasn't locking
+					$dbr->expr( 'rev_timestamp', '<', (int)$pageRow->rev_timestamp ),
+				] )
+				->caller( __METHOD__ )->fetchResultSet();
+
 			$revs = [];
 			foreach ( $revRes as $revRow ) {
 				$revs[] = $revRow;
@@ -361,7 +357,7 @@ class CompressOld extends Maintenance {
 
 				$chunk = new ConcatenatedGzipHistoryBlob();
 				$stubs = [];
-				$this->beginTransaction( $dbw, __METHOD__ );
+				$this->beginTransactionRound( __METHOD__ );
 				$usedChunk = false;
 				$primaryOldid = $revs[$i]->old_id;
 
@@ -369,8 +365,12 @@ class CompressOld extends Maintenance {
 				for ( $j = 0; $j < $thisChunkSize && $chunk->isHappy(); $j++ ) {
 					$oldid = $revs[$i + $j]->old_id;
 
-					# Get text
-					$text = Revision::getRevisionText( $revs[$i + $j] );
+					# Get text. We do not need the full `extractBlob` since the query is built
+					# to fetch non-externalstore blobs.
+					$text = $blobStore->decompressData(
+						$revs[$i + $j]->old_text,
+						explode( ',', $revs[$i + $j]->old_flags )
+					);
 
 					if ( $text === false ) {
 						$this->error( "\nError, unable to get text in old_id $oldid" );
@@ -402,6 +402,7 @@ class CompressOld extends Maintenance {
 				if ( $usedChunk ) {
 					if ( $extdb != "" ) {
 						# Move blob objects to External Storage
+						// @phan-suppress-next-line PhanPossiblyUndeclaredVariable storeObj is set when used
 						$stored = $storeObj->store( $extdb, serialize( $chunk ) );
 						if ( $stored === false ) {
 							$this->error( "Unable to store object" );
@@ -415,45 +416,54 @@ class CompressOld extends Maintenance {
 							}
 							# $stored should provide base path to a BLOB
 							$url = $stored . "/" . $stub->getHash();
-							$dbw->update( 'text',
-								[ /* SET */
+							$dbw->newUpdateQueryBuilder()
+								->update( 'text' )
+								->set( [
 									'old_text' => $url,
 									'old_flags' => 'external,utf-8',
-								], [ /* WHERE */
+								] )
+								->where( [
 									'old_id' => $stub->getReferrer(),
-								]
-							);
+								] )
+								->caller( __METHOD__ )
+								->execute();
 						}
 					} else {
 						# Store the main object locally
-						$dbw->update( 'text',
-							[ /* SET */
+						$dbw->newUpdateQueryBuilder()
+							->update( 'text' )
+							->set( [
 								'old_text' => serialize( $chunk ),
 								'old_flags' => 'object,utf-8',
-							], [ /* WHERE */
+							] )
+							->where( [
 								'old_id' => $primaryOldid
-							]
-						);
+							] )
+							->caller( __METHOD__ )
+							->execute();
 
 						# Store the stub objects
 						for ( $j = 1; $j < $thisChunkSize; $j++ ) {
 							# Skip if not compressing and don't overwrite the first revision
 							if ( $stubs[$j] !== false && $revs[$i + $j]->old_id != $primaryOldid ) {
-								$dbw->update( 'text',
-									[ /* SET */
+								$dbw->newUpdateQueryBuilder()
+									->update( 'text' )
+									->set( [
 										'old_text' => serialize( $stubs[$j] ),
 										'old_flags' => 'object,utf-8',
-									], [ /* WHERE */
+									] )
+									->where( [
 										'old_id' => $revs[$i + $j]->old_id
-									]
-								);
+									] )
+									->caller( __METHOD__ )
+									->execute();
 							}
 						}
 					}
 				}
 				# Done, next
 				$this->output( "/" );
-				$this->commitTransaction( $dbw, __METHOD__ );
+				$this->commitTransactionRound( __METHOD__ );
 				$i += $thisChunkSize;
 			}
 			$this->output( "\n" );
@@ -463,5 +473,7 @@ class CompressOld extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = CompressOld::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

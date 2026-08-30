@@ -1,29 +1,22 @@
 <?php
 /**
- * This does the initial set up for a web request.
+ * The set up for all MediaWiki web requests.
  *
- * It does some security checks, loads autoloaders, constants, and
- * global functions, starts the profiler, loads the configuration,
- * and loads Setup.php, which loads extensions using the extension
- * registration system and initializes the application's global state.
+ * It does:
+ * - web-related security checks,
+ * - decide how and from where to load site configuration (LocalSettings.php),
+ * - load Setup.php.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  */
+
+use MediaWiki\Context\RequestContext;
+use MediaWiki\Deferred\DeferredUpdates;
+use MediaWiki\MediaWikiServices;
+use MediaWiki\Output\OutputHandler;
+use MediaWiki\Settings\SettingsBuilder;
+use Wikimedia\Http\HttpStatus;
 
 # T17461: Make IE8 turn off content sniffing. Everybody else should ignore this
 # We're adding it here so that it's *always* set, even for alternate entry
@@ -37,71 +30,88 @@ header( 'X-Content-Type-Options: nosniff' );
 # its purpose.
 define( 'MEDIAWIKI', true );
 
-# Full path to the installation directory.
-$IP = getenv( 'MW_INSTALL_PATH' );
-if ( $IP === false ) {
-	$IP = dirname( __DIR__ );
+/**
+ * @param SettingsBuilder $settings
+ * @return never
+ */
+function wfWebStartNoLocalSettings( SettingsBuilder $settings ): never {
+	# LocalSettings.php is the per-site customization file. If it does not exist
+	# the wiki installer needs to be launched or the generated file uploaded to
+	# the root wiki directory. Give a hint, if it is not readable by the server.
+	require_once __DIR__ . '/Output/NoLocalSettings.php';
+	die();
 }
+
+require_once __DIR__ . '/BootstrapHelperFunctions.php';
 
 // If no LocalSettings file exists, try to display an error page
 // (use a callback because it depends on TemplateParser)
 if ( !defined( 'MW_CONFIG_CALLBACK' ) ) {
-	if ( !defined( 'MW_CONFIG_FILE' ) ) {
-		define( 'MW_CONFIG_FILE', "$IP/LocalSettings.php" );
-	}
+	wfDetectLocalSettingsFile();
 	if ( !is_readable( MW_CONFIG_FILE ) ) {
-
-		function wfWebStartNoLocalSettings() {
-			# LocalSettings.php is the per-site customization file. If it does not exist
-			# the wiki installer needs to be launched or the generated file uploaded to
-			# the root wiki directory. Give a hint, if it is not readable by the server.
-			global $IP;
-			require_once "$IP/includes/NoLocalSettings.php";
-			die();
-		}
-
 		define( 'MW_CONFIG_CALLBACK', 'wfWebStartNoLocalSettings' );
+	}
+}
+
+function wfWebStartSetup( SettingsBuilder $settings ) {
+	// Initialize the default MediaWiki output buffering if no buffer is already active.
+	// This avoids clashes with existing buffers in order to avoid problems,
+	// like mixing gzip and non-gzip output.
+	if ( ob_get_level() == 0 ) {
+		// During HTTP requests, MediaWiki normally buffers the response body in a string
+		// within OutputPage and prints it when ready. PHP buffers provide protection against
+		// premature sending of HTTP headers due to output from PHP warnings and notices.
+		// They also can be used to implement gzip support in PHP without the webserver knowing
+		// which requests yield HTML and which yield large files that can be streamed.
+		ob_start( OutputHandler::handle( ... ) );
 	}
 }
 
 // Custom setup for WebStart entry point
 if ( !defined( 'MW_SETUP_CALLBACK' ) ) {
-
-	function wfWebStartSetup() {
-		// Initialise output buffering
-		// Check for previously set up buffers, to avoid a mix of gzip and non-gzip output.
-		if ( ob_get_level() == 0 ) {
-			ob_start( 'MediaWiki\\OutputHandler::handle' );
-		}
-	}
-
 	define( 'MW_SETUP_CALLBACK', 'wfWebStartSetup' );
 }
 
-require_once "$IP/includes/Setup.php";
+require_once __DIR__ . '/Setup.php';
+
+// Optimization: Avoid overhead from DeferredUpdates and Pingback deps when turned off.
+//
+// NOTE: Do not refactor to inject Config or otherwise unconditionally call services.
+//
+// On a plain install of MediaWiki, Pingback is likely the *only* feature involving
+// DeferredUpdates or DB_PRIMARY on a regular page view. To allow for error recovery and fault
+// isolation, let admins turn this off completely. (T269516)
+if ( MW_ENTRY_POINT !== 'cli' && $wgPingback ) {
+	DeferredUpdates::addCallableUpdate( static function () {
+		MediaWikiServices::getInstance()->getPingback()->run();
+	} );
+}
 
 # Multiple DBs or commits might be used; keep the request as transactional as possible
 if ( isset( $_SERVER['REQUEST_METHOD'] ) && $_SERVER['REQUEST_METHOD'] === 'POST' ) {
 	ignore_user_abort( true );
 }
 
-if ( !defined( 'MW_API' ) &&
+if ( !defined( 'MW_API' ) && !defined( 'MW_REST_API' ) &&
 	RequestContext::getMain()->getRequest()->getHeader( 'Promise-Non-Write-API-Action' )
 ) {
 	header( 'Cache-Control: no-cache' );
 	header( 'Content-Type: text/html; charset=utf-8' );
 	HttpStatus::header( 400 );
-	$error = wfMessage( 'nonwrite-api-promise-error' )->escaped();
-	$content = <<<EOT
+	$errorHtml = wfMessage( 'nonwrite-api-promise-error' )
+		->useDatabase( false )
+		->inContentLanguage()
+		->escaped();
+	$content = <<<HTML
 <!DOCTYPE html>
 <html>
-<head><meta charset="UTF-8" /></head>
+<head><meta charset="UTF-8" /><meta name="color-scheme" content="light dark" /></head>
 <body>
-$error
+$errorHtml
 </body>
 </html>
 
-EOT;
+HTML;
 	header( 'Content-Length: ' . strlen( $content ) );
 	echo $content;
 	die();

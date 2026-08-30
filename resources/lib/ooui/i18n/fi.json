@@ -1,23 +1,26 @@
 {
 	"@metadata": {
 		"authors": [
+			"Alluk.",
 			"Beluga",
 			"Crt",
 			"Harriv",
 			"Linnea",
+			"MITO",
 			"Nedergard",
 			"Nike",
 			"Olli",
 			"Pxos",
+			"Pyscowicz",
 			"Samoasambia",
 			"Silvonen",
 			"Skalman",
 			"Stryn",
 			"VezonThunder",
-			"Alluk.",
-			"Pyscowicz"
+			"Wikipeedikko"
 		]
 	},
+	"ooui-copytextlayout-copy": "Kopioi",
 	"ooui-outline-control-move-down": "Siirrä kohdetta alaspäin",
 	"ooui-outline-control-move-up": "Siirrä kohdetta ylöspäin",
 	"ooui-outline-control-remove": "Poista kohde",
@@ -28,12 +31,16 @@
 	"ooui-dialog-message-accept": "OK",
 	"ooui-dialog-message-reject": "Peru",
 	"ooui-dialog-process-error": "Jokin meni pieleen",
+	"ooui-dialog-process-back": "Takaisin",
 	"ooui-dialog-process-dismiss": "Hylkää",
 	"ooui-dialog-process-retry": "Yritä uudelleen",
 	"ooui-dialog-process-continue": "Jatka",
+	"ooui-combobox-button-label": "Vaihda valinnat",
 	"ooui-selectfile-button-select": "Valitse tiedosto",
-	"ooui-selectfile-not-supported": "Tiedoston valitsemista ei tueta",
+	"ooui-selectfile-button-select-multiple": "Valitse tiedostot",
 	"ooui-selectfile-placeholder": "Tiedostoa ei ole valittu",
 	"ooui-selectfile-dragdrop-placeholder": "Pudota tiedosto tähän",
+	"ooui-selectfile-dragdrop-placeholder-multiple": "Pudota tiedostot tähän",
+	"ooui-popup-widget-close-button-aria-label": "Sulje",
 	"ooui-field-help": "Ohje"
 }

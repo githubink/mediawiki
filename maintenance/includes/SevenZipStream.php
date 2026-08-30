@@ -2,27 +2,15 @@
 /**
  * 7z stream wrapper
  *
- * Copyright © 2005 Brion Vibber <brion@pobox.com>
+ * Copyright © 2005 Brooke Vibber <bvibber@wikimedia.org>
  * https://www.mediawiki.org/
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
+
+namespace MediaWiki\Maintenance;
 
 use MediaWiki\Shell\Shell;
 
@@ -34,15 +22,27 @@ use MediaWiki\Shell\Shell;
  * @ingroup Maintenance
  */
 class SevenZipStream {
+	/** @var resource|false */
 	protected $stream;
 
-	private function stripPath( $path ) {
+	/** @var resource|null Must exists on stream wrapper class */
+	public $context;
+
+	public static function register() {
+		static $done = false;
+		if ( !$done ) {
+			$done = true;
+			stream_wrapper_register( 'mediawiki.compress.7z', self::class );
+		}
+	}
+
+	private function stripPath( string $path ): string {
 		$prefix = 'mediawiki.compress.7z://';
 
 		return substr( $path, strlen( $prefix ) );
 	}
 
-	function stream_open( $path, $mode, $options, &$opened_path ) {
+	public function stream_open( string $path, string $mode, int $options, ?string &$opened_path ): bool {
 		if ( $mode[0] == 'r' ) {
 			$options = 'e -bd -so';
 		} elseif ( $mode[0] == 'w' ) {
@@ -56,43 +56,43 @@ class SevenZipStream {
 			// Suppress the stupid messages on stderr
 			$command .= ' 2>/dev/null';
 		}
-		$this->stream = popen( $command, $mode[0] ); // popen() doesn't like two-letter modes
+		// popen() doesn't like two-letter modes
+		$this->stream = popen( $command, $mode[0] );
 		return ( $this->stream !== false );
 	}
 
-	function url_stat( $path, $flags ) {
+	public function url_stat( string $path, int $flags ): array|false {
 		return stat( $this->stripPath( $path ) );
 	}
 
-	// This is all so lame; there should be a default class we can extend
-
-	function stream_close() {
-		return fclose( $this->stream );
+	public function stream_close(): void {
+		fclose( $this->stream );
 	}
 
-	function stream_flush() {
+	public function stream_flush(): bool {
 		return fflush( $this->stream );
 	}
 
-	function stream_read( $count ) {
+	public function stream_read( int $count ): string|false {
 		return fread( $this->stream, $count );
 	}
 
-	function stream_write( $data ) {
+	public function stream_write( string $data ): int {
 		return fwrite( $this->stream, $data );
 	}
 
-	function stream_tell() {
+	public function stream_tell(): int {
 		return ftell( $this->stream );
 	}
 
-	function stream_eof() {
+	public function stream_eof(): bool {
 		return feof( $this->stream );
 	}
 
-	function stream_seek( $offset, $whence ) {
-		return fseek( $this->stream, $offset, $whence );
+	public function stream_seek( int $offset, int $whence ): bool {
+		return fseek( $this->stream, $offset, $whence ) === 0;
 	}
 }
 
-stream_wrapper_register( 'mediawiki.compress.7z', SevenZipStream::class );
+/** @deprecated class alias since 1.43 */
+class_alias( SevenZipStream::class, 'SevenZipStream' );

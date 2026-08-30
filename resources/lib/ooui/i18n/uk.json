@@ -1,26 +1,28 @@
 {
 	"@metadata": {
 		"authors": [
+			"A1",
 			"AS",
 			"Aced",
 			"Ahonc",
 			"Andriykopanytsia",
 			"Base",
+			"Dars",
+			"Esk78",
 			"Perohanych",
+			"Piramidion",
 			"RLuts",
+			"Repakr",
 			"Sahran",
 			"Sergento",
 			"Steve.rusyn",
 			"SteveR",
 			"Tel'et",
 			"Tifinaghes",
-			"Ата",
-			"Piramidion",
-			"A1",
-			"Dars",
-			"Esk78"
+			"Ата"
 		]
 	},
+	"ooui-copytextlayout-copy": "Копіювати",
 	"ooui-outline-control-move-down": "Перемістити елемент униз",
 	"ooui-outline-control-move-up": "Перемістити елемент вгору",
 	"ooui-outline-control-remove": "Видалити елемент",
@@ -31,13 +33,16 @@
 	"ooui-dialog-message-accept": "Готово",
 	"ooui-dialog-message-reject": "Скасувати",
 	"ooui-dialog-process-error": "Щось пішло не так",
+	"ooui-dialog-process-back": "Назад",
 	"ooui-dialog-process-dismiss": "Приховати",
 	"ooui-dialog-process-retry": "Спробуйте ще раз",
 	"ooui-dialog-process-continue": "Продовжити",
-	"ooui-combobox-button-label": "Випадне вікно для комбінованого списку",
+	"ooui-combobox-button-label": "Перемкнути опції",
 	"ooui-selectfile-button-select": "Оберіть файл",
-	"ooui-selectfile-not-supported": "Вибір файлу не підтримується",
+	"ooui-selectfile-button-select-multiple": "Оберіть файли",
 	"ooui-selectfile-placeholder": "Жодного файлу не вибрано",
 	"ooui-selectfile-dragdrop-placeholder": "Помістіть файл сюди",
+	"ooui-selectfile-dragdrop-placeholder-multiple": "Перемістіть файли сюди",
+	"ooui-popup-widget-close-button-aria-label": "Закрити",
 	"ooui-field-help": "Допомога"
 }

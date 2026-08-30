@@ -1,7 +1,7 @@
 {
 	"selectorWithoutVariant": ".oo-ui-icon-{name}",
 	"selectorWithVariant": ".oo-ui-image-{variant}.oo-ui-icon-{name}",
-	"intro": "@import '../../../../src/styles/common';",
+	"intro": "@import '../../../../src/styles/common.less';",
 	"variants": {
 		"invert": {
 			"color": "#fff",
@@ -12,13 +12,13 @@
 			"global": true
 		},
 		"destructive": {
-			"color": "#d33"
+			"color": "#d73333"
 		},
 		"error": {
-			"color": "#d33"
+			"color": "#d73333"
 		},
 		"warning": {
-			"color": "#fc3"
+			"color": "#ab7f2a"
 		},
 		"success": {
 			"color": "#14866d"
@@ -37,14 +37,29 @@
 		"attachment": {
 			"file": "images/icons/attachment.svg"
 		},
-		"beaker": {
-			"file": "images/icons/beaker.svg"
-		},
 		"calendar": {
 			"file": "images/icons/calendar.svg"
 		},
 		"code": {
 			"file": "images/icons/code.svg"
+		},
+		"copy": {
+			"file": {
+				"ltr": "images/icons/copy-ltr.svg",
+				"rtl": "images/icons/copy-rtl.svg"
+			}
+		},
+		"cut": {
+			"file": {
+				"ltr": "images/icons/cut-ltr.svg",
+				"rtl": "images/icons/cut-rtl.svg"
+			}
+		},
+		"diffs": {
+			"file": {
+				"ltr": "images/icons/diffs-ltr.svg",
+				"rtl": "images/icons/diffs-rtl.svg"
+			}
 		},
 		"hieroglyph": {
 			"file": "images/icons/hieroglyph.svg"
@@ -60,6 +75,9 @@
 		},
 		"imageLayoutThumbnail": {
 			"file": "images/icons/imageLayoutThumbnail.svg"
+		},
+		"labFlask": {
+			"file": "images/icons/labFlask.svg"
 		},
 		"language": {
 			"file": "images/icons/language.svg"
@@ -94,10 +112,22 @@
 		"noWikiText": {
 			"file": "images/icons/noWikiText.svg"
 		},
+		"ocr": {
+			"file": "images/icons/ocr.svg"
+		},
 		"outline": {
+			"file": "images/icons/outline.svg"
+		},
+		"palette": {
 			"file": {
-				"ltr": "images/icons/outline-ltr.svg",
-				"rtl": "images/icons/outline-rtl.svg"
+				"ltr": "images/icons/palette-ltr.svg",
+				"rtl": "images/icons/palette-rtl.svg"
+			}
+		},
+		"paste": {
+			"file": {
+				"ltr": "images/icons/paste-ltr.svg",
+				"rtl": "images/icons/paste-rtl.svg"
 			}
 		},
 		"puzzle": {
@@ -111,6 +141,9 @@
 				"ltr": "images/icons/quotes-ltr.svg",
 				"rtl": "images/icons/quotes-rtl.svg"
 			}
+		},
+		"sandbox": {
+			"file": "images/icons/sandbox.svg"
 		},
 		"searchCaseSensitive": {
 			"file": "images/icons/searchCaseSensitive.svg"
@@ -134,10 +167,16 @@
 			"file": "images/icons/table.svg"
 		},
 		"tableAddColumnAfter": {
-			"file": "images/icons/tableAddColumnAfter.svg"
+			"file": {
+				"ltr": "images/icons/tableAddColumnAfter-ltr.svg",
+				"rtl": "images/icons/tableAddColumnAfter-rtl.svg"
+			}
 		},
 		"tableAddColumnBefore": {
-			"file": "images/icons/tableAddColumnBefore.svg"
+			"file": {
+				"ltr": "images/icons/tableAddColumnBefore-ltr.svg",
+				"rtl": "images/icons/tableAddColumnBefore-rtl.svg"
+			}
 		},
 		"tableAddRowAfter": {
 			"file": "images/icons/tableAddRowAfter.svg"
@@ -152,10 +191,16 @@
 			"file": "images/icons/tableMergeCells.svg"
 		},
 		"tableMoveColumnAfter": {
-			"file": "images/icons/tableMoveColumnAfter.svg"
+			"file": {
+				"ltr": "images/icons/tableMoveColumnAfter-ltr.svg",
+				"rtl": "images/icons/tableMoveColumnAfter-rtl.svg"
+			}
 		},
 		"tableMoveColumnBefore": {
-			"file": "images/icons/tableMoveColumnBefore.svg"
+			"file": {
+				"ltr": "images/icons/tableMoveColumnBefore-ltr.svg",
+				"rtl": "images/icons/tableMoveColumnBefore-rtl.svg"
+			}
 		},
 		"tableMoveRowAfter": {
 			"file": "images/icons/tableMoveRowAfter.svg"

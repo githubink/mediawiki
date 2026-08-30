@@ -1,22 +1,14 @@
 <?php
 /**
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
+ * @license GPL-2.0-or-later
  */
 
+use MediaWiki\Logging\DatabaseLogEntry;
+use MediaWiki\Maintenance\Maintenance;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Remove autopatrol logs in the logging table.
@@ -95,10 +87,8 @@ class DeleteAutoPatrolLogs extends Maintenance {
 		}
 	}
 
-	private function getRows( $fromId ) {
-		$dbr = MediaWiki\MediaWikiServices::getInstance()->getDBLoadBalancer()->getConnection(
-			DB_REPLICA
-		);
+	private function getRows( ?int $fromId ): array {
+		$dbr = $this->getReplicaDB();
 		$before = $this->getOption( 'before', false );
 
 		$conds = [
@@ -107,26 +97,25 @@ class DeleteAutoPatrolLogs extends Maintenance {
 		];
 
 		if ( $fromId ) {
-			$conds[] = 'log_id > ' . $dbr->addQuotes( $fromId );
+			$conds[] = $dbr->expr( 'log_id', '>', $fromId );
 		}
 
 		if ( $before ) {
-			$conds[] = 'log_timestamp < ' . $dbr->addQuotes( $dbr->timestamp( $before ) );
+			$conds[] = $dbr->expr( 'log_timestamp', '<', $dbr->timestamp( $before ) );
 		}
 
-		return $dbr->selectFieldValues(
-			'logging',
-			'log_id',
-			$conds,
-			__METHOD__,
-			[ 'LIMIT' => $this->getBatchSize() ]
-		);
+		return $dbr->newSelectQueryBuilder()
+			->select( 'log_id' )
+			->from( 'logging' )
+			->where( $conds )
+			->orderBy( 'log_id' )
+			->limit( $this->getBatchSize() )
+			->caller( __METHOD__ )
+			->fetchFieldValues();
 	}
 
-	private function getRowsOld( $fromId ) {
-		$dbr = MediaWiki\MediaWikiServices::getInstance()->getDBLoadBalancer()->getConnection(
-			DB_REPLICA
-		);
+	private function getRowsOld( ?int $fromId ): ?array {
+		$dbr = $this->getReplicaDB();
 		$batchSize = $this->getBatchSize();
 		$before = $this->getOption( 'before', false );
 
@@ -136,20 +125,21 @@ class DeleteAutoPatrolLogs extends Maintenance {
 		];
 
 		if ( $fromId ) {
-			$conds[] = 'log_id > ' . $dbr->addQuotes( $fromId );
+			$conds[] = $dbr->expr( 'log_id', '>', $fromId );
 		}
 
 		if ( $before ) {
-			$conds[] = 'log_timestamp < ' . $dbr->addQuotes( $dbr->timestamp( $before ) );
+			$conds[] = $dbr->expr( 'log_timestamp', '<', $dbr->timestamp( $before ) );
 		}
 
-		$result = $dbr->select(
-			'logging',
-			[ 'log_id', 'log_params' ],
-			$conds,
-			__METHOD__,
-			[ 'LIMIT' => $batchSize ]
-		);
+		$result = $dbr->newSelectQueryBuilder()
+			->select( [ 'log_id', 'log_type', 'log_action', 'log_params' ] )
+			->from( 'logging' )
+			->where( $conds )
+			->orderBy( 'log_id' )
+			->limit( $batchSize )
+			->caller( __METHOD__ )
+			->fetchResultSet();
 
 		$last = null;
 		$autopatrols = [];
@@ -168,14 +158,14 @@ class DeleteAutoPatrolLogs extends Maintenance {
 			if ( array_key_exists( '6::auto', $params ) ) {
 				// Between 2011-2016 autopatrol logs
 				$auto = $params['6::auto'] === true;
-			} elseif ( $logEntry->isLegacy() === true && array_key_exists( 2, $params ) ) {
+			} elseif ( $logEntry->isLegacy() && array_key_exists( 2, $params ) ) {
 				// Pre-2011 autopatrol logs
 				$auto = $params[2] === '1';
 			} else {
 				continue;
 			}
 
-			if ( $auto === true ) {
+			if ( $auto ) {
 				$autopatrols[] = $row->log_id;
 			}
 		}
@@ -188,20 +178,19 @@ class DeleteAutoPatrolLogs extends Maintenance {
 	}
 
 	private function deleteRows( array $rows ) {
-		$dbw = MediaWiki\MediaWikiServices::getInstance()->getDBLoadBalancer()->getConnection(
-			DB_MASTER
-		);
+		$dbw = $this->getPrimaryDB();
 
-		$dbw->delete(
-			'logging',
-			[ 'log_id' => $rows ],
-			__METHOD__
-		);
+		$dbw->newDeleteQueryBuilder()
+			->deleteFrom( 'logging' )
+			->where( [ 'log_id' => $rows ] )
+			->caller( __METHOD__ )->execute();
 
-		MediaWiki\MediaWikiServices::getInstance()->getDBLoadBalancerFactory()->waitForReplication();
+		$this->waitForReplication();
 	}
 
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = DeleteAutoPatrolLogs::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

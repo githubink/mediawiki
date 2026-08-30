@@ -1,10 +1,8 @@
 <?php
 /** Newari (नेपाल भाषा)
  *
- * To improve a translation please visit https://translatewiki.net
- *
- * @ingroup Language
  * @file
+ * @ingroup Languages
  *
  * @author Eukesh
  * @author आलोक
@@ -39,3 +37,5 @@ $digitTransformTable = [
 	'8' => '८', # U+096E
 	'9' => '९', # U+096F
 ];
+
+$numberingSystem = 'deva';

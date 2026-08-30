@@ -2,26 +2,19 @@
 /**
  * Maintenance script that handles managing job queue admin tasks
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
+use MediaWiki\JobQueue\Job;
+use MediaWiki\JobQueue\JobQueue;
+use MediaWiki\Maintenance\Maintenance;
+use Wikimedia\Timestamp\TimestampFormat as TS;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that handles managing job queue admin tasks (re-push, delete, ...)
@@ -34,13 +27,14 @@ class ManageJobs extends Maintenance {
 		$this->addDescription( 'Perform administrative tasks on a job queue' );
 		$this->addOption( 'type', 'Job type', true, true );
 		$this->addOption( 'action', 'Queue operation ("delete", "repush-abandoned")', true, true );
+		$this->setBatchSize( 100 );
 	}
 
 	public function execute() {
 		$type = $this->getOption( 'type' );
 		$action = $this->getOption( 'action' );
 
-		$group = JobQueueGroup::singleton();
+		$group = $this->getServiceContainer()->getJobQueueGroup();
 		$queue = $group->get( $type );
 
 		if ( $action === 'delete' ) {
@@ -59,13 +53,13 @@ class ManageJobs extends Maintenance {
 	}
 
 	private function repushAbandoned( JobQueue $queue ) {
-		$cache = ObjectCache::getInstance( CACHE_DB );
+		$cache = $this->getServiceContainer()->getObjectCacheFactory()->getInstance( CACHE_DB );
 		$key = $cache->makeGlobalKey( 'last-job-repush', $queue->getDomain(), $queue->getType() );
 
 		$now = wfTimestampNow();
 		$lastRepushTime = $cache->get( $key );
 		if ( $lastRepushTime === false ) {
-			$lastRepushTime = wfTimestamp( TS_MW, 1 ); // include all jobs
+			$lastRepushTime = wfTimestamp( TS::MW, 1 ); // include all jobs
 		}
 
 		$this->output( "Last re-push time: $lastRepushTime; current time: $now\n" );
@@ -74,7 +68,7 @@ class ManageJobs extends Maintenance {
 		$skipped = 0;
 		foreach ( $queue->getAllAbandonedJobs() as $job ) {
 			/** @var Job $job */
-			if ( $job->getQueuedTimestamp() < wfTimestamp( TS_UNIX, $lastRepushTime ) ) {
+			if ( $job instanceof Job && $job->getQueuedTimestamp() < wfTimestamp( TS::UNIX, $lastRepushTime ) ) {
 				++$skipped;
 				continue; // already re-pushed in prior round
 			}
@@ -93,5 +87,7 @@ class ManageJobs extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = ManageJobs::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd

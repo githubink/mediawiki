@@ -6,24 +6,13 @@
 			"Vibhijain"
 		]
 	},
-	"january": "ज्यानुवरी",
-	"february": "फ़रवरी",
-	"march": "मार्च",
-	"april": "अप्रैल",
-	"may_long": "मई",
-	"june": "जून",
-	"july": "जुलाई",
-	"august": "अगस्त",
-	"september": "सेप्टेम्बर",
-	"october": "ओक्टोबर",
-	"november": "नवम्बर",
-	"december": "दिसम्बर",
 	"article": "लेख पत्त",
 	"help": "सहायता",
 	"search": "अन्वेसना",
 	"searchbutton": "खोज",
 	"searcharticle": "गच्छामि",
 	"create": "रचेतु",
+	"skin-view-create": "रचेतु",
 	"talkpagelinktext": "सम्भासनं",
 	"talk": "सम्भासनं",
 	"aboutsite": "{{SITENAME}} इच्चस्स विसये",
@@ -61,9 +50,6 @@
 	"tooltip-n-recentchanges": "सज्जोजातानं परिवत्तनानं सूची",
 	"tooltip-n-randompage": "यदिच्छकं पिट्ठं गच्छतु",
 	"tooltip-n-help": "अन्वेसनठानं",
-	"tooltip-t-specialpages": "सब्बेसं पमुखानं पिट्ठानं सूची",
-	"tooltip-summary": "संखित्तं सारंसं योजेतु",
-	"exif-gpslatitude": "अक्षांश",
-	"exif-gpslongitude": "देशान्तर",
-	"exif-sensingmethod-1": "अपरिभाषित"
+	"tooltip-n-specialpages": "सब्बेसं पमुखानं पिट्ठानं सूची",
+	"tooltip-summary": "संखित्तं सारंसं योजेतु"
 }

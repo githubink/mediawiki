@@ -2,26 +2,18 @@
 /**
  * Protect or unprotect a page.
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
- * http://www.gnu.org/copyleft/gpl.html
- *
+ * @license GPL-2.0-or-later
  * @file
  * @ingroup Maintenance
  */
 
+use MediaWiki\Maintenance\Maintenance;
+use MediaWiki\Title\Title;
+use MediaWiki\User\User;
+
+// @codeCoverageIgnoreStart
 require_once __DIR__ . '/Maintenance.php';
+// @codeCoverageIgnoreEnd
 
 /**
  * Maintenance script that protects or unprotects a page.
@@ -54,7 +46,7 @@ class Protect extends Maintenance {
 		}
 
 		if ( $userName === false ) {
-			$user = User::newSystemUser( 'Maintenance script', [ 'steal' => true ] );
+			$user = User::newSystemUser( User::MAINTENANCE_SCRIPT_USER, [ 'steal' => true ] );
 		} else {
 			$user = User::newFromName( $userName );
 		}
@@ -67,16 +59,19 @@ class Protect extends Maintenance {
 			$this->fatalError( "Invalid title" );
 		}
 
+		$services = $this->getServiceContainer();
 		$restrictions = [];
-		foreach ( $t->getRestrictionTypes() as $type ) {
+		foreach ( $services->getRestrictionStore()->listApplicableRestrictionTypes( $t ) as $type ) {
 			$restrictions[$type] = $protection;
 		}
 
 		# un/protect the article
-		$this->output( "Updating protection status... " );
+		$this->output( "Updating protection status..." );
 
-		$page = WikiPage::factory( $t );
+		$this->beginTransactionRound( __METHOD__ );
+		$page = $services->getWikiPageFactory()->newFromTitle( $t );
 		$status = $page->doUpdateRestrictions( $restrictions, [], $cascade, $reason, $user );
+		$this->commitTransactionRound( __METHOD__ );
 
 		if ( $status->isOK() ) {
 			$this->output( "done\n" );
@@ -86,5 +81,7 @@ class Protect extends Maintenance {
 	}
 }
 
+// @codeCoverageIgnoreStart
 $maintClass = Protect::class;
 require_once RUN_MAINTENANCE_IF_MAIN;
+// @codeCoverageIgnoreEnd
